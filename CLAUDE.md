@@ -148,6 +148,11 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
 - **Import return types must match WASM signatures**: `_mktime_js` returns i64, so
   the Lua import must return `{lo, hi}` table, not a plain number. A plain number
   causes "attempt to index a number" when i64 opcodes try to access `.lo`/`.hi`.
+- **Cached locals must flush ALL state on resume boundaries**: When `run()` exits
+  at `max_instructions` and resumes later, ALL cached fields must be flushed to
+  `state` — especially `state.code`. After an inlined `call` changes the local
+  `code` variable, `state.code` becomes stale. On resume, `code = state.code`
+  loads the wrong bytecode. Same applies to `state.running` after frame restore.
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)
@@ -158,8 +163,10 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   `make lua` in `build/`. Data files: `python3 build/embed_data.py NetHack/dat scripts/nethack_data.lua`.
 - **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
   and execution state need serialization to `storage` for game save/load to work.
-- **Performance**: Startup takes ~59M instructions. May need to increase
-  `MAX_INSTRUCTIONS_PER_RUN` (currently 50K) and `MAX_INSTRUCTIONS_PER_TICK`
-  (currently 10K) significantly. Level generation alone is millions of instructions.
+- **Performance**: Startup takes ~59M instructions (~188s in Lua 5.2 on desktop).
+  Optimized run loop (inlined opcodes, cached locals, byte arrays) gives 314K inst/sec
+  (1.38x over original 228K). May need to increase `MAX_INSTRUCTIONS_PER_RUN`
+  and `MAX_INSTRUCTIONS_PER_TICK` significantly. Further gains limited by Lua 5.2
+  VM overhead (~3µs per WASM instruction) and cache pressure from byte arrays.
 - **Menu at startup**: First input prompt is a menu (likely initial --More-- or
   inventory), not a getch. The Factorio GUI menu handler needs to work correctly.

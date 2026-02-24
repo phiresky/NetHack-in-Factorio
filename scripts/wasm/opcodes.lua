@@ -19,7 +19,7 @@ local function fail(msg) error({msg = msg}) end
 -- Helper: read a byte from code at pc, advance pc
 local function read_byte(state)
     local pc = state.pc
-    local b = string.byte(state.code, pc)
+    local b = state.code[pc]
     state.pc = pc + 1
     return b
 end
@@ -31,7 +31,7 @@ local function read_leb128_u(state)
     local code = state.code
     local pc = state.pc
     while true do
-        local b = string.byte(code, pc)
+        local b = code[pc]
         pc = pc + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         if bit32.band(b, 0x80) == 0 then
@@ -51,7 +51,7 @@ local function read_leb128_s(state)
     local pc = state.pc
     local b
     while true do
-        b = string.byte(code, pc)
+        b = code[pc]
         pc = pc + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         shift = shift + 7
@@ -78,7 +78,7 @@ local function read_leb128_s64(state)
     local pc = state.pc
     local b
     while true do
-        b = string.byte(code, pc)
+        b = code[pc]
         pc = pc + 1
         local val = bit32.band(b, 0x7F)
         if shift < 32 then
@@ -125,7 +125,7 @@ local function read_blocktype(state)
     local pc = state.pc
     local b
     while true do
-        b = string.byte(code, pc)
+        b = code[pc]
         pc = pc + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         shift = shift + 7
@@ -1498,10 +1498,11 @@ end
 -- 0x43: f32.const
 dispatch[0x43] = function(state)
     local pc = state.pc
-    local b0 = string.byte(state.code, pc)
-    local b1 = string.byte(state.code, pc + 1)
-    local b2 = string.byte(state.code, pc + 2)
-    local b3 = string.byte(state.code, pc + 3)
+    local code = state.code
+    local b0 = code[pc]
+    local b1 = code[pc + 1]
+    local b2 = code[pc + 2]
+    local b3 = code[pc + 3]
     state.pc = pc + 4
     local bits = bit32.bor(b0, bit32.lshift(b1, 8), bit32.lshift(b2, 16), bit32.lshift(b3, 24))
     push(state, f32_reinterpret_i32(bits))
@@ -1510,14 +1511,15 @@ end
 -- 0x44: f64.const
 dispatch[0x44] = function(state)
     local pc = state.pc
-    local b0 = string.byte(state.code, pc)
-    local b1 = string.byte(state.code, pc + 1)
-    local b2 = string.byte(state.code, pc + 2)
-    local b3 = string.byte(state.code, pc + 3)
-    local b4 = string.byte(state.code, pc + 4)
-    local b5 = string.byte(state.code, pc + 5)
-    local b6 = string.byte(state.code, pc + 6)
-    local b7 = string.byte(state.code, pc + 7)
+    local code = state.code
+    local b0 = code[pc]
+    local b1 = code[pc + 1]
+    local b2 = code[pc + 2]
+    local b3 = code[pc + 3]
+    local b4 = code[pc + 4]
+    local b5 = code[pc + 5]
+    local b6 = code[pc + 6]
+    local b7 = code[pc + 7]
     state.pc = pc + 8
     local lo = bit32.bor(b0, bit32.lshift(b1, 8), bit32.lshift(b2, 16), bit32.lshift(b3, 24))
     local hi = bit32.bor(b4, bit32.lshift(b5, 8), bit32.lshift(b6, 16), bit32.lshift(b7, 24))
@@ -2466,6 +2468,7 @@ end
 
 Opcodes.nan_mt = nan_mt
 Opcodes.dispatch = dispatch
+Opcodes.do_branch = do_branch
 Opcodes.read_byte = read_byte
 Opcodes.read_leb128_u = read_leb128_u
 Opcodes.read_leb128_s = read_leb128_s

@@ -12,10 +12,20 @@ local math_floor = math.floor
 local unpack = table.unpack or unpack
 
 local dispatch = Opcodes.dispatch
+local do_branch = Opcodes.do_branch
 local op_push = Opcodes.push
 
 local function fail(msg) error({msg = msg}) end
 local op_pop = Opcodes.pop
+
+-- Cached bit32 functions for the hot loop
+local bit32_band = bit32.band
+local bit32_bor = bit32.bor
+local bit32_bxor = bit32.bxor
+local bit32_lshift = bit32.lshift
+local bit32_rshift = bit32.rshift
+local bit32_arshift = bit32.arshift
+local bit32_btest = bit32.btest
 
 local Interp = {}
 
@@ -237,6 +247,21 @@ function Interp.instantiate(module, imports)
         instance.element_segments_raw[i] = seg.func_indices
     end
 
+    -- Convert function bytecode from strings to byte arrays for faster access
+    -- (table integer-index is faster than string.byte C function call)
+    for idx, func_def in pairs(module.funcs) do
+        if type(idx) == "number" and not func_def.import and func_def.code
+           and type(func_def.code.code) == "string" then
+            local str = func_def.code.code
+            local len = #str
+            local arr = {}
+            for j = 1, len do
+                arr[j] = string.byte(str, j)
+            end
+            func_def.code.code = arr
+        end
+    end
+
     -- Build exports convenience map
     -- Each exported function becomes a synchronous wrapper (for tests / simple use)
     instance.exports = {}
@@ -331,7 +356,7 @@ function Interp.call(instance, func_idx, args)
         instance = instance,
         module = module,
         pc = 1,
-        code = func_def.import and "" or func_def.code.code,
+        code = func_def.import and {} or func_def.code.code,
         block_stack = block_stack,
         block_sp = 1,
         running = true,
@@ -403,9 +428,6 @@ function Interp.run(instance, max_instructions)
     local call_sp = exec.call_sp
     local func_idx = exec.func_idx
     local module = instance.module
-    local instructions = 0
-
-    max_instructions = max_instructions or 50000
 
     -- Handle top-level import call (from call() on an import function)
     if state.is_import_call then
@@ -450,45 +472,260 @@ function Interp.run(instance, max_instructions)
 
     -- Main interpretation loop
     local ok, err = pcall(function()
+        -- Cache state fields as locals (not upvalues) for maximum speed
+        local stack = state.stack
+        local sp = state.sp
+        local loc = state.locals
+        local code = state.code
+        local pc = state.pc
+        local memory = state.memory
+        local mem_data = memory.data
+        local mem_len = memory.byte_length
+        local block_stack = state.block_stack
+        local block_sp = state.block_sp
+        local globals = state.globals
+        local running = true
+        local instructions = 0
+        local max_instr = max_instructions or 50000
+
+        -- Cache bit32 functions as locals
+        local bit32_band = bit32_band
+        local bit32_bor = bit32_bor
+        local bit32_bxor = bit32_bxor
+        local bit32_lshift = bit32_lshift
+        local bit32_rshift = bit32_rshift
+        local bit32_arshift = bit32_arshift
+        local bit32_btest = bit32_btest
+
         while true do
-            -- Inner execution loop
-            while state.running do
-                if instructions >= max_instructions then
-                    -- Budget exhausted - save state and return
-                    exec.state = state
+            -- Inner execution loop with inlined hot opcodes
+            while running do
+                if instructions >= max_instr then
+                    -- Save state before exiting
+                    state.sp = sp; state.pc = pc; state.locals = loc
+                    state.code = code; state.block_stack = block_stack
+                    state.block_sp = block_sp; state.memory = memory
+                    state.globals = globals
                     exec.call_stack = call_stack
-                    exec.call_sp = call_sp
-                    exec.func_idx = func_idx
-                    return -- exits pcall
+                    exec.call_sp = call_sp; exec.func_idx = func_idx
+                    return
                 end
 
-                local op = string.byte(state.code, state.pc)
-                state.pc = state.pc + 1
+                local op = code[pc]
+                pc = pc + 1
                 instructions = instructions + 1
 
-                local handler = dispatch[op]
-                if not handler then
-                    fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, state.pc - 1, func_idx))
-                end
-                handler(state)
+                -- Inlined opcodes ordered by frequency (covers ~90% of instructions)
+                if op == 0x20 then -- local.get (24.3%)
+                    local b = code[pc]; pc = pc + 1
+                    local idx = b
+                    if b >= 128 then
+                        idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            idx = bit32_bor(idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    sp = sp + 1
+                    stack[sp] = loc[idx]
 
-                -- Check if we need to call another function
-                if state.call_func then
-                    local target_idx = state.call_func
-                    state.call_func = nil
-
-                    local target_def = module.funcs[target_idx]
-                    if not target_def then
-                        fail("Unknown function index: " .. tostring(target_idx))
+                elseif op == 0x41 then -- i32.const (18.1%)
+                    local b = code[pc]; pc = pc + 1
+                    if b < 64 then
+                        sp = sp + 1; stack[sp] = b
+                    elseif b < 128 then
+                        -- Single-byte negative: signed value is b-128, as u32: b+0xFFFFFF80
+                        sp = sp + 1; stack[sp] = b + 0xFFFFFF80
+                    else
+                        -- Multi-byte signed LEB128
+                        local val = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            val = bit32_bor(val, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                        if shift < 32 and bit32_btest(b, 0x40) then
+                            val = bit32_bor(val, bit32_lshift(-1, shift))
+                        end
+                        sp = sp + 1; stack[sp] = val
                     end
 
+                elseif op == 0x22 then -- local.tee (6.2%)
+                    local b = code[pc]; pc = pc + 1
+                    local idx = b
+                    if b >= 128 then
+                        idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            idx = bit32_bor(idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    loc[idx] = stack[sp]
+
+                elseif op == 0x21 then -- local.set (4.7%)
+                    local b = code[pc]; pc = pc + 1
+                    local idx = b
+                    if b >= 128 then
+                        idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            idx = bit32_bor(idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    loc[idx] = stack[sp]
+                    sp = sp - 1
+
+                elseif op == 0x6A then -- i32.add (4.7%)
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_band(stack[sp] + b_val, 0xFFFFFFFF)
+
+                elseif op == 0x0D then -- br_if (4.5%)
+                    local b = code[pc]; pc = pc + 1
+                    local depth = b
+                    if b >= 128 then
+                        depth = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            depth = bit32_bor(depth, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    local cond = stack[sp]; sp = sp - 1
+                    if cond ~= 0 then
+                        -- Branch taken: flush to state, use do_branch, refresh
+                        state.sp = sp; state.pc = pc; state.locals = loc
+                        state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                        do_branch(state, depth)
+                        sp = state.sp; pc = state.pc
+                        block_stack = state.block_stack; block_sp = state.block_sp
+                        running = state.running
+                    end
+
+                elseif op == 0x71 then -- i32.and (3.3%)
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_band(stack[sp], b_val)
+
+                elseif op == 0x6B then -- i32.sub (3.2%)
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_band(stack[sp] - b_val + 0x100000000, 0xFFFFFFFF)
+
+                elseif op == 0x2D then -- i32.load8_u (2.6%)
+                    -- Read memarg: skip align, read offset
+                    local _a = code[pc]; pc = pc + 1
+                    while _a >= 128 do _a = code[pc]; pc = pc + 1 end
+                    local offset = code[pc]; pc = pc + 1
+                    if offset >= 128 then
+                        offset = bit32_band(offset, 0x7F); local sh = 7
+                        repeat local ob = code[pc]; pc = pc + 1
+                            offset = bit32_bor(offset, bit32_lshift(bit32_band(ob, 0x7F), sh))
+                            sh = sh + 7
+                        until ob < 128
+                    end
+                    local addr = stack[sp] + offset
+                    if addr + 1 > mem_len or addr < 0 then fail("out of bounds memory access") end
+                    local word_idx = bit32_rshift(addr, 2)
+                    local byte_off = bit32_band(addr, 3)
+                    stack[sp] = bit32_band(bit32_rshift(mem_data[word_idx] or 0, byte_off * 8), 0xFF)
+
+                elseif op == 0x28 then -- i32.load (2.5%)
+                    local _a = code[pc]; pc = pc + 1
+                    while _a >= 128 do _a = code[pc]; pc = pc + 1 end
+                    local offset = code[pc]; pc = pc + 1
+                    if offset >= 128 then
+                        offset = bit32_band(offset, 0x7F); local sh = 7
+                        repeat local ob = code[pc]; pc = pc + 1
+                            offset = bit32_bor(offset, bit32_lshift(bit32_band(ob, 0x7F), sh))
+                            sh = sh + 7
+                        until ob < 128
+                    end
+                    local addr = stack[sp] + offset
+                    if addr + 4 > mem_len or addr < 0 then fail("out of bounds memory access") end
+                    if bit32_band(addr, 3) == 0 then
+                        stack[sp] = mem_data[bit32_rshift(addr, 2)] or 0
+                    else
+                        stack[sp] = memory:load_i32(addr)
+                    end
+
+                elseif op == 0x1B then -- select (2.5%)
+                    local cond = stack[sp]; sp = sp - 1
+                    local val2 = stack[sp]; sp = sp - 1
+                    if cond == 0 then
+                        stack[sp] = val2
+                    end
+
+                elseif op == 0x0B then -- end (2.4%)
+                    if block_sp <= 0 then
+                        running = false
+                    else
+                        local block = block_stack[block_sp]
+                        block_sp = block_sp - 1
+                        local n_results = block.result_arity or block.arity
+                        if n_results == 0 then
+                            sp = block.stack_height
+                        elseif n_results == 1 then
+                            local val = stack[sp]
+                            sp = block.stack_height + 1
+                            stack[sp] = val
+                        else
+                            local base = block.stack_height
+                            for i = n_results - 1, 0, -1 do
+                                stack[base + 1 + i] = stack[sp - (n_results - 1 - i)]
+                            end
+                            sp = base + n_results
+                        end
+                        if block_sp <= 0 then
+                            running = false
+                        end
+                    end
+
+                elseif op == 0x72 then -- i32.or (2.2%)
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_bor(stack[sp], b_val)
+
+                elseif op == 0x02 then -- block (2.0%)
+                    local bt = code[pc]
+                    if bt == 0x40 then
+                        -- Void block (most common)
+                        pc = pc + 1
+                        block_sp = block_sp + 1
+                        block_stack[block_sp] = {
+                            opcode = 0x02,
+                            arity = 0,
+                            stack_height = sp,
+                            continuation_pc = nil,
+                        }
+                    else
+                        -- Non-void blocktype: dispatch
+                        state.sp = sp; state.pc = pc; state.locals = loc
+                        state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                        dispatch[0x02](state)
+                        sp = state.sp; pc = state.pc
+                        block_stack = state.block_stack; block_sp = state.block_sp
+                    end
+
+                elseif op == 0x10 then -- call
+                    local b = code[pc]; pc = pc + 1
+                    local target_idx = b
+                    if b >= 128 then
+                        target_idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            target_idx = bit32_bor(target_idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+
+                    local target_def = module.funcs[target_idx]
+                    if not target_def then fail("Unknown function index: " .. tostring(target_idx)) end
                     local target_type = module.types[target_def.type_idx + 1]
                     local num_params = #target_type.params
 
-                    -- Pop arguments from stack
                     local call_args = {}
                     for i = num_params, 1, -1 do
-                        call_args[i] = op_pop(state)
+                        call_args[i] = stack[sp]; sp = sp - 1
                     end
 
                     if target_def.import then
@@ -497,74 +734,318 @@ function Interp.run(instance, max_instructions)
                             fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
                         end
 
-                        -- Check for BLOCKING import
                         if type(import_fn) == "table" and import_fn.blocking then
+                            state.sp = sp; state.pc = pc; state.locals = loc
+                            state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
                             local handler_result = import_fn.handler(unpack(call_args))
                             exec.waiting_input = true
                             exec.blocking_return_arity = #target_type.results
-                            exec.state = state
-                            exec.call_stack = call_stack
-                            exec.call_sp = call_sp
-                            exec.func_idx = func_idx
-                            -- Store handler result for caller
+                            exec.state = state; exec.call_stack = call_stack
+                            exec.call_sp = call_sp; exec.func_idx = func_idx
                             exec._blocking_result = handler_result
-                            return -- exits pcall
+                            return
                         end
 
-                        -- Regular import: call directly
                         local result = import_fn(unpack(call_args))
                         if #target_type.results > 0 and result ~= nil then
-                            op_push(state, result)
+                            sp = sp + 1; stack[sp] = result
                         end
+                        mem_len = memory.byte_length
                     else
-                        -- WASM-to-WASM call: save current frame, set up new one
+                        -- WASM-to-WASM call
                         call_sp = call_sp + 1
-                        if call_sp > 1000 then
-                            fail("call stack exhaustion")
-                        end
+                        if call_sp > 1000 then fail("call stack exhaustion") end
                         call_stack[call_sp] = {
-                            locals = state.locals,
-                            pc = state.pc,
-                            code = state.code,
-                            block_stack = state.block_stack,
-                            block_sp = state.block_sp,
-                            stack_base = state.sp,
+                            locals = loc,
+                            pc = pc,
+                            code = code,
+                            block_stack = block_stack,
+                            block_sp = block_sp,
+                            stack_base = sp,
                             return_arity = #target_type.results,
                             func_idx = func_idx,
                         }
 
                         func_idx = target_idx
-                        local new_locals = {}
+                        loc = {}
                         for i = 1, num_params do
-                            new_locals[i - 1] = call_args[i]
+                            loc[i - 1] = call_args[i]
                         end
                         local new_local_offset = num_params
                         for _, decl in ipairs(target_def.code.locals) do
                             local def_val = default_value(decl.type)
                             for _ = 1, decl.count do
-                                new_locals[new_local_offset] = def_val
+                                loc[new_local_offset] = def_val
                                 new_local_offset = new_local_offset + 1
                             end
                         end
 
-                        state.locals = new_locals
-                        state.pc = 1
-                        state.code = target_def.code.code
-                        state.block_stack = {}
-                        state.block_sp = 1
-                        state.block_stack[1] = {
+                        pc = 1
+                        code = target_def.code.code
+                        block_stack = {}
+                        block_sp = 1
+                        block_stack[1] = {
                             opcode = 0x02,
                             arity = #target_type.results,
-                            stack_height = state.sp,
+                            stack_height = sp,
                             continuation_pc = nil,
                         }
-                        state.running = true
-                        state.do_return = false
+                    end
+
+                elseif op == 0x1A then -- drop
+                    sp = sp - 1
+
+                elseif op == 0x45 then -- i32.eqz
+                    stack[sp] = stack[sp] == 0 and 1 or 0
+
+                elseif op == 0x46 then -- i32.eq
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] == b_val and 1 or 0
+
+                elseif op == 0x47 then -- i32.ne
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] ~= b_val and 1 or 0
+
+                elseif op == 0x48 then -- i32.lt_s
+                    local b_val = stack[sp]; sp = sp - 1
+                    local a_val = stack[sp]
+                    local a_s = a_val >= 0x80000000 and a_val - 0x100000000 or a_val
+                    local b_s = b_val >= 0x80000000 and b_val - 0x100000000 or b_val
+                    stack[sp] = a_s < b_s and 1 or 0
+
+                elseif op == 0x49 then -- i32.lt_u
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] < b_val and 1 or 0
+
+                elseif op == 0x4A then -- i32.gt_s
+                    local b_val = stack[sp]; sp = sp - 1
+                    local a_val = stack[sp]
+                    local a_s = a_val >= 0x80000000 and a_val - 0x100000000 or a_val
+                    local b_s = b_val >= 0x80000000 and b_val - 0x100000000 or b_val
+                    stack[sp] = a_s > b_s and 1 or 0
+
+                elseif op == 0x4B then -- i32.gt_u
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] > b_val and 1 or 0
+
+                elseif op == 0x4C then -- i32.le_s
+                    local b_val = stack[sp]; sp = sp - 1
+                    local a_val = stack[sp]
+                    local a_s = a_val >= 0x80000000 and a_val - 0x100000000 or a_val
+                    local b_s = b_val >= 0x80000000 and b_val - 0x100000000 or b_val
+                    stack[sp] = a_s <= b_s and 1 or 0
+
+                elseif op == 0x4D then -- i32.le_u
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] <= b_val and 1 or 0
+
+                elseif op == 0x4E then -- i32.ge_s
+                    local b_val = stack[sp]; sp = sp - 1
+                    local a_val = stack[sp]
+                    local a_s = a_val >= 0x80000000 and a_val - 0x100000000 or a_val
+                    local b_s = b_val >= 0x80000000 and b_val - 0x100000000 or b_val
+                    stack[sp] = a_s >= b_s and 1 or 0
+
+                elseif op == 0x4F then -- i32.ge_u
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = stack[sp] >= b_val and 1 or 0
+
+                elseif op == 0x73 then -- i32.xor
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_bxor(stack[sp], b_val)
+
+                elseif op == 0x74 then -- i32.shl
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_lshift(stack[sp], bit32_band(b_val, 31))
+
+                elseif op == 0x75 then -- i32.shr_s
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_arshift(stack[sp], bit32_band(b_val, 31))
+
+                elseif op == 0x76 then -- i32.shr_u
+                    local b_val = stack[sp]; sp = sp - 1
+                    stack[sp] = bit32_rshift(stack[sp], bit32_band(b_val, 31))
+
+                elseif op == 0x6C then -- i32.mul
+                    local b_val = stack[sp]; sp = sp - 1
+                    local a_val = stack[sp]
+                    local a_lo = bit32_band(a_val, 0xFFFF)
+                    local a_hi = bit32_rshift(a_val, 16)
+                    local b_lo = bit32_band(b_val, 0xFFFF)
+                    local b_hi = bit32_rshift(b_val, 16)
+                    stack[sp] = bit32_band(a_lo * b_lo + (a_lo * b_hi + a_hi * b_lo) * 65536, 0xFFFFFFFF)
+
+                elseif op == 0x23 then -- global.get
+                    local b = code[pc]; pc = pc + 1
+                    local idx = b
+                    if b >= 128 then
+                        idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            idx = bit32_bor(idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    sp = sp + 1
+                    stack[sp] = globals[idx]
+
+                elseif op == 0x24 then -- global.set
+                    local b = code[pc]; pc = pc + 1
+                    local idx = b
+                    if b >= 128 then
+                        idx = bit32_band(b, 0x7F)
+                        local shift = 7
+                        repeat b = code[pc]; pc = pc + 1
+                            idx = bit32_bor(idx, bit32_lshift(bit32_band(b, 0x7F), shift))
+                            shift = shift + 7
+                        until b < 128
+                    end
+                    globals[idx] = stack[sp]
+                    sp = sp - 1
+
+                elseif op == 0x36 then -- i32.store
+                    local _a = code[pc]; pc = pc + 1
+                    while _a >= 128 do _a = code[pc]; pc = pc + 1 end
+                    local offset = code[pc]; pc = pc + 1
+                    if offset >= 128 then
+                        offset = bit32_band(offset, 0x7F); local sh = 7
+                        repeat local ob = code[pc]; pc = pc + 1
+                            offset = bit32_bor(offset, bit32_lshift(bit32_band(ob, 0x7F), sh))
+                            sh = sh + 7
+                        until ob < 128
+                    end
+                    local val = stack[sp]; sp = sp - 1
+                    local addr = stack[sp] + offset; sp = sp - 1
+                    if addr + 4 > mem_len or addr < 0 then fail("out of bounds memory access") end
+                    val = bit32_band(val, 0xFFFFFFFF)
+                    if bit32_band(addr, 3) == 0 then
+                        mem_data[bit32_rshift(addr, 2)] = val
+                    else
+                        memory:store_i32(addr, val)
+                    end
+
+                elseif op == 0x3A then -- i32.store8
+                    local _a = code[pc]; pc = pc + 1
+                    while _a >= 128 do _a = code[pc]; pc = pc + 1 end
+                    local offset = code[pc]; pc = pc + 1
+                    if offset >= 128 then
+                        offset = bit32_band(offset, 0x7F); local sh = 7
+                        repeat local ob = code[pc]; pc = pc + 1
+                            offset = bit32_bor(offset, bit32_lshift(bit32_band(ob, 0x7F), sh))
+                            sh = sh + 7
+                        until ob < 128
+                    end
+                    local val = stack[sp]; sp = sp - 1
+                    local addr = stack[sp] + offset; sp = sp - 1
+                    if addr + 1 > mem_len or addr < 0 then fail("out of bounds memory access") end
+                    local word_idx = bit32_rshift(addr, 2)
+                    local byte_off = bit32_band(addr, 3)
+                    local bshift = byte_off * 8
+                    local mask = bit32.bnot(bit32_lshift(0xFF, bshift))
+                    local word = mem_data[word_idx] or 0
+                    mem_data[word_idx] = bit32_bor(bit32_band(word, mask), bit32_lshift(bit32_band(val, 0xFF), bshift))
+
+                else
+                    -- Dispatch fallback for all other opcodes (~10% of instructions)
+                    state.sp = sp; state.pc = pc; state.locals = loc
+                    state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                    local handler = dispatch[op]
+                    if not handler then
+                        fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, pc - 1, func_idx))
+                    end
+                    handler(state)
+                    -- Refresh all cached locals from state
+                    sp = state.sp; pc = state.pc; loc = state.locals
+                    code = state.code; block_stack = state.block_stack
+                    block_sp = state.block_sp; running = state.running
+                    memory = state.memory; mem_data = memory.data
+                    mem_len = memory.byte_length; globals = state.globals
+
+                    -- Check call_func (from call_indirect or similar dispatched opcodes)
+                    if state.call_func then
+                        local target_idx = state.call_func
+                        state.call_func = nil
+
+                        local target_def = module.funcs[target_idx]
+                        if not target_def then
+                            fail("Unknown function index: " .. tostring(target_idx))
+                        end
+
+                        local target_type = module.types[target_def.type_idx + 1]
+                        local num_params = #target_type.params
+
+                        local call_args = {}
+                        for i = num_params, 1, -1 do
+                            call_args[i] = stack[sp]; sp = sp - 1
+                        end
+
+                        if target_def.import then
+                            local import_fn = instance.import_funcs[target_idx]
+                            if not import_fn then
+                                fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
+                            end
+
+                            if type(import_fn) == "table" and import_fn.blocking then
+                                state.sp = sp; state.pc = pc; state.locals = loc
+                                state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                                local handler_result = import_fn.handler(unpack(call_args))
+                                exec.waiting_input = true
+                                exec.blocking_return_arity = #target_type.results
+                                exec.state = state; exec.call_stack = call_stack
+                                exec.call_sp = call_sp; exec.func_idx = func_idx
+                                exec._blocking_result = handler_result
+                                return
+                            end
+
+                            local result = import_fn(unpack(call_args))
+                            if #target_type.results > 0 and result ~= nil then
+                                sp = sp + 1; stack[sp] = result
+                            end
+                            mem_len = memory.byte_length
+                        else
+                            call_sp = call_sp + 1
+                            if call_sp > 1000 then fail("call stack exhaustion") end
+                            call_stack[call_sp] = {
+                                locals = loc,
+                                pc = pc,
+                                code = code,
+                                block_stack = block_stack,
+                                block_sp = block_sp,
+                                stack_base = sp,
+                                return_arity = #target_type.results,
+                                func_idx = func_idx,
+                            }
+
+                            func_idx = target_idx
+                            loc = {}
+                            for i = 1, num_params do
+                                loc[i - 1] = call_args[i]
+                            end
+                            local new_local_offset = num_params
+                            for _, decl in ipairs(target_def.code.locals) do
+                                local def_val = default_value(decl.type)
+                                for _ = 1, decl.count do
+                                    loc[new_local_offset] = def_val
+                                    new_local_offset = new_local_offset + 1
+                                end
+                            end
+
+                            pc = 1
+                            code = target_def.code.code
+                            block_stack = {}
+                            block_sp = 1
+                            block_stack[1] = {
+                                opcode = 0x02,
+                                arity = #target_type.results,
+                                stack_height = sp,
+                                continuation_pc = nil,
+                            }
+                        end
                     end
                 end
-            end
+            end -- while running
 
-            -- Function ended
+            -- Function ended (running became false)
             if call_sp > 0 then
                 -- Restore caller frame
                 local frame = call_stack[call_sp]
@@ -574,39 +1055,38 @@ function Interp.run(instance, max_instructions)
                 local return_arity = frame.return_arity
                 local results = {}
                 for i = return_arity, 1, -1 do
-                    results[i] = op_pop(state)
+                    results[i] = stack[sp]; sp = sp - 1
                 end
 
-                state.sp = frame.stack_base
-                state.locals = frame.locals
-                state.pc = frame.pc
-                state.code = frame.code
-                state.block_stack = frame.block_stack
-                state.block_sp = frame.block_sp
-                state.running = true
-                state.do_return = false
-                state.call_func = nil
+                sp = frame.stack_base
+                loc = frame.locals
+                pc = frame.pc
+                code = frame.code
+                block_stack = frame.block_stack
+                block_sp = frame.block_sp
                 func_idx = frame.func_idx
+                running = true
+                state.running = true
 
                 for i = 1, return_arity do
-                    op_push(state, results[i])
+                    sp = sp + 1; stack[sp] = results[i]
                 end
             else
                 -- Top-level function returned
+                state.sp = sp; state.pc = pc; state.locals = loc
+                state.code = code; state.block_stack = block_stack
+                state.block_sp = block_sp; state.memory = memory
+                state.globals = globals
+                exec.call_stack = call_stack
+                exec.call_sp = call_sp; exec.func_idx = func_idx
                 exec.finished = true
-                exec.state = state
-                exec.call_sp = call_sp
-                exec.func_idx = func_idx
                 return -- exits pcall
             end
-        end
-    end)
+        end -- while true
+    end) -- pcall
 
-    -- Save state
+    -- State was flushed inside pcall before each return point
     exec.state = state
-    exec.call_stack = call_stack
-    exec.call_sp = call_sp
-    exec.func_idx = func_idx
 
     if not ok then
         exec.finished = true
@@ -628,11 +1108,14 @@ function Interp.run(instance, max_instructions)
 
     if exec.finished then
         -- Collect results from stack
+        local st_sp = state.sp
+        local st_stack = state.stack
         local num_results = #exec.top_type_info.results
         local results = {}
         for i = num_results, 1, -1 do
-            results[i] = op_pop(state)
+            results[i] = st_stack[st_sp]; st_sp = st_sp - 1
         end
+        state.sp = st_sp
         return {status = "finished", results = results}
     end
 
