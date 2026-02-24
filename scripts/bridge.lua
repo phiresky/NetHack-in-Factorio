@@ -54,8 +54,8 @@ function Bridge.create_imports(memory_ref, instance_ref)
 
   -- Immediate imports (execute and continue)
 
-  imports["env.host_print_glyph"] = function(x, y, ch, color, special)
-    Display.print_glyph(x, y, ch, color, special)
+  imports["env.host_print_glyph"] = function(x, y, tile_idx, ch, color, special)
+    Display.print_glyph(x, y, tile_idx, ch, color, special)
   end
 
   imports["env.host_putstr"] = function(win, attr, str_ptr, len)
@@ -182,9 +182,22 @@ function Bridge.create_imports(memory_ref, instance_ref)
       resp = Bridge.read_string_len(memory, resp_ptr, rlen)
     end
     Gui.add_message(query, 0)
-    -- Store pending yn state so the GUI knows what to show when nhgetch blocks
     if not storage.nh_bridge then storage.nh_bridge = {} end
-    storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
+
+    if resp ~= "" then
+      -- Specific valid responses (y/n/q etc.) — show yn prompt dialog
+      storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
+    elseif query:match("%[.*%?.*%]") then
+      -- Inventory-style prompt with no resp restriction (getobj passes resp=NULL).
+      -- Auto-feed '?' to trigger NetHack's built-in inventory menu,
+      -- which provides a proper item-name selection UI via select_menu.
+      local main_state = storage.nh_main
+      if main_state then
+        main_state.input_queue[#main_state.input_queue + 1] = string.byte("?")
+      end
+    end
+    -- Otherwise (empty resp, no brackets): no pending_yn set,
+    -- nhgetch will be treated as regular getch.
   end
 
   -- NON-BLOCKING: getlin sets up a text prompt, nhgetch blocks for each character

@@ -15,32 +15,34 @@ local function inp(name, key, consuming)
 end
 
 -- Inventory / equipment management
-inp("nh-inventory",   "I")
-inp("nh-eat",         "E")
-inp("nh-drop",        "D")
-inp("nh-wield",       "W")
-inp("nh-wear",        "SHIFT + W")
-inp("nh-takeoff",     "SHIFT + T")
-inp("nh-puton",       "SHIFT + P")
-inp("nh-remove",      "SHIFT + R")
+-- All letter commands use ALT+ to avoid conflicts with Factorio's WASD movement
+-- and other default keybinds (E=inventory, F=pickup, Q=crafting, R=rotate, etc.)
+inp("nh-inventory",   "ALT + I")
+inp("nh-eat",         "ALT + E")
+inp("nh-drop",        "ALT + D")
+inp("nh-wield",       "ALT + W")
+inp("nh-wear",        "ALT + SHIFT + W")
+inp("nh-takeoff",     "ALT + SHIFT + T")
+inp("nh-puton",       "ALT + SHIFT + P")
+inp("nh-remove",      "ALT + SHIFT + R")
 
 -- Item interaction
 inp("nh-pickup",      "COMMA")
 inp("nh-wait",        "PERIOD")
-inp("nh-search",      "S")
-inp("nh-open",        "O")
-inp("nh-close",       "C")
+inp("nh-search",      "ALT + S")
+inp("nh-open",        "ALT + O")
+inp("nh-close",       "ALT + C")
 
 -- Stairs
 inp("nh-go-up",       "SHIFT + COMMA")    -- <
 inp("nh-go-down",     "SHIFT + PERIOD")   -- >
 
 -- Magic / ranged
-inp("nh-zap",         "Z")
-inp("nh-cast",        "SHIFT + Z")
-inp("nh-fire",        "F")
-inp("nh-throw",       "T")
-inp("nh-apply",       "A")
+inp("nh-zap",         "ALT + Z")
+inp("nh-cast",        "ALT + SHIFT + Z")
+inp("nh-fire",        "ALT + F")
+inp("nh-throw",       "ALT + T")
+inp("nh-apply",       "ALT + A")
 
 -- Information
 inp("nh-look-here",   "SHIFT + ;")        -- :
@@ -48,23 +50,23 @@ inp("nh-far-look",    "SEMICOLON")        -- ;
 inp("nh-whatis",      "SLASH")            -- /
 
 -- Consumables
-inp("nh-quaff",       "Q")
-inp("nh-read",        "R")
+inp("nh-quaff",       "ALT + Q")
+inp("nh-read",        "ALT + R")
 
 -- Special actions
-inp("nh-pay",        "P")
+inp("nh-pay",        "ALT + P")
 inp("nh-kick",       "CONTROL + D")
 inp("nh-pray",       "SHIFT + 3")          -- # (extended command prefix)
-inp("nh-engrave",    "SHIFT + E")
+inp("nh-engrave",    "ALT + SHIFT + E")
 inp("nh-enhance",    "CONTROL + E")
 inp("nh-force",      "CONTROL + F")
-inp("nh-confirm-yes","Y", "none")
-inp("nh-confirm-no", "N", "none")
+inp("nh-confirm-yes","ALT + Y", "none")
+inp("nh-confirm-no", "ALT + N", "none")
 
 -- Menu / prompt responses
 inp("nh-confirm",     "RETURN",  "game-only")
 inp("nh-space",       "SPACE",   "game-only")
-inp("nh-escape",      "ESCAPE",  "game-only")
+inp("nh-escape",      "ESCAPE",  "none")
 
 -- Number keys for menu selection
 inp("nh-key-1",       "1",  "game-only")
@@ -81,7 +83,7 @@ inp("nh-key-0",       "0",  "game-only")
 -- Letter keys for menu selection (a-z)
 for i = 0, 25 do
   local ch = string.char(string.byte("a") + i)
-  inp("nh-menu-" .. ch, string.upper(ch), "none")
+  inp("nh-menu-" .. ch, "ALT + " .. string.upper(ch), "none")
 end
 
 data:extend(inputs)

@@ -49,12 +49,34 @@ cd "$NETHACK_DIR"
 make CC="cc -m32 -std=gnu89" all
 
 # ================================================================
-# Step 3: Cross-compile and generate Lua modules
+# Step 3: Build tilemap to generate glyph2tile[] mapping
+# ================================================================
+
+echo "=== Building tilemap ==="
+
+cd "$NETHACK_DIR"
+cc -m32 -std=gnu89 -Iinclude -o util/tilemap \
+    win/share/tilemap.c src/objects.o src/monst.o src/drawing.o
+cd "$NETHACK_DIR/util"
+./tilemap   # generates ../src/tile.c (SOURCE_TEMPLATE = "../src/%s")
+cd "$NETHACK_DIR"
+
+# ================================================================
+# Step 4: Cross-compile and generate Lua modules
 # ================================================================
 
 echo "=== Cross-compiling to WASM and generating Lua modules ==="
 
 cd "$SCRIPT_DIR"
 make all
+
+# ================================================================
+# Step 5: Convert NetHack tile art to Factorio sprites
+# ================================================================
+
+echo "=== Converting tile art to sprites ==="
+
+cd "$SCRIPT_DIR"
+python3 convert_tiles.py "$NETHACK_DIR"
 
 echo "=== Build complete ==="

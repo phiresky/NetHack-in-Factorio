@@ -1,17 +1,13 @@
 -- NetHack entity prototypes for Factorio 2.0
--- Walls, doors, monsters, items, stairs, and player marker.
+-- Generated programmatically from sprite sheet indices.
+-- Each monster, object, and dungeon feature gets its own unique tile sprite.
+
+local TC = require("scripts.tile_config")
 
 local entities = {}
 
--- Helper: create a simple 1x1 sprite definition
-local function sprite(filename)
-  return {
-    filename = filename,
-    width = 32,
-    height = 32,
-    scale = 0.5,
-  }
-end
+-- Shared icon for all script-placed entities (never shown in GUI)
+local shared_icon = "__nethack-factorio__/graphics/entities/nh-player-marker.png"
 
 -- Helper: common flags for NetHack entities placed by script
 local nh_flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"}
@@ -28,226 +24,97 @@ local wall_collision = {
   },
 }
 
----------------------------------------------------------------------------
--- Walls
----------------------------------------------------------------------------
+-- Sprite sheet paths
+local SHEET_MONSTERS = "__nethack-factorio__/graphics/sheets/nh-monsters.png"
+local SHEET_OBJECTS  = "__nethack-factorio__/graphics/sheets/nh-objects.png"
+local SHEET_OTHER    = "__nethack-factorio__/graphics/sheets/nh-other.png"
 
-entities[#entities + 1] = {
-  type = "simple-entity-with-force",
-  name = "nh-wall-h",
-  icon = "__nethack-factorio__/graphics/entities/nh-wall-h.png",
-  icon_size = 32,
-  flags = nh_flags,
-  collision_box = {{-0.49, -0.49}, {0.49, 0.49}},
-  collision_mask = wall_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  picture = sprite("__nethack-factorio__/graphics/entities/nh-wall-h.png"),
-  render_layer = "object",
-  is_military_target = false,
-}
-
-entities[#entities + 1] = {
-  type = "simple-entity-with-force",
-  name = "nh-wall-v",
-  icon = "__nethack-factorio__/graphics/entities/nh-wall-v.png",
-  icon_size = 32,
-  flags = nh_flags,
-  collision_box = {{-0.49, -0.49}, {0.49, 0.49}},
-  collision_mask = wall_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  picture = sprite("__nethack-factorio__/graphics/entities/nh-wall-v.png"),
-  render_layer = "object",
-  is_military_target = false,
-}
-
----------------------------------------------------------------------------
--- Doors
----------------------------------------------------------------------------
-
-entities[#entities + 1] = {
-  type = "simple-entity-with-force",
-  name = "nh-door-closed",
-  icon = "__nethack-factorio__/graphics/entities/nh-door-closed.png",
-  icon_size = 32,
-  flags = nh_flags,
-  collision_box = {{-0.49, -0.49}, {0.49, 0.49}},
-  collision_mask = wall_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  picture = sprite("__nethack-factorio__/graphics/entities/nh-door-closed.png"),
-  render_layer = "object",
-  is_military_target = false,
-}
-
-entities[#entities + 1] = {
-  type = "simple-entity-with-force",
-  name = "nh-door-open",
-  icon = "__nethack-factorio__/graphics/entities/nh-door-open.png",
-  icon_size = 32,
-  flags = nh_flags,
-  collision_box = {{-0.01, -0.01}, {0.01, 0.01}},  -- effectively no collision
-  collision_mask = no_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  picture = sprite("__nethack-factorio__/graphics/entities/nh-door-open.png"),
-  render_layer = "floor",
-  is_military_target = false,
-}
-
----------------------------------------------------------------------------
--- Monsters: per-letter entities (a-z, A-Z)
--- White letter on transparent background, tinted at runtime
----------------------------------------------------------------------------
-
-for i = 0, 25 do
-  local lower = string.char(string.byte("a") + i)
-  local upper = string.char(string.byte("A") + i)
-
-  -- Lowercase monster (e.g. nh-mon-a)
-  entities[#entities + 1] = {
-    type = "simple-entity",
-    name = "nh-mon-" .. lower,
-    icon = "__nethack-factorio__/graphics/entities/nh-mon-" .. lower .. ".png",
-    icon_size = 32,
-    flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
-    collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-    collision_mask = no_collision,
-    selection_box = {{-0.4, -0.4}, {0.4, 0.4}},
-    pictures = {
-      {
-        filename = "__nethack-factorio__/graphics/entities/nh-mon-" .. lower .. ".png",
-        width = 32,
-        height = 32,
-        scale = 0.5,
-      },
-    },
-    render_layer = "object",
+-- Helper: create a sprite referencing a region of a sprite sheet
+local function sheet_sprite(sheet_path, idx, cols)
+  cols = cols or TC.sheet_cols
+  return {
+    filename = sheet_path,
+    width = 32,
+    height = 32,
+    x = (idx % cols) * 32,
+    y = math.floor(idx / cols) * 32,
+    scale = 1.0,
   }
+end
 
-  -- Uppercase monster (e.g. nh-mon-upper-A)
+-- Build lookup sets for wall and door indices
+local wall_set = {}
+for _, idx in ipairs(TC.wall_indices) do wall_set[idx] = true end
+local door_closed_set = {}
+for _, idx in ipairs(TC.door_closed_indices) do door_closed_set[idx] = true end
+local door_open_set = {}
+for _, idx in ipairs(TC.door_open_indices) do door_open_set[idx] = true end
+
+---------------------------------------------------------------------------
+-- Monster entities (nh-mon-0 through nh-mon-{n_monsters-1})
+---------------------------------------------------------------------------
+
+for i = 0, TC.n_monsters - 1 do
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = "nh-mon-upper-" .. upper,
-    icon = "__nethack-factorio__/graphics/entities/nh-mon-upper-" .. upper .. ".png",
+    name = "nh-mon-" .. i,
+    icon = shared_icon,
     icon_size = 32,
-    flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
+    flags = nh_flags,
     collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
     collision_mask = no_collision,
     selection_box = {{-0.4, -0.4}, {0.4, 0.4}},
-    pictures = {
-      {
-        filename = "__nethack-factorio__/graphics/entities/nh-mon-upper-" .. upper .. ".png",
-        width = 32,
-        height = 32,
-        scale = 0.5,
-      },
-    },
+    pictures = { sheet_sprite(SHEET_MONSTERS, i) },
     render_layer = "object",
   }
 end
 
 ---------------------------------------------------------------------------
--- Special monster characters (@, &, ;, :, ', ~, ], generic)
+-- Object entities (nh-obj-0 through nh-obj-{n_objects-1})
 ---------------------------------------------------------------------------
 
-local special_monsters = {
-  {name = "nh-mon-at",      char = "@"},
-  {name = "nh-mon-amp",     char = "&"},
-  {name = "nh-mon-semi",    char = ";"},
-  {name = "nh-mon-colon",   char = ":"},
-  {name = "nh-mon-apos",    char = "'"},
-  {name = "nh-mon-tilde",   char = "~"},
-  {name = "nh-mon-bracket", char = "]"},
-  {name = "nh-mon-generic", char = "?"},
-}
-
-for _, mon in ipairs(special_monsters) do
+for i = 0, TC.n_objects - 1 do
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = mon.name,
-    icon = "__nethack-factorio__/graphics/entities/nh-mon-generic.png",
+    name = "nh-obj-" .. i,
+    icon = shared_icon,
     icon_size = 32,
-    flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
+    flags = nh_flags,
     collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
     collision_mask = no_collision,
-    selection_box = {{-0.4, -0.4}, {0.4, 0.4}},
-    pictures = {
-      {
-        filename = "__nethack-factorio__/graphics/entities/nh-mon-generic.png",
-        width = 32,
-        height = 32,
-        scale = 0.5,
-      },
-    },
-    render_layer = "object",
+    selection_box = {{-0.3, -0.3}, {0.3, 0.3}},
+    pictures = { sheet_sprite(SHEET_OBJECTS, i) },
+    render_layer = "lower-object",
   }
 end
 
 ---------------------------------------------------------------------------
--- Generic item entity
+-- Dungeon feature entities (nh-other-0 through nh-other-{n_other-1})
+-- Walls get collision; closed doors get collision; everything else doesn't.
 ---------------------------------------------------------------------------
 
-entities[#entities + 1] = {
-  type = "simple-entity",
-  name = "nh-item",
-  icon = "__nethack-factorio__/graphics/entities/nh-item.png",
-  icon_size = 32,
-  flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
-  collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-  collision_mask = no_collision,
-  selection_box = {{-0.3, -0.3}, {0.3, 0.3}},
-  pictures = {
-    {
-      filename = "__nethack-factorio__/graphics/entities/nh-item.png",
-      width = 32,
-      height = 32,
-      scale = 0.5,
-    },
-  },
-  render_layer = "lower-object",
-}
+for i = 0, TC.n_other - 1 do
+  local has_collision = wall_set[i] or door_closed_set[i]
+  local layer = "object"
+  if not has_collision and not door_open_set[i] then
+    layer = "floor"
+  end
 
----------------------------------------------------------------------------
--- Stair markers
----------------------------------------------------------------------------
-
-entities[#entities + 1] = {
-  type = "simple-entity",
-  name = "nh-stairs-up",
-  icon = "__nethack-factorio__/graphics/entities/nh-stairs-up.png",
-  icon_size = 32,
-  flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
-  collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-  collision_mask = no_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  pictures = {
-    {
-      filename = "__nethack-factorio__/graphics/entities/nh-stairs-up.png",
-      width = 32,
-      height = 32,
-      scale = 0.5,
-    },
-  },
-  render_layer = "floor",
-}
-
-entities[#entities + 1] = {
-  type = "simple-entity",
-  name = "nh-stairs-down",
-  icon = "__nethack-factorio__/graphics/entities/nh-stairs-down.png",
-  icon_size = 32,
-  flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"},
-  collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-  collision_mask = no_collision,
-  selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
-  pictures = {
-    {
-      filename = "__nethack-factorio__/graphics/entities/nh-stairs-down.png",
-      width = 32,
-      height = 32,
-      scale = 0.5,
-    },
-  },
-  render_layer = "floor",
-}
+  entities[#entities + 1] = {
+    type = has_collision and "simple-entity-with-force" or "simple-entity",
+    name = "nh-other-" .. i,
+    icon = shared_icon,
+    icon_size = 32,
+    flags = nh_flags,
+    collision_box = has_collision and {{-0.49, -0.49}, {0.49, 0.49}} or {{-0.01, -0.01}, {0.01, 0.01}},
+    collision_mask = has_collision and wall_collision or no_collision,
+    selection_box = {{-0.5, -0.5}, {0.5, 0.5}},
+    picture = has_collision and sheet_sprite(SHEET_OTHER, i) or nil,
+    pictures = (not has_collision) and { sheet_sprite(SHEET_OTHER, i) } or nil,
+    render_layer = layer,
+    is_military_target = has_collision and false or nil,
+  }
+end
 
 ---------------------------------------------------------------------------
 -- Player marker (invisible tracker for where NH thinks @ is)

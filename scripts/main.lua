@@ -13,10 +13,9 @@ local Display = require("scripts.display")
 local Input = require("scripts.input")
 local Gui = require("scripts.gui")
 local Bridge = require("scripts.bridge")
-
--- These will be loaded when the game starts
-local WasmInit   -- scripts.wasm.init
-local WasmInterp -- scripts.wasm.interp
+local WasmInit = require("scripts.wasm.init")
+local WasmInterp = require("scripts.wasm.interp")
+local wasm_data_module = require("scripts.nethack_wasm")
 
 local M = {}
 
@@ -54,18 +53,8 @@ local function init_modules()
   end
 end
 
--- Load WASM interpreter modules (called at load time)
-local function load_wasm_modules()
-  WasmInit = require("scripts.wasm.init")
-  WasmInterp = require("scripts.wasm.interp")
-end
-
 -- Load and instantiate the WASM NetHack module
 local function load_wasm_nethack()
-  local wasm_data_module = require("scripts.nethack_wasm")
-
-  load_wasm_modules()
-
   -- Parse the WASM binary
   local module = WasmInit.parse(wasm_data_module.data)
 
@@ -229,6 +218,7 @@ local function start_nethack(player)
 
   -- Run until we hit nhgetch (waiting for first input)
   run_and_process()
+  update_player_position()
 end
 
 ---------------------------------------------------------------------------
@@ -450,6 +440,7 @@ local function on_tick(event)
   -- Continue running if not waiting for input (e.g., level generation)
   if state.running and not state.awaiting_input then
     run_and_process(MAX_INSTRUCTIONS_PER_TICK)
+    update_player_position()
   end
 end
 
@@ -462,13 +453,9 @@ script.on_init(function()
 end)
 
 script.on_load(function()
-  -- Re-require WASM modules
-  local ok, err = pcall(load_wasm_modules)
-  if not ok then
-    log("Failed to load WASM modules: " .. tostring(err))
-  end
-  -- Note: WASM instance must be rebuilt from serialized memory on load
-  -- This is a known limitation - save/load will restart the game
+  -- WASM modules are loaded at require time (top of file).
+  -- Note: WASM instance must be rebuilt from serialized memory on load.
+  -- This is a known limitation - save/load will restart the game.
 end)
 
 script.on_configuration_changed(function()

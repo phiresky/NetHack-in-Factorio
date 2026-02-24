@@ -22,7 +22,8 @@
  * ================================================================ */
 
 extern int host_nhgetch(void);
-extern void host_print_glyph(int x, int y, int ch, int color, int special);
+extern short glyph2tile[];
+extern void host_print_glyph(int x, int y, int tile_idx, int ch, int color, int special);
 extern void host_putstr(int win_type, int attr, const char *str, int len);
 extern void host_raw_print(const char *str, int len);
 extern void host_status_update(int idx, const char *val, int len,
@@ -429,7 +430,8 @@ int bkglyph UNUSED;
     unsigned special;
 
     (void) mapglyph(glyph, &ch, &color, &special, x, y, 0);
-    host_print_glyph((int) x, (int) y, ch, color, (int) special);
+    host_print_glyph((int) x, (int) y, (int) glyph2tile[glyph],
+                     ch, color, (int) special);
 }
 
 static void

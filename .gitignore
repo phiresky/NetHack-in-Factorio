@@ -12,6 +12,8 @@ build/nethack.js
 # Generated files
 scripts/nethack_wasm.lua
 scripts/nethack_data.lua
+scripts/tile_config.lua
+graphics/sheets/
 
 # Lua artifacts
 *.luac
