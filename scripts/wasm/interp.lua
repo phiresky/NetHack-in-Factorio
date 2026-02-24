@@ -114,7 +114,8 @@ function Interp.instantiate(module, imports)
         module = module,
         memory = nil,
         globals = {},
-        table = {},
+        tables = {},            -- tables[0], tables[1], ... (0-indexed)
+        table_sizes = {},       -- table_sizes[0], table_sizes[1], ...
         import_funcs = {},      -- func_idx -> lua function or {blocking=true, handler=fn}
         data_segments_raw = {},
         element_segments_raw = {},
@@ -202,27 +203,35 @@ function Interp.instantiate(module, imports)
         ::continue_data::
     end
 
-    -- Initialize table
-    instance.table_size = 0
-    if #module.tables > 0 then
-        local tbl_def = module.tables[1]
-        instance.table_size = tbl_def.limits.initial or 0
+    -- Initialize tables (imported + module-defined)
+    local table_count = 0
+    for _, imp in ipairs(module.imports) do
+        if imp.kind == WasmParser.EXT_TABLE then
+            instance.tables[table_count] = {}
+            instance.table_sizes[table_count] = imp.desc.limits.initial or 0
+            table_count = table_count + 1
+        end
+    end
+    for _, tbl_def in ipairs(module.tables) do
+        instance.tables[table_count] = {}
+        instance.table_sizes[table_count] = tbl_def.limits.initial or 0
+        table_count = table_count + 1
     end
 
     -- Initialize element segments
     for i, seg in ipairs(module.element_segments) do
-        local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
-        if type(offset) == "number" then
-            -- Bounds check against table size
-            local tbl_size = 0
-            if #module.tables > 0 then
-                tbl_size = module.tables[1].limits.initial or 0
-            end
-            if offset + #seg.func_indices > tbl_size or offset < 0 then
-                fail("out of bounds table access")
-            end
-            for j, fidx in ipairs(seg.func_indices) do
-                instance.table[offset + j - 1] = fidx
+        if not seg.passive and not seg.declarative then
+            local tbl_idx = seg.table_idx or 0
+            local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
+            if type(offset) == "number" then
+                local tbl_size = instance.table_sizes[tbl_idx] or 0
+                if offset + #seg.func_indices > tbl_size or offset < 0 then
+                    fail("out of bounds table access")
+                end
+                local tbl = instance.tables[tbl_idx]
+                for j, fidx in ipairs(seg.func_indices) do
+                    tbl[offset + j - 1] = fidx
+                end
             end
         end
         instance.element_segments_raw[i] = seg.func_indices
@@ -246,7 +255,7 @@ function Interp.instantiate(module, imports)
                 set = function(v) instance.globals[exp.index] = v end,
             }
         elseif exp.kind == WasmParser.EXT_TABLE then
-            instance.exports[exp.name] = instance.table
+            instance.exports[exp.name] = instance.tables[exp.index] or instance.tables[0]
         end
     end
 

@@ -115,7 +115,16 @@ build/run_spec_tests.lua  — Spec test runner (with JSON parser)
 - **Lua upvalue ordering**: In Lua, local variables must be defined before functions
   that reference them as upvalues. A function defined at line 70 cannot see a local
   defined at line 140 — the upvalue will be nil.
+- **Multiple tables**: The interpreter must support multiple tables (not just one).
+  `instance.tables[idx]` / `instance.table_sizes[idx]` are 0-indexed. call_indirect
+  uses the table_idx operand to select which table. Element segments target specific
+  tables via `seg.table_idx`.
+- **Element section flags**: Post-MVP element sections use a flags byte (not table_idx)
+  as the first field. Flags 0 = active/table 0, 1 = passive, 2 = active/explicit table,
+  3 = declarative. The data section parser already handled this correctly.
+- **i64→f32 double rounding**: Converting i64→f64→f32 causes double rounding when the
+  i64 has >53 significant bits. Must convert i64→f32 directly by extracting mantissa,
+  guard, and sticky bits from the {lo, hi} pair and applying round-to-nearest-even.
 
-## Known Issues / TODO (15 remaining spec test failures)
-- **call_indirect (7)**: Table element handling edge cases
-- **conversions (8)**: i64→f32 rounding loses precision through f64 intermediary
+## Known Issues / TODO
+- All 9944 spec tests pass (0 failures)

@@ -547,6 +547,74 @@ local function i64_to_f64_s(v)
     return v[2] * 4294967296 + v[1]
 end
 
+-- Direct i64 to f32 conversion, avoiding double-rounding through f64.
+-- When i64 has >53 significant bits, the f64 intermediate loses precision
+-- and f32_trunc(f64) can give a different result than direct i64→f32 rounding.
+local function i64_to_f32_u(v)
+    local lo, hi = v[1], v[2]
+    if hi == 0 then return f32_trunc(lo) end
+    -- Find MSB position in hi (0-indexed)
+    local msb_hi = 0
+    local tmp = hi
+    if tmp >= 65536 then msb_hi = msb_hi + 16; tmp = bit32.rshift(tmp, 16) end
+    if tmp >= 256 then msb_hi = msb_hi + 8; tmp = bit32.rshift(tmp, 8) end
+    if tmp >= 16 then msb_hi = msb_hi + 4; tmp = bit32.rshift(tmp, 4) end
+    if tmp >= 4 then msb_hi = msb_hi + 2; tmp = bit32.rshift(tmp, 2) end
+    if tmp >= 2 then msb_hi = msb_hi + 1 end
+    local msb = 32 + msb_hi  -- MSB position in the full 64-bit value
+    local shift = msb - 23   -- bits to shift right to get 24-bit mantissa
+    -- Extract 24-bit mantissa
+    local mantissa
+    if shift >= 32 then
+        mantissa = bit32.rshift(hi, shift - 32)
+    else
+        mantissa = bit32.bor(bit32.rshift(lo, shift), bit32.lshift(hi, 32 - shift))
+    end
+    mantissa = bit32.band(mantissa, 0xFFFFFF)
+    -- Guard bit (bit just below mantissa)
+    local guard_pos = shift - 1
+    local guard
+    if guard_pos >= 32 then
+        guard = bit32.band(bit32.rshift(hi, guard_pos - 32), 1)
+    else
+        guard = bit32.band(bit32.rshift(lo, guard_pos), 1)
+    end
+    -- Sticky bit (OR of all bits below guard)
+    local sticky = 0
+    if guard_pos > 32 then
+        if lo ~= 0 then sticky = 1 end
+        if sticky == 0 then
+            local hi_mask = bit32.lshift(1, guard_pos - 32) - 1
+            if bit32.band(hi, hi_mask) ~= 0 then sticky = 1 end
+        end
+    elseif guard_pos == 32 then
+        if lo ~= 0 then sticky = 1 end
+    elseif guard_pos > 0 then
+        local lo_mask = bit32.lshift(1, guard_pos) - 1
+        if bit32.band(lo, lo_mask) ~= 0 then sticky = 1 end
+    end
+    -- Round to nearest even
+    if guard == 1 then
+        if sticky == 1 or bit32.band(mantissa, 1) == 1 then
+            mantissa = mantissa + 1
+            if mantissa > 0xFFFFFF then
+                mantissa = bit32.rshift(mantissa, 1)
+                msb = msb + 1
+            end
+        end
+    end
+    local result = math.ldexp(mantissa, msb - 23)
+    if result > 3.4028234663852886e+38 then return math_huge end
+    return result
+end
+
+local function i64_to_f32_s(v)
+    if i64_is_neg(v) then
+        return -i64_to_f32_u(i64_neg(v))
+    end
+    return i64_to_f32_u(v)
+end
+
 -- Convert f64 to i64
 local function f64_to_i64_u(v)
     if v < 0 or v ~= v then return {0, 0} end
@@ -1132,10 +1200,10 @@ end
 -- 0x11: call_indirect
 dispatch[0x11] = function(state)
     local type_idx = read_leb128_u(state)
-    local _table_idx = read_leb128_u(state) -- reserved, always 0
+    local table_idx = read_leb128_u(state)
     local elem_idx = pop(state)
-    local tbl = state.instance.table
-    if elem_idx < 0 or elem_idx >= (state.instance.table_size or 0) then
+    local tbl = state.instance.tables[table_idx]
+    if elem_idx < 0 or elem_idx >= (state.instance.table_sizes[table_idx] or 0) then
         fail("undefined element")
     end
     if not tbl[elem_idx] then
@@ -2132,12 +2200,12 @@ end
 
 -- 0xB4: f32.convert_i64_s
 dispatch[0xB4] = function(state)
-    push(state, f32_trunc(i64_to_f64_s(pop(state))))
+    push(state, i64_to_f32_s(pop(state)))
 end
 
 -- 0xB5: f32.convert_i64_u
 dispatch[0xB5] = function(state)
-    push(state, f32_trunc(i64_to_f64_u(pop(state))))
+    push(state, i64_to_f32_u(pop(state)))
 end
 
 -- 0xB6: f32.demote_f64
@@ -2341,7 +2409,7 @@ dispatch[0xFC] = function(state)
         local s = pop(state)
         local d = pop(state)
         local seg = state.instance.element_segments_raw and state.instance.element_segments_raw[seg_idx + 1]
-        local tbl = state.instance.table
+        local tbl = state.instance.tables[tbl_idx]
         if seg and tbl then
             for i = 0, n - 1 do
                 tbl[d + i] = seg[s + i + 1]
@@ -2353,20 +2421,21 @@ dispatch[0xFC] = function(state)
             state.instance.element_segments_raw[seg_idx + 1] = nil
         end
     elseif sub_op == 14 then -- table.copy
-        local dst_tbl = read_leb128_u(state)
-        local src_tbl = read_leb128_u(state)
+        local dst_idx = read_leb128_u(state)
+        local src_idx = read_leb128_u(state)
         local n = pop(state)
         local s = pop(state)
         local d = pop(state)
-        local tbl = state.instance.table
-        if tbl then
+        local dst_tbl = state.instance.tables[dst_idx]
+        local src_tbl = state.instance.tables[src_idx]
+        if dst_tbl and src_tbl then
             if d <= s then
                 for i = 0, n - 1 do
-                    tbl[d + i] = tbl[s + i]
+                    dst_tbl[d + i] = src_tbl[s + i]
                 end
             else
                 for i = n - 1, 0, -1 do
-                    tbl[d + i] = tbl[s + i]
+                    dst_tbl[d + i] = src_tbl[s + i]
                 end
             end
         end
@@ -2377,21 +2446,14 @@ dispatch[0xFC] = function(state)
         -- Simplified: just return -1 (failure) for now
         push(state, 0xFFFFFFFF)
     elseif sub_op == 16 then -- table.size
-        read_leb128_u(state) -- table idx
-        local tbl = state.instance.table
-        local size = 0
-        if tbl then
-            for k, _ in pairs(tbl) do
-                if k >= size then size = k + 1 end
-            end
-        end
-        push(state, size)
+        local tbl_idx = read_leb128_u(state)
+        push(state, state.instance.table_sizes[tbl_idx] or 0)
     elseif sub_op == 17 then -- table.fill
-        read_leb128_u(state) -- table idx
+        local tbl_idx = read_leb128_u(state)
         local n = pop(state)
         local val = pop(state)
         local d = pop(state)
-        local tbl = state.instance.table
+        local tbl = state.instance.tables[tbl_idx]
         if tbl then
             for i = 0, n - 1 do
                 tbl[d + i] = val
@@ -2402,6 +2464,7 @@ dispatch[0xFC] = function(state)
     end
 end
 
+Opcodes.nan_mt = nan_mt
 Opcodes.dispatch = dispatch
 Opcodes.read_byte = read_byte
 Opcodes.read_leb128_u = read_leb128_u

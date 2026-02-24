@@ -336,24 +336,69 @@ function Parser:parse_start_section(size)
     return self:read_leb128_u()
 end
 
--- Parse element section
+-- Parse element section (handles post-MVP flags encoding)
 function Parser:parse_element_section(size)
     local count = self:read_leb128_u()
     local elements = {}
     for i = 1, count do
-        local table_idx = self:read_leb128_u()
-        local offset_val, offset_op = self:read_init_expr()
-        local num_elems = self:read_leb128_u()
-        local func_indices = {}
-        for j = 1, num_elems do
-            func_indices[j] = self:read_leb128_u()
+        local flags = self:read_leb128_u()
+        if flags == 0 then
+            -- Active segment, implicit table 0
+            local offset_val, offset_op = self:read_init_expr()
+            local num_elems = self:read_leb128_u()
+            local func_indices = {}
+            for j = 1, num_elems do
+                func_indices[j] = self:read_leb128_u()
+            end
+            elements[i] = {
+                table_idx = 0,
+                offset = offset_val,
+                offset_opcode = offset_op,
+                func_indices = func_indices,
+            }
+        elseif flags == 1 then
+            -- Passive segment
+            local _elemkind = self:read_byte() -- 0x00 = funcref
+            local num_elems = self:read_leb128_u()
+            local func_indices = {}
+            for j = 1, num_elems do
+                func_indices[j] = self:read_leb128_u()
+            end
+            elements[i] = {
+                passive = true,
+                func_indices = func_indices,
+            }
+        elseif flags == 2 then
+            -- Active segment with explicit table index
+            local table_idx = self:read_leb128_u()
+            local offset_val, offset_op = self:read_init_expr()
+            local _elemkind = self:read_byte() -- 0x00 = funcref
+            local num_elems = self:read_leb128_u()
+            local func_indices = {}
+            for j = 1, num_elems do
+                func_indices[j] = self:read_leb128_u()
+            end
+            elements[i] = {
+                table_idx = table_idx,
+                offset = offset_val,
+                offset_opcode = offset_op,
+                func_indices = func_indices,
+            }
+        elseif flags == 3 then
+            -- Declarative segment
+            local _elemkind = self:read_byte()
+            local num_elems = self:read_leb128_u()
+            local func_indices = {}
+            for j = 1, num_elems do
+                func_indices[j] = self:read_leb128_u()
+            end
+            elements[i] = {
+                declarative = true,
+                func_indices = func_indices,
+            }
+        else
+            fail("unsupported element segment flags: " .. flags)
         end
-        elements[i] = {
-            table_idx = table_idx,
-            offset = offset_val,
-            offset_opcode = offset_op,
-            func_indices = func_indices,
-        }
     end
     return elements
 end
