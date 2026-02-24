@@ -112,13 +112,44 @@ local function read_memarg(state)
 end
 
 -- Read block type from code
+-- Returns (n_params, n_results)
+-- In multi-value extension, blocktype is a signed LEB128:
+--   -64 (0x40) = void, negative = valtype (1 result), non-negative = type index
 local function read_blocktype(state)
-    local b = read_byte(state)
-    if b == 0x40 then
-        return 0 -- void, 0 results
+    -- Read as signed LEB128 to handle both single-byte and multi-byte type indices
+    local result = 0
+    local shift = 0
+    local code = state.code
+    local pc = state.pc
+    local b
+    while true do
+        b = string.byte(code, pc)
+        pc = pc + 1
+        result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
+        shift = shift + 7
+        if bit32.band(b, 0x80) == 0 then break end
     end
-    -- It's a value type, meaning 1 result
-    return 1
+    state.pc = pc
+    -- Sign extend
+    if shift < 32 and bit32.btest(b, 0x40) then
+        result = bit32.bor(result, bit32.lshift(-1, shift))
+    end
+    if bit32.btest(result, 0x80000000) then
+        result = result - 0x100000000
+    end
+
+    if result == -64 then
+        return 0, 0 -- void
+    elseif result < 0 then
+        return 0, 1 -- valtype: 0 params, 1 result
+    else
+        -- Type index: look up params/results from module types
+        local type_info = state.module and state.module.types[result + 1]
+        if type_info then
+            return #type_info.params, #type_info.results
+        end
+        return 0, 1 -- fallback
+    end
 end
 
 -- Stack push/pop helpers (inlined for performance in hot paths)
@@ -707,42 +738,42 @@ dispatch[0x01] = function(state) end
 
 -- 0x02: block
 dispatch[0x02] = function(state)
-    local arity = read_blocktype(state)
+    local n_params, n_results = read_blocktype(state)
     local bsp = state.block_sp + 1
     state.block_sp = bsp
     state.block_stack[bsp] = {
         opcode = 0x02,
-        arity = arity,
-        stack_height = state.sp, -- blocks don't consume params in MVP
-        continuation_pc = nil, -- filled in when we hit 'end'
+        arity = n_results, -- branch arity = results for block
+        stack_height = state.sp - n_params,
+        continuation_pc = nil,
     }
 end
 
 -- 0x03: loop
 dispatch[0x03] = function(state)
-    local arity = read_blocktype(state)
+    local n_params, n_results = read_blocktype(state)
     local bsp = state.block_sp + 1
     state.block_sp = bsp
     state.block_stack[bsp] = {
         opcode = 0x03,
-        arity = 0, -- branch arity: loops branch to start, so 0 params in MVP
-        result_arity = arity, -- result arity: used when falling through end
-        stack_height = state.sp,
-        continuation_pc = state.pc, -- loop jumps back to just after the loop opcode
+        arity = n_params, -- branch arity: loops branch to start, passing params
+        result_arity = n_results, -- result arity: used when falling through end
+        stack_height = state.sp - n_params,
+        continuation_pc = state.pc,
     }
 end
 
 -- 0x04: if
 dispatch[0x04] = function(state)
-    local arity = read_blocktype(state)
+    local n_params, n_results = read_blocktype(state)
     local cond = pop(state)
     local bsp = state.block_sp + 1
     state.block_sp = bsp
     state.block_stack[bsp] = {
         opcode = 0x04,
-        arity = arity,
-        stack_height = state.sp,
-        continuation_pc = nil, -- filled later
+        arity = n_results, -- branch arity = results for if
+        stack_height = state.sp - n_params,
+        continuation_pc = nil,
     }
     if cond == 0 then
         -- Skip to else or end
@@ -793,11 +824,14 @@ dispatch[0x05] = function(state)
     local block = state.block_stack[bsp]
     state.block_sp = bsp - 1
     -- Keep result values on stack
-    local results = block.result_arity or block.arity
-    if results > 0 then
-        local val = state.stack[state.sp]
-        state.sp = block.stack_height + results
-        state.stack[state.sp] = val
+    local n_results = block.result_arity or block.arity
+    if n_results > 0 then
+        local sp = state.sp
+        local base = block.stack_height
+        for i = n_results - 1, 0, -1 do
+            state.stack[base + 1 + i] = state.stack[sp - (n_results - 1 - i)]
+        end
+        state.sp = base + n_results
     else
         state.sp = block.stack_height
     end
@@ -815,11 +849,15 @@ dispatch[0x0B] = function(state)
     state.block_sp = bsp - 1
     -- Restore stack to block height + result values
     -- For loops, result_arity differs from branch arity
-    local results = block.result_arity or block.arity
-    if results > 0 then
-        local val = state.stack[state.sp]
-        state.sp = block.stack_height + results
-        state.stack[state.sp] = val
+    local n_results = block.result_arity or block.arity
+    if n_results > 0 then
+        local sp = state.sp
+        local base = block.stack_height
+        -- Copy n_results values from top of stack to base
+        for i = n_results - 1, 0, -1 do
+            state.stack[base + 1 + i] = state.stack[sp - (n_results - 1 - i)]
+        end
+        state.sp = base + n_results
     else
         state.sp = block.stack_height
     end
@@ -873,21 +911,31 @@ local function do_branch(state, depth)
     -- Target block is at block_sp - depth
     local target_idx = state.block_sp - depth
     local target_block = state.block_stack[target_idx]
+    local arity = target_block.arity
+    local sp = state.sp
+    local base = target_block.stack_height
 
     if target_block.opcode == 0x03 then
-        -- Loop: branch to start, pop blocks above the loop, keep the loop block
-        state.sp = target_block.stack_height
+        -- Loop: branch to start, pass arity values (loop params)
+        if arity > 0 then
+            for i = arity - 1, 0, -1 do
+                state.stack[base + 1 + i] = state.stack[sp - (arity - 1 - i)]
+            end
+            state.sp = base + arity
+        else
+            state.sp = base
+        end
         state.block_sp = target_idx -- keep the loop block on the stack
         state.pc = target_block.continuation_pc
     else
-        -- Block/if: branch to end, pass arity results
-        local results = target_block.arity
-        if results > 0 then
-            local val = state.stack[state.sp]
-            state.sp = target_block.stack_height + results
-            state.stack[state.sp] = val
+        -- Block/if: branch to end, pass arity values (block results)
+        if arity > 0 then
+            for i = arity - 1, 0, -1 do
+                state.stack[base + 1 + i] = state.stack[sp - (arity - 1 - i)]
+            end
+            state.sp = base + arity
         else
-            state.sp = target_block.stack_height
+            state.sp = base
         end
         state.block_sp = target_idx - 1 -- pop the target block too
 
