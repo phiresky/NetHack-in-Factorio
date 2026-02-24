@@ -97,7 +97,7 @@ fi
 if [ ! -d "$TESTSUITE_DIR" ]; then
     echo "=== Cloning WebAssembly spec test suite ==="
     mkdir -p "$TEST_DIR"
-    git clone --depth 1 https://github.com/ArtificialQualia/wasm-spec-testsuite.git "$TESTSUITE_DIR"
+    git clone --depth 1 https://github.com/WebAssembly/testsuite.git "$TESTSUITE_DIR"
     echo ""
 else
     echo "=== Spec test suite already present ==="
