@@ -11,6 +11,53 @@ local NHW_TEXT    = 5
 -- Maximum message history
 local MAX_MESSAGES = 50
 
+-- Action buttons: groups of NetHack commands shown as clickable buttons
+local ACTION_BUTTONS = {
+  {header = "Move"},
+  {label = "Wait",      key = string.byte(".")},
+  {label = "Search",    key = string.byte("s")},
+  {label = "Up <",      key = string.byte("<")},
+  {label = "Down >",    key = string.byte(">")},
+  {header = "Items"},
+  {label = "Inventory", key = string.byte("i")},
+  {label = "Pickup",    key = string.byte(",")},
+  {label = "Drop",      key = string.byte("d")},
+  {label = "Apply",     key = string.byte("a")},
+  {header = "Equip"},
+  {label = "Wield",     key = string.byte("w")},
+  {label = "Wear",      key = 87},  -- W
+  {label = "Takeoff",   key = 84},  -- T
+  {label = "Put on",    key = 80},  -- P
+  {label = "Remove",    key = 82},  -- R
+  {header = "Combat"},
+  {label = "Fire",      key = string.byte("f")},
+  {label = "Throw",     key = string.byte("t")},
+  {label = "Kick",      key = 4},   -- ^D
+  {label = "Zap",       key = string.byte("z")},
+  {label = "Cast",      key = 90},  -- Z
+  {header = "Use"},
+  {label = "Eat",       key = string.byte("e")},
+  {label = "Quaff",     key = string.byte("q")},
+  {label = "Read",      key = string.byte("r")},
+  {header = "Info"},
+  {label = "Look",      key = string.byte(":")},
+  {label = "Far-look",  key = string.byte(";")},
+  {label = "What here",  key = string.byte("/")},
+  {header = "Other"},
+  {label = "Open",      key = string.byte("o")},
+  {label = "Close",     key = string.byte("c")},
+  {label = "Pay",       key = string.byte("p")},
+  {label = "Pray",      key = 16},  -- ^P (mapped to #pray)
+  {label = "Engrave",   key = 69},  -- E
+  {label = "Enhance",   key = 5},   -- ^E
+  {header = "Prompt"},
+  {label = "Space",     key = string.byte(" ")},
+  {label = "Enter",     key = 13},
+  {label = "Escape",    key = 27},
+  {label = "Yes",       key = string.byte("y")},
+  {label = "No",        key = string.byte("n")},
+}
+
 function Gui.init()
   if not storage.nh_gui then
     storage.nh_gui = {
@@ -135,9 +182,44 @@ function Gui.create_player_gui(player)
     style = "nh_message_label",
   }
 
+  -- Action button panel on the right side
+  local action_frame = screen.add{
+    type = "frame",
+    name = "nh_action_panel",
+    direction = "vertical",
+    style = "nh_action_panel_frame",
+  }
+  action_frame.location = {x = player.display_resolution.width - 140, y = 10}
+
+  local action_scroll = action_frame.add{
+    type = "scroll-pane",
+    name = "nh_action_scroll",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto-and-reserve-space",
+    style = "nh_action_scroll",
+  }
+
+  for _, entry in ipairs(ACTION_BUTTONS) do
+    if entry.header then
+      action_scroll.add{
+        type = "label",
+        caption = entry.header,
+        style = "nh_action_header",
+      }
+    else
+      action_scroll.add{
+        type = "button",
+        name = "nh_action_" .. entry.key,
+        caption = entry.label,
+        style = "nh_action_button",
+      }
+    end
+  end
+
   gui_data.player_frames[player.index] = {
     status_frame = status_frame,
     msg_frame = msg_frame,
+    action_frame = action_frame,
   }
 end
 
@@ -159,6 +241,9 @@ function Gui.destroy_player_gui(player)
   end
   if screen.nh_getlin_frame then
     screen.nh_getlin_frame.destroy()
+  end
+  if screen.nh_action_panel then
+    screen.nh_action_panel.destroy()
   end
 
   gui_data.player_frames[player.index] = nil
@@ -766,6 +851,18 @@ function Gui.putstr(winid, attr, text)
       identifier = 0,
     }
   end
+end
+
+-----------------------------------------------------
+-- Action Button Click Handler
+-----------------------------------------------------
+
+function Gui.handle_action_click(element_name)
+  local key_str = element_name:match("^nh_action_(%d+)$")
+  if key_str then
+    return tonumber(key_str)
+  end
+  return nil
 end
 
 return Gui
