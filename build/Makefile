@@ -188,27 +188,37 @@ FACTORIO_SRC = winfactorio.c sysfactorio.c
 ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC)
 
 # ================================================================
-# Build targets
-#
-# Before running 'make' here, build host tools via the official
-# NetHack build system to generate headers and data files:
-#   cd ../NetHack/sys/unix && bash setup.sh hints/linux-minimal
-#   cd ../NetHack && make all
+# Output paths
 # ================================================================
 
-.PHONY: all clean host-tools gen-data
+SCRIPTS = ../scripts
+WASM_LUA = $(SCRIPTS)/nethack_wasm.lua
+DATA_LUA = $(SCRIPTS)/nethack_data.lua
 
-all: nethack.wasm
+# ================================================================
+# Build targets
+#
+# Prerequisites: host tools must be built first (generates headers,
+# compiled .lev files, dungeon data). Use build_nethack.sh for the
+# full pipeline, or manually:
+#   cd ../NetHack/sys/unix && bash setup.sh hints/linux-minimal
+#   cd ../NetHack && make CC="cc -m32 -std=gnu89" all
+# ================================================================
+
+.PHONY: all clean
+
+all: $(WASM_LUA) $(DATA_LUA)
 
 nethack.wasm: $(ALL_SRC) factorioconf.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(ALL_SRC) -o nethack.wasm
 	@echo "Build complete: nethack.wasm"
 
-# Convert WASM to Lua module for embedding in Factorio mod
-lua: nethack.wasm
-	python3 wasm_to_lua.py nethack.wasm ../scripts/nethack_wasm.lua
-	@echo "Lua module generated: ../scripts/nethack_wasm.lua"
+$(WASM_LUA): nethack.wasm
+	python3 wasm_to_lua.py nethack.wasm $@
+
+$(DATA_LUA): $(wildcard $(NETHACK)/dat/*)
+	python3 embed_data.py $@ $(NETHACK)/dat
 
 clean:
 	rm -f nethack.wasm
-	rm -f ../scripts/nethack_wasm.lua
+	rm -f $(WASM_LUA) $(DATA_LUA)

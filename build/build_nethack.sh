@@ -1,11 +1,10 @@
 #!/bin/bash
 # Build NetHack 3.6.7 for the Factorio WASM interpreter.
 #
-# This script handles the full pipeline:
+# This script bootstraps the build:
 #   1. Clone NetHack 3.6.7 (if not already present)
 #   2. Build native 32-bit host tools (makedefs, lev_comp, dgn_comp)
-#   3. Cross-compile to WASM via clang + wasi-libc
-#   4. Generate Lua data modules for embedding in the Factorio mod
+#   3. Cross-compile to WASM and generate Lua modules (via Makefile)
 #
 # Prerequisites (Arch Linux):
 #   pacman -S clang wasi-libc wasi-compiler-rt lib32-glibc lib32-gcc-libs
@@ -41,7 +40,7 @@ echo "=== Building host tools (makedefs, lev_comp, dgn_comp) ==="
 
 # setup.sh generates Makefiles from the hints file
 cd "$NETHACK_DIR/sys/unix"
-bash setup.sh sys/unix/hints/linux-minimal
+bash setup.sh hints/linux-minimal
 
 # Build with -m32 -std=gnu89 for 32-bit struct layout (matching WASM)
 # and K&R C compatibility. Override CC on CLI so we don't need to patch
@@ -50,31 +49,12 @@ cd "$NETHACK_DIR"
 make CC="cc -m32 -std=gnu89" all
 
 # ================================================================
-# Step 3: Cross-compile to WASM
+# Step 3: Cross-compile and generate Lua modules
 # ================================================================
 
-echo "=== Cross-compiling NetHack to WASM ==="
+echo "=== Cross-compiling to WASM and generating Lua modules ==="
 
 cd "$SCRIPT_DIR"
-make nethack.wasm
-
-# ================================================================
-# Step 4: Generate Lua data modules
-# ================================================================
-
-echo "=== Generating Lua data modules ==="
-
-# Embed WASM binary as Lua module
-python3 "$SCRIPT_DIR/wasm_to_lua.py" \
-    "$SCRIPT_DIR/nethack.wasm" \
-    "$ROOT_DIR/scripts/nethack_wasm.lua"
-
-# Embed data files (compiled .lev, dungeon, help text, etc.)
-python3 "$SCRIPT_DIR/embed_data.py" \
-    "$ROOT_DIR/scripts/nethack_data.lua" \
-    "$NETHACK_DIR/dat"
+make all
 
 echo "=== Build complete ==="
-echo "  WASM binary:  $SCRIPT_DIR/nethack.wasm"
-echo "  WASM as Lua:  $ROOT_DIR/scripts/nethack_wasm.lua"
-echo "  Data as Lua:  $ROOT_DIR/scripts/nethack_data.lua"

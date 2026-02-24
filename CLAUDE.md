@@ -101,6 +101,9 @@ scripts/gui.lua             — Status/messages/menus GUI
 scripts/nethack_data.lua    — Embedded data files (generated, gitignored)
 build/winfactorio.c         — Factorio window port (WASM host imports)
 build/sysfactorio.c         — Platform main + system stubs for WASM
+build/Makefile              — Cross-compile to WASM, generate Lua modules
+build/build_nethack.sh      — Full pipeline: clone, host tools, make all
+build/wasm_to_lua.py        — Converts nethack.wasm to Lua string module
 build/embed_data.py         — Packages NetHack/dat/* into nethack_data.lua
 build/test_instantiate.lua  — End-to-end test: parse+instantiate+run NetHack WASM
 build/test_wasm.lua         — Unit test suite
