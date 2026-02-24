@@ -23,19 +23,11 @@ Runtime:     Player moves tile -> resume state machine -> WASM interpreter execu
 
 ## Building NetHack 3.6.7
 ```bash
-# 1. Build native 32-bit host tools (generates headers + data files)
-cd NetHack/sys/unix && bash setup.sh hints/linux-minimal
-cd ../../ && make all
-
-# 2. Cross-compile to WASM
-cd ../build && TMPDIR=/tmp make
-
-# 3. Generate Lua data modules
-python3 embed_data.py ../scripts/nethack_data.lua ../NetHack/dat
-python3 wasm_to_lua.py nethack.wasm ../scripts/nethack_wasm.lua
+cd build && bash build_nethack.sh
 ```
-**CRITICAL**: Native tools MUST build with `-m32` (set in `hints/linux-minimal`)
-so binary data files (dungeon, .lev) use 32-bit struct layouts matching WASM.
+This clones NetHack 3.6.7, builds 32-bit host tools, cross-compiles to WASM,
+and generates Lua data modules. Native tools use `CC="cc -m32 -std=gnu89"` so
+binary data files (dungeon, .lev) use 32-bit struct layouts matching WASM.
 
 ## Key Constraints
 - **Lua 5.2** (Factorio's embedded Lua). Use `bit32` library, NOT LuaJIT.
@@ -203,7 +195,8 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   Fix: `#include <signal.h>` in `wasi_compat.h`. Also `getuid`/`getgid` must return
   `uid_t`/`gid_t` (not `int`) to match NetHack's `system.h` declarations.
 - **util/Makefile uses $(CC) not $(LINK) for linking**: All link rules in the generated
-  util/Makefile use `$(CC) $(LFLAGS)`, never `$(LINK)`. Set `LFLAGS=-m32` in hints file.
+  util/Makefile use `$(CC) $(LFLAGS)`, never `$(LINK)`. Pass `-m32` via `CC="cc -m32"`
+  on the make command line instead of patching the hints file.
 - **Version check bypass for cross-compilation**: `check_version()` compares
   `VERSION_FEATURES`, `VERSION_SANITY1-3` (struct sizes). These inherently differ
   between 64-bit host and 32-bit WASM. Use `#ifdef FACTORIO_PORT` to only check
@@ -213,9 +206,8 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)
 - **Build toolchain**: Uses `clang --target=wasm32-wasi` with wasi-libc. Requires
   `wasi-libc` and `wasi-compiler-rt` packages. setjmp/longjmp via WASM EH proposal.
-- **Compile**: Host tools first (`cd NetHack/sys/unix && bash setup.sh hints/linux-minimal && cd ../../ && make all`),
-  then `make -C build` produces `nethack.wasm` directly (no JS glue).
-  Data files: `python3 build/embed_data.py scripts/nethack_data.lua NetHack/dat`.
+- **Compile**: `cd build && bash build_nethack.sh` (clones NetHack, builds host tools,
+  cross-compiles to WASM, generates Lua data modules).
 - **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
   and execution state need serialization to `storage` for game save/load to work.
 - **Performance**: NetHack 3.6.7 reaches first input in **1.76M instructions / 4.3s**
