@@ -88,6 +88,7 @@ for _, def in ipairs(tile_defs) do
       material_background = {
         picture = def.image,
         count = 1,
+        size = 512,
         scale = 0.5,
       },
     },
