@@ -7,6 +7,8 @@ local bit32 = bit32
 local Memory = {}
 Memory.__index = Memory
 
+local function fail(msg) error({msg = msg}) end
+
 local PAGE_SIZE = 65536
 local MAX_PAGES = 65536 -- 4GB max (WASM spec limit)
 
@@ -62,7 +64,7 @@ function Memory:store_byte(addr, val)
 end
 
 function Memory:load_i32(addr)
-    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 4 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local align = bit32.band(addr, 3)
     if align == 0 then
         return self.data[bit32.rshift(addr, 2)] or 0
@@ -75,7 +77,7 @@ function Memory:load_i32(addr)
 end
 
 function Memory:store_i32(addr, val)
-    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 4 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     val = bit32.band(val, 0xFFFFFFFF)
     local align = bit32.band(addr, 3)
     if align == 0 then
@@ -89,14 +91,14 @@ function Memory:store_i32(addr, val)
 end
 
 function Memory:load_i16_u(addr)
-    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 2 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local b0 = self:load_byte(addr)
     local b1 = self:load_byte(addr + 1)
     return bit32.bor(b0, bit32.lshift(b1, 8))
 end
 
 function Memory:load_i16_s(addr)
-    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 2 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local b0 = self:load_byte(addr)
     local b1 = self:load_byte(addr + 1)
     local val = bit32.bor(b0, bit32.lshift(b1, 8))
@@ -107,19 +109,19 @@ function Memory:load_i16_s(addr)
 end
 
 function Memory:store_i16(addr, val)
-    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 2 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     val = bit32.band(val, 0xFFFF)
     self:store_byte(addr, bit32.band(val, 0xFF))
     self:store_byte(addr + 1, bit32.band(bit32.rshift(val, 8), 0xFF))
 end
 
 function Memory:load_i8_u(addr)
-    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 1 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     return self:load_byte(addr)
 end
 
 function Memory:load_i8_s(addr)
-    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 1 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local val = self:load_byte(addr)
     if val >= 0x80 then
         val = val - 0x100
@@ -128,20 +130,20 @@ function Memory:load_i8_s(addr)
 end
 
 function Memory:store_i8(addr, val)
-    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 1 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     self:store_byte(addr, bit32.band(val, 0xFF))
 end
 
 -- Load/store for i64 as {lo, hi} pair
 function Memory:load_i64(addr)
-    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 8 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local lo = self:load_i32(addr)
     local hi = self:load_i32(addr + 4)
     return {lo, hi}
 end
 
 function Memory:store_i64(addr, val)
-    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 8 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     if type(val) == "number" then
         self:store_i32(addr, bit32.band(val, 0xFFFFFFFF))
         self:store_i32(addr + 4, 0)
@@ -163,7 +165,18 @@ local math_huge = math.huge
 
 -- Store a Lua number (f64) into memory as IEEE 754 double
 function Memory:store_f64(addr, val)
-    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 8 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
+    -- Handle boxed NaN (preserves bit pattern)
+    if type(val) == "table" then
+        if val.nan64 then
+            self:store_i32(addr, val.nan64[1])
+            self:store_i32(addr + 4, val.nan64[2])
+        else
+            self:store_i32(addr, 0)
+            self:store_i32(addr + 4, 0x7FF80000) -- canonical f64 NaN
+        end
+        return
+    end
     local lo, hi
     if val == 0 then
         if 1 / val < 0 then -- negative zero
@@ -187,7 +200,7 @@ function Memory:store_f64(addr, val)
         exp = exp + 1022
         if exp <= 0 then
             -- Denormalized
-            mant = mant * math_ldexp(1, exp + 51)
+            mant = mant * math_ldexp(1, exp + 52)
             exp = 0
         else
             mant = (mant * 2 - 1) * math_ldexp(1, 52)
@@ -203,7 +216,7 @@ end
 
 -- Load a Lua number (f64) from memory as IEEE 754 double
 function Memory:load_f64(addr)
-    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 8 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local lo = self:load_i32(addr)
     local hi = self:load_i32(addr + 4)
     local sign = bit32.btest(hi, 0x80000000) and -1 or 1
@@ -229,7 +242,12 @@ end
 
 -- f32 store/load using IEEE 754 single precision
 function Memory:store_f32(addr, val)
-    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 4 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
+    -- Handle boxed NaN (preserves bit pattern)
+    if type(val) == "table" then
+        self:store_i32(addr, val.nan32 or 0x7FC00000)
+        return
+    end
     local bits
     if val == 0 then
         if 1 / val < 0 then
@@ -252,7 +270,7 @@ function Memory:store_f32(addr, val)
         local mant, exp = math_frexp(val)
         exp = exp + 126
         if exp <= 0 then
-            mant = mant * math_ldexp(1, exp + 22)
+            mant = mant * math_ldexp(1, exp + 23)
             exp = 0
         else
             mant = (mant * 2 - 1) * math_ldexp(1, 23)
@@ -263,7 +281,7 @@ function Memory:store_f32(addr, val)
 end
 
 function Memory:load_f32(addr)
-    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    if addr + 4 > self.byte_length or addr < 0 then fail("out of bounds memory access") end
     local bits = self:load_i32(addr)
     local sign = bit32.btest(bits, 0x80000000) and -1 or 1
     local exp = bit32.band(bit32.rshift(bits, 23), 0xFF)

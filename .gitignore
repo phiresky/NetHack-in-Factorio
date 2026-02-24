@@ -18,14 +18,26 @@ scripts/nethack_wasm.lua
 .idea/
 *.swp
 *.swo
-*~
-
-# OS
+/*~
+/# OS
 .DS_Store
-Thumbs.db
+/Thumbs.db
 
-.vscode
-.bash_profile
-.bashrc
-.gitconfig
-.claude
+/.vscode
+/.bash_profile
+/.bashrc
+/.gitconfig
+/.claude
+/.gitmodules
+/.idea
+/.mcp.json
+/.profile
+/.ripgreprc
+/.zprofile
+/.zshrc
+/.config
+/HEAD
+/hooks
+/objects
+/refs
+/config

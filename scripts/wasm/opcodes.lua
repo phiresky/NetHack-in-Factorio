@@ -14,6 +14,8 @@ local math_huge = math.huge
 
 local Opcodes = {}
 
+local function fail(msg) error({msg = msg}) end
+
 -- Helper: read a byte from code at pc, advance pc
 local function read_byte(state)
     local pc = state.pc
@@ -179,9 +181,31 @@ local function to_u32(v)
     return bit32.band(v, 0xFFFFFFFF)
 end
 
+-- NaN boxing: Lua normalizes all NaN values to a single canonical bit pattern,
+-- losing the payload bits. But WASM non-arithmetic ops (neg, abs, copysign) must
+-- preserve NaN payloads, and reinterpret must round-trip exact bit patterns.
+-- We box NaN as tables: f32 NaN = {nan32 = <u32 bits>}, f64 NaN = {nan64 = {lo, hi}}.
+-- The metatable makes boxed NaN behave correctly in Lua arithmetic (+, -, *, / all
+-- return canonical NaN) and ordered comparisons (< and <= return false).
+local NAN = 0/0
+local nan_mt = {
+    __add = function() return NAN end,
+    __sub = function() return NAN end,
+    __mul = function() return NAN end,
+    __div = function() return NAN end,
+    __mod = function() return NAN end,
+    __pow = function() return NAN end,
+    __unm = function() return NAN end,
+    __lt = function() return false end,
+    __le = function() return false end,
+}
+
+-- Check if a float value is NaN (either Lua NaN or boxed NaN table)
+local function isnan(v) return v ~= v or type(v) == "table" end
+
 -- f32 truncation: round a Lua double to single precision (round-to-nearest, ties-to-even)
 local function f32_trunc(v)
-    if v ~= v then return v end -- NaN
+    if isnan(v) then return NAN end
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
     local sign = 1
@@ -364,7 +388,7 @@ end
 
 -- i64 div/rem - unsigned
 local function i64_div_u(a, b)
-    if i64_is_zero(b) then error("integer divide by zero") end
+    if i64_is_zero(b) then fail("integer divide by zero") end
     -- Simple case: both fit in Lua doubles (< 2^53)
     if a[2] == 0 and b[2] == 0 then
         return {math_floor(a[1] / b[1]), 0}
@@ -393,7 +417,7 @@ local function i64_div_u(a, b)
 end
 
 local function i64_rem_u(a, b)
-    if i64_is_zero(b) then error("integer divide by zero") end
+    if i64_is_zero(b) then fail("integer divide by zero") end
     if a[2] == 0 and b[2] == 0 then
         return {a[1] % b[1], 0}
     end
@@ -404,10 +428,10 @@ local function i64_rem_u(a, b)
 end
 
 local function i64_div_s(a, b)
-    if i64_is_zero(b) then error("integer divide by zero") end
+    if i64_is_zero(b) then fail("integer divide by zero") end
     -- Overflow: INT64_MIN / -1
     if a[1] == 0 and a[2] == 0x80000000 and b[1] == 0xFFFFFFFF and b[2] == 0xFFFFFFFF then
-        error("integer overflow")
+        fail("integer overflow")
     end
     local a_neg = i64_is_neg(a)
     local b_neg = i64_is_neg(b)
@@ -421,7 +445,7 @@ local function i64_div_s(a, b)
 end
 
 local function i64_rem_s(a, b)
-    if i64_is_zero(b) then error("integer divide by zero") end
+    if i64_is_zero(b) then fail("integer divide by zero") end
     local a_neg = i64_is_neg(a)
     local ua = a_neg and i64_neg(a) or a
     local ub = i64_is_neg(b) and i64_neg(b) or b
@@ -586,7 +610,7 @@ local function f32_reinterpret_i32(bits)
     local mant = bit32.band(bits, 0x7FFFFF)
     if exp == 0xFF then
         if mant == 0 then return sign * math_huge end
-        return 0 / 0
+        return setmetatable({nan32 = bits}, nan_mt)
     elseif exp == 0 then
         if mant == 0 then return sign == -1 and -0.0 or 0.0 end
         return sign * math.ldexp(mant, -149)
@@ -595,11 +619,14 @@ local function f32_reinterpret_i32(bits)
 end
 
 local function i32_reinterpret_f32(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan32 then return v.nan32 end
+        return 0x7FC00000 -- canonical NaN
+    end
     if v == 0 then
         if 1 / v < 0 then return 0x80000000 end
         return 0
     end
-    if v ~= v then return 0x7FC00000 end
     if v == math_huge then return 0x7F800000 end
     if v == -math_huge then return 0xFF800000 end
     local sign = 0
@@ -607,7 +634,7 @@ local function i32_reinterpret_f32(v)
     local m, e = math.frexp(v)
     e = e + 126
     if e <= 0 then
-        m = m * math.ldexp(1, e + 22)
+        m = m * math.ldexp(1, e + 23)
         e = 0
     else
         m = (m * 2 - 1) * math.ldexp(1, 23)
@@ -624,7 +651,7 @@ local function f64_reinterpret_i64(v)
     local mant = mant_hi * 4294967296 + lo
     if exp == 0x7FF then
         if mant == 0 then return sign * math_huge end
-        return 0 / 0
+        return setmetatable({nan64 = {lo, hi}}, nan_mt)
     elseif exp == 0 then
         if mant == 0 then return sign == -1 and -0.0 or 0.0 end
         return sign * math.ldexp(mant, -1074)
@@ -633,11 +660,14 @@ local function f64_reinterpret_i64(v)
 end
 
 local function i64_reinterpret_f64(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan64 then return {v.nan64[1], v.nan64[2]} end
+        return {0, 0x7FF80000} -- canonical f64 NaN
+    end
     if v == 0 then
         if 1 / v < 0 then return {0, 0x80000000} end
         return {0, 0}
     end
-    if v ~= v then return {0, 0x7FF80000} end
     if v == math_huge then return {0, 0x7FF00000} end
     if v == -math_huge then return {0, 0xFFF00000} end
     local sign = 0
@@ -645,7 +675,7 @@ local function i64_reinterpret_f64(v)
     local m, e = math.frexp(v)
     e = e + 1022
     if e <= 0 then
-        m = m * math.ldexp(1, e + 51)
+        m = m * math.ldexp(1, e + 52)
         e = 0
     else
         m = (m * 2 - 1) * math.ldexp(1, 52)
@@ -657,12 +687,30 @@ local function i64_reinterpret_f64(v)
 end
 
 -- f32 math helpers
-local function f32_abs(v) return math_abs(v) end
-local function f32_neg(v) return -v end
-local function f32_ceil(v) return f32_trunc(math_ceil(v)) end
-local function f32_floor(v) return f32_trunc(math_floor(v)) end
+local function f32_abs(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan32 then return setmetatable({nan32 = bit32.band(v.nan32, 0x7FFFFFFF)}, nan_mt) end
+        return NAN
+    end
+    return math_abs(v)
+end
+local function f32_neg(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan32 then return setmetatable({nan32 = bit32.bxor(v.nan32, 0x80000000)}, nan_mt) end
+        return NAN
+    end
+    return -v
+end
+local function f32_ceil(v)
+    if isnan(v) then return NAN end
+    return f32_trunc(math_ceil(v))
+end
+local function f32_floor(v)
+    if isnan(v) then return NAN end
+    return f32_trunc(math_floor(v))
+end
 local function f32_nearest(v)
-    if v ~= v then return v end
+    if isnan(v) then return NAN end
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
     -- Values >= 2^23 are already integers in f32
@@ -670,11 +718,16 @@ local function f32_nearest(v)
     local r = math_floor(v + 0.5)
     -- Banker's rounding: if exactly halfway, round to even
     if v + 0.5 == r and r % 2 ~= 0 then r = r - 1 end
+    -- Preserve negative zero: if input was negative and result is 0
+    if r == 0 and v < 0 then return -0.0 end
     return f32_trunc(r)
 end
-local function f32_sqrt(v) return f32_trunc(math_sqrt(v)) end
+local function f32_sqrt(v)
+    if isnan(v) then return NAN end
+    return f32_trunc(math_sqrt(v))
+end
 local function f32_min(a, b)
-    if a ~= a or b ~= b then return 0/0 end
+    if isnan(a) or isnan(b) then return NAN end
     if a == 0 and b == 0 then
         -- -0 < +0
         if (1/a < 0) or (1/b < 0) then return -0.0 end
@@ -683,7 +736,7 @@ local function f32_min(a, b)
     return a < b and a or b
 end
 local function f32_max(a, b)
-    if a ~= a or b ~= b then return 0/0 end
+    if isnan(a) or isnan(b) then return NAN end
     if a == 0 and b == 0 then
         if (1/a > 0) or (1/b > 0) then return 0.0 end
         return -0.0
@@ -691,18 +744,49 @@ local function f32_max(a, b)
     return a > b and a or b
 end
 local function f32_copysign(a, b)
+    local b_neg
+    if isnan(b) then
+        b_neg = type(b) == "table" and b.nan32 and bit32.btest(b.nan32, 0x80000000) or false
+    else
+        b_neg = b < 0 or (b == 0 and 1/b < 0)
+    end
+    if isnan(a) then
+        if type(a) == "table" and a.nan32 then
+            local bits = b_neg and bit32.bor(a.nan32, 0x80000000) or bit32.band(a.nan32, 0x7FFFFFFF)
+            return setmetatable({nan32 = bits}, nan_mt)
+        end
+        return NAN
+    end
     a = math_abs(a)
-    if b < 0 or (b == 0 and 1/b < 0) then return -a end
+    if b_neg then return -a end
     return a
 end
 
 -- f64 math helpers
-local function f64_abs(v) return math_abs(v) end
-local function f64_neg(v) return -v end
-local function f64_ceil(v) return math_ceil(v) end
-local function f64_floor(v) return math_floor(v) end
+local function f64_abs(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan64 then return setmetatable({nan64 = {v.nan64[1], bit32.band(v.nan64[2], 0x7FFFFFFF)}}, nan_mt) end
+        return NAN
+    end
+    return math_abs(v)
+end
+local function f64_neg(v)
+    if isnan(v) then
+        if type(v) == "table" and v.nan64 then return setmetatable({nan64 = {v.nan64[1], bit32.bxor(v.nan64[2], 0x80000000)}}, nan_mt) end
+        return NAN
+    end
+    return -v
+end
+local function f64_ceil(v)
+    if isnan(v) then return NAN end
+    return math_ceil(v)
+end
+local function f64_floor(v)
+    if isnan(v) then return NAN end
+    return math_floor(v)
+end
 local function f64_nearest(v)
-    if v ~= v then return v end
+    if isnan(v) then return NAN end
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
     -- Values >= 2^52 are already integers in double precision
@@ -710,11 +794,16 @@ local function f64_nearest(v)
     local r = math_floor(v + 0.5)
     -- Banker's rounding: ties to even
     if v + 0.5 == r and r % 2 ~= 0 then r = r - 1 end
+    -- Preserve negative zero
+    if r == 0 and v < 0 then return -0.0 end
     return r
 end
-local function f64_sqrt(v) return math_sqrt(v) end
+local function f64_sqrt(v)
+    if isnan(v) then return NAN end
+    return math_sqrt(v)
+end
 local function f64_min(a, b)
-    if a ~= a or b ~= b then return 0/0 end
+    if isnan(a) or isnan(b) then return NAN end
     if a == 0 and b == 0 then
         if (1/a < 0) or (1/b < 0) then return -0.0 end
         return 0.0
@@ -722,7 +811,7 @@ local function f64_min(a, b)
     return a < b and a or b
 end
 local function f64_max(a, b)
-    if a ~= a or b ~= b then return 0/0 end
+    if isnan(a) or isnan(b) then return NAN end
     if a == 0 and b == 0 then
         if (1/a > 0) or (1/b > 0) then return 0.0 end
         return -0.0
@@ -730,13 +819,27 @@ local function f64_max(a, b)
     return a > b and a or b
 end
 local function f64_copysign(a, b)
+    local b_neg
+    if isnan(b) then
+        b_neg = type(b) == "table" and b.nan64 and bit32.btest(b.nan64[2], 0x80000000) or false
+    else
+        b_neg = b < 0 or (b == 0 and 1/b < 0)
+    end
+    if isnan(a) then
+        if type(a) == "table" and a.nan64 then
+            local bits_hi = b_neg and bit32.bor(a.nan64[2], 0x80000000) or bit32.band(a.nan64[2], 0x7FFFFFFF)
+            return setmetatable({nan64 = {a.nan64[1], bits_hi}}, nan_mt)
+        end
+        return NAN
+    end
     a = math_abs(a)
-    if b < 0 or (b == 0 and 1/b < 0) then return -a end
+    if b_neg then return -a end
     return a
 end
 
 local function f64_trunc_op(v)
-    if v ~= v or v == math_huge or v == -math_huge or v == 0 then return v end
+    if isnan(v) then return NAN end
+    if v == math_huge or v == -math_huge or v == 0 then return v end
     if v > 0 then return math_floor(v) end
     return math_ceil(v)
 end
@@ -752,7 +855,7 @@ local dispatch = {}
 
 -- 0x00: unreachable
 dispatch[0x00] = function(state)
-    error("unreachable executed")
+    fail("unreachable")
 end
 
 -- 0x01: nop
@@ -1032,8 +1135,11 @@ dispatch[0x11] = function(state)
     local _table_idx = read_leb128_u(state) -- reserved, always 0
     local elem_idx = pop(state)
     local tbl = state.instance.table
-    if not tbl or not tbl[elem_idx] then
-        error("undefined element " .. tostring(elem_idx))
+    if elem_idx < 0 or elem_idx >= (state.instance.table_size or 0) then
+        fail("undefined element")
+    end
+    if not tbl[elem_idx] then
+        fail("uninitialized element")
     end
     local func_idx = tbl[elem_idx]
     -- Type check: must match param and result types exactly
@@ -1041,16 +1147,16 @@ dispatch[0x11] = function(state)
     local actual_type = state.instance.module.types[state.instance.module.funcs[func_idx].type_idx + 1]
     if expected_type and actual_type then
         if #expected_type.params ~= #actual_type.params or #expected_type.results ~= #actual_type.results then
-            error("indirect call type mismatch")
+            fail("indirect call type mismatch")
         end
         for i = 1, #expected_type.params do
             if expected_type.params[i] ~= actual_type.params[i] then
-                error("indirect call type mismatch")
+                fail("indirect call type mismatch")
             end
         end
         for i = 1, #expected_type.results do
             if expected_type.results[i] ~= actual_type.results[i] then
-                error("indirect call type mismatch")
+                fail("indirect call type mismatch")
             end
         end
     end
@@ -1488,12 +1594,14 @@ end
 -- 0x5B: f32.eq
 dispatch[0x5B] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a == b and 1 or 0)
 end
 
 -- 0x5C: f32.ne
 dispatch[0x5C] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 1); return end
     push(state, a ~= b and 1 or 0)
 end
 
@@ -1512,12 +1620,14 @@ end
 -- 0x5F: f32.le
 dispatch[0x5F] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a <= b and 1 or 0)
 end
 
 -- 0x60: f32.ge
 dispatch[0x60] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a >= b and 1 or 0)
 end
 
@@ -1525,12 +1635,14 @@ end
 -- 0x61: f64.eq
 dispatch[0x61] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a == b and 1 or 0)
 end
 
 -- 0x62: f64.ne
 dispatch[0x62] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 1); return end
     push(state, a ~= b and 1 or 0)
 end
 
@@ -1549,12 +1661,14 @@ end
 -- 0x65: f64.le
 dispatch[0x65] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a <= b and 1 or 0)
 end
 
 -- 0x66: f64.ge
 dispatch[0x66] = function(state)
     local b = pop(state); local a = pop(state)
+    if isnan(a) or isnan(b) then push(state, 0); return end
     push(state, a >= b and 1 or 0)
 end
 
@@ -1603,8 +1717,8 @@ end
 -- 0x6D: i32.div_s
 dispatch[0x6D] = function(state)
     local b = to_signed32(pop(state)); local a = to_signed32(pop(state))
-    if b == 0 then error("integer divide by zero") end
-    if a == -2147483648 and b == -1 then error("integer overflow") end
+    if b == 0 then fail("integer divide by zero") end
+    if a == -2147483648 and b == -1 then fail("integer overflow") end
     local result = a / b
     if result >= 0 then result = math_floor(result) else result = math_ceil(result) end
     if result < 0 then result = result + 0x100000000 end
@@ -1614,14 +1728,14 @@ end
 -- 0x6E: i32.div_u
 dispatch[0x6E] = function(state)
     local b = pop(state); local a = pop(state)
-    if b == 0 then error("integer divide by zero") end
+    if b == 0 then fail("integer divide by zero") end
     push(state, math_floor(a / b))
 end
 
 -- 0x6F: i32.rem_s
 dispatch[0x6F] = function(state)
     local b = to_signed32(pop(state)); local a = to_signed32(pop(state))
-    if b == 0 then error("integer divide by zero") end
+    if b == 0 then fail("integer divide by zero") end
     local result
     if b == -1 then
         result = 0
@@ -1642,7 +1756,7 @@ end
 -- 0x70: i32.rem_u
 dispatch[0x70] = function(state)
     local b = pop(state); local a = pop(state)
-    if b == 0 then error("integer divide by zero") end
+    if b == 0 then fail("integer divide by zero") end
     push(state, a % b)
 end
 
@@ -1919,10 +2033,10 @@ end
 -- 0xA8: i32.trunc_f32_s
 dispatch[0xA8] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
+    if isnan(val) then fail("invalid conversion to integer") end
     -- Truncate toward zero, then check range [-2^31, 2^31-1]
     val = val >= 0 and math_floor(val) or -math_floor(-val)
-    if val >= 2147483648 or val < -2147483648 then error("integer overflow") end
+    if val >= 2147483648 or val < -2147483648 then fail("integer overflow") end
     if val < 0 then val = val + 0x100000000 end
     push(state, val)
 end
@@ -1930,19 +2044,19 @@ end
 -- 0xA9: i32.trunc_f32_u
 dispatch[0xA9] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
+    if isnan(val) then fail("invalid conversion to integer") end
     -- Truncate toward zero, then check range [0, 2^32-1]
-    val = val >= 0 and math_floor(val) or -math_floor(-val)
-    if val >= 4294967296 or val < 0 then error("integer overflow") end
+    val = (val >= 0 and math_floor(val) or -math_floor(-val)) + 0 -- +0 converts -0 to +0
+    if val >= 4294967296 or val < 0 then fail("integer overflow") end
     push(state, val)
 end
 
 -- 0xAA: i32.trunc_f64_s
 dispatch[0xAA] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
+    if isnan(val) then fail("invalid conversion to integer") end
     val = val >= 0 and math_floor(val) or -math_floor(-val)
-    if val >= 2147483648 or val < -2147483648 then error("integer overflow") end
+    if val >= 2147483648 or val < -2147483648 then fail("integer overflow") end
     if val < 0 then val = val + 0x100000000 end
     push(state, val)
 end
@@ -1950,9 +2064,9 @@ end
 -- 0xAB: i32.trunc_f64_u
 dispatch[0xAB] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
-    val = val >= 0 and math_floor(val) or -math_floor(-val)
-    if val >= 4294967296 or val < 0 then error("integer overflow") end
+    if isnan(val) then fail("invalid conversion to integer") end
+    val = (val >= 0 and math_floor(val) or -math_floor(-val)) + 0 -- +0 converts -0 to +0
+    if val >= 4294967296 or val < 0 then fail("integer overflow") end
     push(state, val)
 end
 
@@ -1974,34 +2088,34 @@ end
 -- 0xAE: i64.trunc_f32_s
 dispatch[0xAE] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
+    if isnan(val) then fail("invalid conversion to integer") end
     -- Trap if trunc(val) not in [-2^63, 2^63-1]
-    if val >= 9223372036854775808 or val < -9223372036854775808 then error("integer overflow") end
+    if val >= 9223372036854775808 or val < -9223372036854775808 then fail("integer overflow") end
     push(state, f64_to_i64_s(val))
 end
 
 -- 0xAF: i64.trunc_f32_u
 dispatch[0xAF] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
+    if isnan(val) then fail("invalid conversion to integer") end
     -- Truncate toward zero, then check range [0, 2^64-1]
-    if val >= 18446744073709551616 or val <= -1.0 then error("integer overflow") end
+    if val >= 18446744073709551616 or val <= -1.0 then fail("integer overflow") end
     push(state, f64_to_i64_u(val))
 end
 
 -- 0xB0: i64.trunc_f64_s
 dispatch[0xB0] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
-    if val >= 9223372036854775808 or val < -9223372036854775808 then error("integer overflow") end
+    if isnan(val) then fail("invalid conversion to integer") end
+    if val >= 9223372036854775808 or val < -9223372036854775808 then fail("integer overflow") end
     push(state, f64_to_i64_s(val))
 end
 
 -- 0xB1: i64.trunc_f64_u
 dispatch[0xB1] = function(state)
     local val = pop(state)
-    if val ~= val then error("invalid conversion to integer") end
-    if val >= 18446744073709551616 or val <= -1.0 then error("integer overflow") end
+    if isnan(val) then fail("invalid conversion to integer") end
+    if val >= 18446744073709551616 or val <= -1.0 then fail("integer overflow") end
     push(state, f64_to_i64_u(val))
 end
 
@@ -2054,7 +2168,9 @@ end
 -- 0xBB: f64.promote_f32
 dispatch[0xBB] = function(state)
     -- f32 is already a Lua double, just pass through
-    -- (value is already double precision from being stored in Lua)
+    -- Unbox f32 NaN to canonical f64 NaN (promotion is arithmetic)
+    local v = state.stack[state.sp]
+    if isnan(v) then state.stack[state.sp] = NAN end
 end
 
 -- 0xBC: i32.reinterpret_f32
@@ -2131,7 +2247,7 @@ dispatch[0xFC] = function(state)
     local sub_op = read_leb128_u(state)
     if sub_op == 0 then -- i32.trunc_sat_f32_s
         local val = pop(state)
-        if val ~= val then push(state, 0); return end
+        if isnan(val) then push(state, 0); return end
         if val >= 2147483647 then push(state, 0x7FFFFFFF); return end
         if val <= -2147483648 then push(state, 0x80000000); return end
         val = val >= 0 and math_floor(val) or math_ceil(val)
@@ -2139,12 +2255,12 @@ dispatch[0xFC] = function(state)
         push(state, val)
     elseif sub_op == 1 then -- i32.trunc_sat_f32_u
         local val = pop(state)
-        if val ~= val or val < 0 then push(state, 0); return end
+        if isnan(val) or val < 0 then push(state, 0); return end
         if val >= 4294967296 then push(state, 0xFFFFFFFF); return end
         push(state, math_floor(val))
     elseif sub_op == 2 then -- i32.trunc_sat_f64_s
         local val = pop(state)
-        if val ~= val then push(state, 0); return end
+        if isnan(val) then push(state, 0); return end
         if val >= 2147483647 then push(state, 0x7FFFFFFF); return end
         if val <= -2147483648 then push(state, 0x80000000); return end
         val = val >= 0 and math_floor(val) or math_ceil(val)
@@ -2152,29 +2268,29 @@ dispatch[0xFC] = function(state)
         push(state, val)
     elseif sub_op == 3 then -- i32.trunc_sat_f64_u
         local val = pop(state)
-        if val ~= val or val < 0 then push(state, 0); return end
+        if isnan(val) or val < 0 then push(state, 0); return end
         if val >= 4294967296 then push(state, 0xFFFFFFFF); return end
         push(state, math_floor(val))
     elseif sub_op == 4 then -- i64.trunc_sat_f32_s
         local val = pop(state)
-        if val ~= val then push(state, {0, 0}); return end
+        if isnan(val) then push(state, {0, 0}); return end
         if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
         if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
         push(state, f64_to_i64_s(val))
     elseif sub_op == 5 then -- i64.trunc_sat_f32_u
         local val = pop(state)
-        if val ~= val or val <= -1.0 then push(state, {0, 0}); return end
+        if isnan(val) or val <= -1.0 then push(state, {0, 0}); return end
         if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
         push(state, f64_to_i64_u(val))
     elseif sub_op == 6 then -- i64.trunc_sat_f64_s
         local val = pop(state)
-        if val ~= val then push(state, {0, 0}); return end
+        if isnan(val) then push(state, {0, 0}); return end
         if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
         if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
         push(state, f64_to_i64_s(val))
     elseif sub_op == 7 then -- i64.trunc_sat_f64_u
         local val = pop(state)
-        if val ~= val or val <= -1.0 then push(state, {0, 0}); return end
+        if isnan(val) or val <= -1.0 then push(state, {0, 0}); return end
         if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
         push(state, f64_to_i64_u(val))
     elseif sub_op == 8 then -- memory.init
@@ -2282,7 +2398,7 @@ dispatch[0xFC] = function(state)
             end
         end
     else
-        error(string.format("Unknown 0xFC sub-opcode: %d", sub_op))
+        fail(string.format("unknown opcode 0xFC %d", sub_op))
     end
 end
 

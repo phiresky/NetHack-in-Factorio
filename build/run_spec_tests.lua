@@ -22,6 +22,21 @@ local Validator = require("scripts.wasm.validate")
 -- Value conversion helpers
 ---------------------------------------------------------------------------
 
+-- Metatable for boxed NaN values passed as test arguments.
+-- Mirrors the interpreter's nan_mt so boxed NaN behaves correctly in arithmetic.
+local NAN = 0/0
+local test_nan_mt = {
+    __add = function() return NAN end,
+    __sub = function() return NAN end,
+    __mul = function() return NAN end,
+    __div = function() return NAN end,
+    __mod = function() return NAN end,
+    __pow = function() return NAN end,
+    __unm = function() return NAN end,
+    __lt = function() return false end,
+    __le = function() return false end,
+}
+
 -- Convert string decimal to unsigned 32-bit number
 local function str_to_u32(s)
     local n = tonumber(s)
@@ -69,7 +84,7 @@ local function bits_to_f32(s)
     local mant = bit32.band(bits, 0x7FFFFF)
     if exp == 0xFF then
         if mant == 0 then return sign * math.huge end
-        return 0/0 -- NaN
+        return setmetatable({nan32 = bits}, test_nan_mt) -- boxed NaN preserves bit pattern
     elseif exp == 0 then
         return sign * math.ldexp(mant, -149) -- denormal
     end
@@ -92,7 +107,7 @@ local function bits_to_f64(s)
     local mant = mant_hi * 4294967296 + lo
     if exp == 0x7FF then
         if mant == 0 then return sign * math.huge end
-        return 0/0
+        return setmetatable({nan64 = {lo, hi}}, test_nan_mt) -- boxed NaN preserves bit pattern
     elseif exp == 0 then
         if mant == 0 then return 0.0 * sign end
         return sign * math.ldexp(mant, -1074)
@@ -138,6 +153,13 @@ local function convert_arg(arg)
     return tonumber(arg.value) or 0
 end
 
+-- Check if a result value is NaN (either Lua NaN or boxed NaN from interpreter)
+local function is_nan_value(v)
+    if type(v) == "number" then return v ~= v end
+    if type(v) == "table" then return v.nan32 ~= nil or v.nan64 ~= nil end
+    return false
+end
+
 -- Compare a result value against expected
 local function compare_result(got, expected)
     if not expected then return true end -- no expected value
@@ -147,10 +169,7 @@ local function compare_result(got, expected)
 
     -- Handle NaN expectations
     if evalue == "nan:canonical" or evalue == "nan:arithmetic" then
-        if type(got) == "number" then
-            return got ~= got -- NaN check
-        end
-        return false
+        return is_nan_value(got)
     end
 
     if etype == "i32" then
@@ -178,9 +197,12 @@ local function compare_result(got, expected)
         else
             exp_val = bits_to_f64(evalue)
         end
+        -- Handle NaN: both got and expected can be boxed NaN tables
+        if is_nan_value(got) then
+            return is_nan_value(exp_val)
+        end
         if type(got) ~= "number" then return false end
-        -- NaN check
-        if exp_val ~= exp_val then return got ~= got end
+        if is_nan_value(exp_val) then return false end -- expected NaN but got isn't
         -- Exact comparison (including +0 vs -0)
         if exp_val == 0 and got == 0 then
             return (1/exp_val > 0) == (1/got > 0)
@@ -219,6 +241,26 @@ local function load_wasm_file(path)
     local data = f:read("*a")
     f:close()
     return data
+end
+
+-- Extract the error message from a pcall error value.
+-- Our WASM code throws table errors {msg = "..."} to avoid Lua's file:line prefix.
+local function extract_error_msg(err)
+    if type(err) == "table" and err.msg then
+        return err.msg
+    end
+    return tostring(err)
+end
+
+-- Check that expected_text is a prefix of actual error message.
+-- Returns true if match, false + details if mismatch.
+local function check_error_prefix(err, expected_text)
+    if not expected_text or expected_text == "" then return true end
+    local msg = extract_error_msg(err)
+    if msg:sub(1, #expected_text) == expected_text then
+        return true
+    end
+    return false, msg
 end
 
 local function run_spec_test(json_path)
@@ -307,7 +349,7 @@ local function run_spec_test(json_path)
                         if not ok then
                             failed = failed + 1
                             failures[#failures+1] = string.format("line %d: %s(%s) trapped: %s",
-                                cmd.line, field, #args, tostring(results):sub(1, 80))
+                                cmd.line, field, #args, extract_error_msg(results):sub(1, 80))
                         else
                             -- Compare results
                             local expected = cmd.expected or {}
@@ -343,7 +385,13 @@ local function run_spec_test(json_path)
                                 for i, r in ipairs(results) do
                                     if i > 1 then got_str = got_str .. ", " end
                                     if type(r) == "table" then
-                                        got_str = got_str .. string.format("{%s,%s}", tostring(r[1]), tostring(r[2]))
+                                        if r.nan32 then
+                                            got_str = got_str .. string.format("f32:nan(0x%08X)", r.nan32)
+                                        elseif r.nan64 then
+                                            got_str = got_str .. string.format("f64:nan(0x%08X%08X)", r.nan64[2], r.nan64[1])
+                                        else
+                                            got_str = got_str .. string.format("{%s,%s}", tostring(r[1]), tostring(r[2]))
+                                        end
                                     else
                                         got_str = got_str .. tostring(r)
                                     end
@@ -381,7 +429,15 @@ local function run_spec_test(json_path)
                     else
                         local ok, err = pcall(Interp.execute, inst, func_idx, args)
                         if not ok then
-                            passed = passed + 1 -- trap expected
+                            local prefix_ok, actual = check_error_prefix(err, cmd.text)
+                            if prefix_ok then
+                                passed = passed + 1
+                            else
+                                failed = failed + 1
+                                failures[#failures+1] = string.format(
+                                    "line %d: %s trap mismatch: expected \"%s\", got \"%s\"",
+                                    cmd.line, field, cmd.text or "?", actual or "?")
+                            end
                         else
                             failed = failed + 1
                             failures[#failures+1] = string.format("line %d: %s expected trap, got success",
@@ -449,25 +505,37 @@ local function run_spec_test(json_path)
                 if not wasm_data then
                     passed = passed + 1 -- file missing/unreadable counts as rejected
                 else
+                    local err_msg = nil
                     local ok, mod = pcall(Parser.parse, wasm_data)
                     if not ok then
-                        passed = passed + 1 -- parse failed as expected
+                        err_msg = mod -- parse error
                     else
-                        -- Parsed OK, try validating
                         local ok2, err2 = pcall(Validator.validate, mod)
                         if not ok2 then
-                            passed = passed + 1 -- validation failed as expected
+                            err_msg = err2 -- validation error
                         else
-                            -- Validated OK, try instantiating
-                            local ok3, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
+                            local ok3, err3 = pcall(Interp.instantiate, mod, make_spectest_imports())
                             if not ok3 then
-                                passed = passed + 1 -- instantiation failed as expected
-                            else
-                                failed = failed + 1
-                                failures[#failures+1] = string.format("line %d: %s expected rejection (%s), but succeeded",
-                                    cmd.line, cmd.type, cmd.text or "?")
+                                err_msg = err3 -- instantiation error
                             end
                         end
+                    end
+
+                    if err_msg then
+                        -- Got an error - check that it matches expected text
+                        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
+                        if prefix_ok then
+                            passed = passed + 1
+                        else
+                            failed = failed + 1
+                            failures[#failures+1] = string.format(
+                                "line %d: %s error mismatch: expected \"%s\", got \"%s\"",
+                                cmd.line, cmd.type, cmd.text or "?", actual or "?")
+                        end
+                    else
+                        failed = failed + 1
+                        failures[#failures+1] = string.format("line %d: %s expected rejection (%s), but succeeded",
+                            cmd.line, cmd.type, cmd.text or "?")
                     end
                 end
             end
@@ -482,18 +550,31 @@ local function run_spec_test(json_path)
                 if not wasm_data then
                     skipped = skipped + 1
                 else
+                    local err_msg = nil
                     local ok, mod = pcall(Parser.parse, wasm_data)
                     if not ok then
-                        passed = passed + 1 -- rejected at parse, still counts
+                        err_msg = mod
                     else
-                        local ok2, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
+                        local ok2, err2 = pcall(Interp.instantiate, mod, make_spectest_imports())
                         if not ok2 then
-                            passed = passed + 1 -- instantiation failed as expected
+                            err_msg = err2
+                        end
+                    end
+
+                    if err_msg then
+                        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
+                        if prefix_ok then
+                            passed = passed + 1
                         else
                             failed = failed + 1
-                            failures[#failures+1] = string.format("line %d: assert_uninstantiable expected failure, but succeeded",
-                                cmd.line)
+                            failures[#failures+1] = string.format(
+                                "line %d: assert_uninstantiable error mismatch: expected \"%s\", got \"%s\"",
+                                cmd.line, cmd.text or "?", actual or "?")
                         end
+                    else
+                        failed = failed + 1
+                        failures[#failures+1] = string.format("line %d: assert_uninstantiable expected failure, but succeeded",
+                            cmd.line)
                     end
                 end
             end

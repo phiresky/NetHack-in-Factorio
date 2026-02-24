@@ -13,6 +13,8 @@ local unpack = table.unpack or unpack
 
 local dispatch = Opcodes.dispatch
 local op_push = Opcodes.push
+
+local function fail(msg) error({msg = msg}) end
 local op_pop = Opcodes.pop
 
 local Interp = {}
@@ -179,7 +181,7 @@ function Interp.instantiate(module, imports)
             else
                 local mod_name, func_name = imp.module, imp.name
                 instance.import_funcs[func_idx] = function()
-                    error(string.format("Unresolved import: %s.%s", mod_name, func_name))
+                    fail(string.format("Unresolved import: %s.%s", mod_name, func_name))
                 end
             end
             func_idx = func_idx + 1
@@ -188,22 +190,23 @@ function Interp.instantiate(module, imports)
 
     -- Initialize data segments
     for i, seg in ipairs(module.data_segments) do
+        if seg.passive then goto continue_data end
         local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
         if type(offset) == "number" then
             if offset + #seg.data > instance.memory.byte_length or offset < 0 then
-                error("out of bounds memory access")
+                fail("out of bounds memory access")
             end
             instance.memory:write_bytes(offset, seg.data)
         end
         instance.data_segments_raw[i] = seg.data
+        ::continue_data::
     end
 
     -- Initialize table
+    instance.table_size = 0
     if #module.tables > 0 then
         local tbl_def = module.tables[1]
-        for i = 0, (tbl_def.limits.initial or 0) - 1 do
-            instance.table[i] = nil
-        end
+        instance.table_size = tbl_def.limits.initial or 0
     end
 
     -- Initialize element segments
@@ -216,7 +219,7 @@ function Interp.instantiate(module, imports)
                 tbl_size = module.tables[1].limits.initial or 0
             end
             if offset + #seg.func_indices > tbl_size or offset < 0 then
-                error("out of bounds table access")
+                fail("out of bounds table access")
             end
             for j, fidx in ipairs(seg.func_indices) do
                 instance.table[offset + j - 1] = fidx
@@ -252,7 +255,9 @@ function Interp.instantiate(module, imports)
         Interp.call(instance, module.start_func, {})
         local result = Interp.run(instance, 10000000) -- generous budget for start
         if result.status == "error" then
-            error("WASM start function failed: " .. (result.message or "unknown"))
+            local msg = result.message
+            if type(msg) == "table" and msg.msg then msg = msg.msg end
+            fail(tostring(msg or "unknown"))
         end
     end
 
@@ -279,7 +284,7 @@ function Interp.call(instance, func_idx, args)
     local module = instance.module
     local func_def = module.funcs[func_idx]
     if not func_def then
-        error("Unknown function index: " .. tostring(func_idx))
+        fail("Unknown function index: " .. tostring(func_idx))
     end
 
     local type_info = module.types[func_def.type_idx + 1]
@@ -454,7 +459,7 @@ function Interp.run(instance, max_instructions)
 
                 local handler = dispatch[op]
                 if not handler then
-                    error(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, state.pc - 1, func_idx))
+                    fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, state.pc - 1, func_idx))
                 end
                 handler(state)
 
@@ -465,7 +470,7 @@ function Interp.run(instance, max_instructions)
 
                     local target_def = module.funcs[target_idx]
                     if not target_def then
-                        error("Unknown function index: " .. tostring(target_idx))
+                        fail("Unknown function index: " .. tostring(target_idx))
                     end
 
                     local target_type = module.types[target_def.type_idx + 1]
@@ -480,7 +485,7 @@ function Interp.run(instance, max_instructions)
                     if target_def.import then
                         local import_fn = instance.import_funcs[target_idx]
                         if not import_fn then
-                            error(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
+                            fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
                         end
 
                         -- Check for BLOCKING import
@@ -506,7 +511,7 @@ function Interp.run(instance, max_instructions)
                         -- WASM-to-WASM call: save current frame, set up new one
                         call_sp = call_sp + 1
                         if call_sp > 1000 then
-                            error("call stack exhausted")
+                            fail("call stack exhaustion")
                         end
                         call_stack[call_sp] = {
                             locals = state.locals,
@@ -596,7 +601,7 @@ function Interp.run(instance, max_instructions)
 
     if not ok then
         exec.finished = true
-        return {status = "error", message = tostring(err)}
+        return {status = "error", message = err}
     end
 
     -- Check what caused us to exit
@@ -635,7 +640,12 @@ function Interp.execute(instance, func_idx, args)
     Interp.call(instance, func_idx, args)
     local result = Interp.run(instance, 100000000)
     if result.status == "error" then
-        error(result.message)
+        local msg = result.message
+        if type(msg) ~= "table" or not msg.msg then
+            -- Wrap non-table errors for consistent handling
+            msg = {msg = tostring(msg)}
+        end
+        error(msg)
     end
     return result.results or {}
 end

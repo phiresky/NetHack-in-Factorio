@@ -6,6 +6,8 @@ local bit32 = bit32
 local Parser = {}
 Parser.__index = Parser
 
+local function fail(msg) error({msg = msg}) end
+
 -- Section IDs
 local SECTION_TYPE     = 1
 local SECTION_IMPORT   = 2
@@ -165,8 +167,16 @@ function Parser:read_limits()
     return {initial = initial, maximum = maximum}
 end
 
+-- Skip forward until 0x0B (end marker) is found
+function Parser:skip_to_end()
+    while self.pos <= self.len do
+        if self:read_byte() == 0x0B then return end
+    end
+end
+
 -- Parse an init expression (constant expression)
 -- Returns the value (for i32.const, i64.const, f64.const, f32.const, global.get)
+-- For unrecognized expressions, returns a sentinel so validation can report type mismatch.
 function Parser:read_init_expr()
     local opcode = self:read_byte()
     local val
@@ -181,12 +191,26 @@ function Parser:read_init_expr()
         val = self:read_bytes(8)
     elseif opcode == 0x23 then -- global.get
         val = {global_idx = self:read_leb128_u()}
+    elseif opcode == 0x0B then
+        -- Empty init expression (just end marker) - valid syntax, wrong type
+        return {invalid_expr = "type"}, opcode
+    elseif opcode == 0xD0 or opcode == 0xD2 then
+        -- ref.null / ref.func - valid const expr, but produces ref type
+        self:skip_to_end()
+        return {invalid_expr = "type"}, opcode
     else
-        error("Unsupported init_expr opcode: 0x" .. string.format("%02X", opcode))
+        -- Non-constant opcode (nop, arithmetic, etc.)
+        self:skip_to_end()
+        return {invalid_expr = "const"}, opcode
     end
     local end_byte = self:read_byte()
     if end_byte ~= 0x0B then
-        error("Expected end (0x0B) in init_expr, got 0x" .. string.format("%02X", end_byte))
+        -- Multi-instruction - check if next byte is a valid const opcode
+        local next_op = end_byte
+        local is_const = (next_op >= 0x41 and next_op <= 0x44) or next_op == 0x23
+                      or next_op == 0xD0 or next_op == 0xD2
+        self:skip_to_end()
+        return {invalid_expr = is_const and "type" or "const"}, opcode
     end
     return val, opcode
 end
@@ -198,7 +222,7 @@ function Parser:parse_type_section(size)
     for i = 1, count do
         local form = self:read_byte() -- should be 0x60
         if form ~= 0x60 then
-            error("Expected functype 0x60, got 0x" .. string.format("%02X", form))
+            fail("Expected functype 0x60, got 0x" .. string.format("%02X", form))
         end
         local param_count = self:read_leb128_u()
         local params = {}
@@ -237,7 +261,7 @@ function Parser:parse_import_section(size)
             local mutability = self:read_byte()
             desc = {valtype = valtype, mutable = mutability == 1}
         else
-            error("Unknown import kind: " .. kind)
+            fail("Unknown import kind: " .. kind)
         end
         imports[i] = {module = mod, name = name, kind = kind, desc = desc}
     end
@@ -369,16 +393,41 @@ function Parser:parse_data_section(size)
     local count = self:read_leb128_u()
     local segments = {}
     for i = 1, count do
-        local mem_idx = self:read_leb128_u()
-        local offset_val, offset_op = self:read_init_expr()
-        local data_len = self:read_leb128_u()
-        local data = self:read_bytes(data_len)
-        segments[i] = {
-            memory_idx = mem_idx,
-            offset = offset_val,
-            offset_opcode = offset_op,
-            data = data,
-        }
+        local flags = self:read_leb128_u()
+        if flags == 0 then
+            -- Active segment, implicit memory 0
+            local offset_val, offset_op = self:read_init_expr()
+            local data_len = self:read_leb128_u()
+            local data = self:read_bytes(data_len)
+            segments[i] = {
+                memory_idx = 0,
+                offset = offset_val,
+                offset_opcode = offset_op,
+                data = data,
+            }
+        elseif flags == 1 then
+            -- Passive segment (no memory/offset)
+            local data_len = self:read_leb128_u()
+            local data = self:read_bytes(data_len)
+            segments[i] = {
+                passive = true,
+                data = data,
+            }
+        elseif flags == 2 then
+            -- Active segment with explicit memory index
+            local mem_idx = self:read_leb128_u()
+            local offset_val, offset_op = self:read_init_expr()
+            local data_len = self:read_leb128_u()
+            local data = self:read_bytes(data_len)
+            segments[i] = {
+                memory_idx = mem_idx,
+                offset = offset_val,
+                offset_opcode = offset_op,
+                data = data,
+            }
+        else
+            fail("invalid data segment flags: " .. flags)
+        end
     end
     return segments
 end
@@ -390,13 +439,13 @@ local function parse(bytes)
     -- Read and verify magic number: \0asm
     local magic = p:read_u32_raw()
     if magic ~= 0x6D736100 then
-        error(string.format("Invalid WASM magic number: 0x%08X (expected 0x6D736100)", magic))
+        fail("magic header not detected")
     end
 
     -- Read and verify version
     local version = p:read_u32_raw()
     if version ~= 1 then
-        error("Unsupported WASM version: " .. version)
+        fail("unknown binary version")
     end
 
     local module = {

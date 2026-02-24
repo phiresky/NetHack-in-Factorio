@@ -105,11 +105,17 @@ build/run_spec_tests.lua  — Spec test runner (with JSON parser)
   not `val < 0`. For i64: check `val >= 2^63` for signed, `val >= 2^64` for unsigned.
 - **Memory bounds checks**: Must check at every load/store. Byte-level opcodes
   (i32.load8_u etc.) must use bounds-checked methods, not raw `load_byte`.
+- **NaN boxing**: Lua normalizes all NaN values to a single canonical bit pattern,
+  losing payload bits. WASM non-arithmetic ops (neg, abs, copysign) and reinterpret
+  must preserve NaN payloads. Solution: box NaN as tables `{nan32=bits}` or
+  `{nan64={lo,hi}}` with a metatable that makes arithmetic return canonical NaN.
+  Use `isnan(v)` helper (checks `v ~= v or type(v) == "table"`) in float contexts.
+- **Subnormal encoding**: f32 subnormal mantissa scaling is `exp + 23` (not +22),
+  f64 is `exp + 52` (not +51). Derivation: f32 subnormal = mantissa * 2^-149.
+- **Lua upvalue ordering**: In Lua, local variables must be defined before functions
+  that reference them as upvalues. A function defined at line 70 cannot see a local
+  defined at line 140 — the upvalue will be nil.
 
-## Known Issues / TODO (62 remaining spec test failures)
-- **conversions (20)**: i64→f32 rounding loses precision through f64 intermediary;
-  reinterpret_f32/f64 doesn't preserve NaN bit patterns (Lua normalizes all NaNs)
-- **f32 (3)**: Edge cases in f32 arithmetic
-- **f64 (3)**: f64.nearest edge cases with very large values
-- **float_exprs (16)**: Float expression precision, mostly f32 rounding edge cases
-- **float_literals (20)**: Float literal hex parsing edge cases
+## Known Issues / TODO (15 remaining spec test failures)
+- **call_indirect (7)**: Table element handling edge cases
+- **conversions (8)**: i64→f32 rounding loses precision through f64 intermediary

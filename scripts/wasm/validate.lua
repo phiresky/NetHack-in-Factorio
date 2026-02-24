@@ -10,13 +10,17 @@ local I64 = WasmParser.TYPE_I64   -- 0x7E
 local F32 = WasmParser.TYPE_F32   -- 0x7D
 local F64 = WasmParser.TYPE_F64   -- 0x7C
 
+local function fail(msg)
+    error({msg = msg})
+end
+
 ---------------------------------------------------------------------------
 -- Bytecode Reader (lightweight, for validation only)
 ---------------------------------------------------------------------------
 
 local function read_byte(r)
     local b = string.byte(r.code, r.pos)
-    if not b then error("unexpected end of code") end
+    if not b then fail("unexpected end of code") end
     r.pos = r.pos + 1
     return b
 end
@@ -28,7 +32,7 @@ local function read_leb128_u(r)
     local pos = r.pos
     while true do
         local b = string.byte(code, pos)
-        if not b then error("unexpected end of code") end
+        if not b then fail("unexpected end of code") end
         pos = pos + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         if bit32.band(b, 0x80) == 0 then break end
@@ -46,7 +50,7 @@ local function read_leb128_s(r)
     local b
     while true do
         b = string.byte(code, pos)
-        if not b then error("unexpected end of code") end
+        if not b then fail("unexpected end of code") end
         pos = pos + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         shift = shift + 7
@@ -68,7 +72,7 @@ local function read_leb128_s64(r)
     local pos = r.pos
     while true do
         local b = string.byte(code, pos)
-        if not b then error("unexpected end of code") end
+        if not b then fail("unexpected end of code") end
         pos = pos + 1
         if bit32.band(b, 0x80) == 0 then break end
     end
@@ -89,7 +93,7 @@ local function read_blocktype(r, module)
     local b
     while true do
         b = string.byte(code, pos)
-        if not b then error("unexpected end of code") end
+        if not b then fail("unexpected end of code") end
         pos = pos + 1
         result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
         shift = shift + 7
@@ -113,7 +117,7 @@ local function read_blocktype(r, module)
         -- Type index
         local type_info = module.types[result + 1]
         if not type_info then
-            error("type mismatch") -- unknown type index in block
+            fail("type mismatch") -- unknown type index in block
         end
         return type_info.params, type_info.results
     end
@@ -358,12 +362,12 @@ local function pop_operand(v, expected)
         if frame.unreachable then
             return expected or UNKNOWN -- polymorphic
         end
-        error("type mismatch") -- underflow
+        fail("type mismatch") -- underflow
     end
     local actual = v.types[v.tsp]
     v.tsp = v.tsp - 1
     if expected and actual ~= UNKNOWN and expected ~= UNKNOWN and actual ~= expected then
-        error("type mismatch")
+        fail("type mismatch")
     end
     return actual == UNKNOWN and (expected or UNKNOWN) or actual
 end
@@ -394,11 +398,11 @@ local function push_ctrl(v, opcode, start_types, end_types)
 end
 
 local function pop_ctrl(v)
-    if v.ctrl_sp < 1 then error("type mismatch") end
+    if v.ctrl_sp < 1 then fail("type mismatch") end
     local frame = v.ctrls[v.ctrl_sp]
     pop_operands(v, frame.end_types)
     if v.tsp ~= frame.height then
-        error("type mismatch") -- extra values on stack
+        fail("type mismatch") -- extra values on stack
     end
     v.ctrl_sp = v.ctrl_sp - 1
     return frame
@@ -413,7 +417,7 @@ end
 -- Get the label types for a branch target at depth
 local function label_types(v, depth)
     if depth >= v.ctrl_sp then
-        error("unknown label")
+        fail("unknown label")
     end
     local frame = v.ctrls[v.ctrl_sp - depth]
     if frame.opcode == 0x03 then -- loop
@@ -429,7 +433,7 @@ end
 
 local function validate_function_body(module, func_idx, func_def)
     local type_info = module.types[func_def.type_idx + 1]
-    if not type_info then error("unknown type") end
+    if not type_info then fail("unknown type") end
     local code = func_def.code.code
 
     -- Build local types: params + declared locals
@@ -485,7 +489,7 @@ local function validate_function_body(module, func_idx, func_def)
 
         elseif op == 0x05 then -- else
             local frame = pop_ctrl(v)
-            if frame.opcode ~= 0x04 then error("type mismatch") end
+            if frame.opcode ~= 0x04 then fail("type mismatch") end
             push_ctrl(v, 0x05, frame.start_types, frame.end_types)
             push_operands(v, frame.start_types)
 
@@ -495,11 +499,11 @@ local function validate_function_body(module, func_idx, func_def)
             if frame.opcode == 0x04 then
                 -- if without else: end_types must equal start_types
                 if #frame.end_types ~= #frame.start_types then
-                    error("type mismatch")
+                    fail("type mismatch")
                 end
                 for i = 1, #frame.end_types do
                     if frame.end_types[i] ~= frame.start_types[i] then
-                        error("type mismatch")
+                        fail("type mismatch")
                     end
                 end
             end
@@ -531,11 +535,11 @@ local function validate_function_body(module, func_idx, func_def)
             for i = 0, count - 1 do
                 local ttypes = label_types(v, targets[i])
                 if #ttypes ~= #default_types then
-                    error("type mismatch")
+                    fail("type mismatch")
                 end
                 for j = 1, #ttypes do
                     if ttypes[j] ~= default_types[j] then
-                        error("type mismatch")
+                        fail("type mismatch")
                     end
                 end
             end
@@ -549,20 +553,20 @@ local function validate_function_body(module, func_idx, func_def)
         elseif op == 0x10 then -- call
             local fidx = read_leb128_u(r)
             local fdef = module.funcs[fidx]
-            if not fdef then error("unknown function") end
+            if not fdef then fail("unknown function") end
             local ftype = module.types[fdef.type_idx + 1]
-            if not ftype then error("unknown type") end
+            if not ftype then fail("unknown type") end
             pop_operands(v, ftype.params)
             push_operands(v, ftype.results)
 
         elseif op == 0x11 then -- call_indirect
             local type_idx = read_leb128_u(r)
             local table_idx = read_leb128_u(r)
-            if not v.has_table then error("unknown table") end
+            if not v.has_table then fail("unknown table") end
             -- Table must be funcref type (0x70)
             local tbl_type = v.table_elem_type
-            if tbl_type and tbl_type ~= 0x70 then error("type mismatch") end
-            if type_idx >= #module.types then error("unknown type") end
+            if tbl_type and tbl_type ~= 0x70 then fail("type mismatch") end
+            if type_idx >= #module.types then fail("unknown type") end
             local ftype = module.types[type_idx + 1]
             pop_operand(v, I32) -- table index
             pop_operands(v, ftype.params)
@@ -576,46 +580,46 @@ local function validate_function_body(module, func_idx, func_def)
             local t2 = pop_operand(v, nil)
             local t1 = pop_operand(v, (t2 ~= UNKNOWN) and t2 or nil)
             if t1 ~= UNKNOWN and t2 ~= UNKNOWN and t1 ~= t2 then
-                error("type mismatch")
+                fail("type mismatch")
             end
             push_operand(v, t1 ~= UNKNOWN and t1 or t2)
 
         elseif op == 0x20 then -- local.get
             local idx = read_leb128_u(r)
-            if idx >= v.num_locals then error("unknown local") end
+            if idx >= v.num_locals then fail("unknown local") end
             push_operand(v, v.local_types[idx])
 
         elseif op == 0x21 then -- local.set
             local idx = read_leb128_u(r)
-            if idx >= v.num_locals then error("unknown local") end
+            if idx >= v.num_locals then fail("unknown local") end
             pop_operand(v, v.local_types[idx])
 
         elseif op == 0x22 then -- local.tee
             local idx = read_leb128_u(r)
-            if idx >= v.num_locals then error("unknown local") end
+            if idx >= v.num_locals then fail("unknown local") end
             local t = v.local_types[idx]
             pop_operand(v, t)
             push_operand(v, t)
 
         elseif op == 0x23 then -- global.get
             local idx = read_leb128_u(r)
-            if v.global_types[idx] == nil then error("unknown global") end
+            if v.global_types[idx] == nil then fail("unknown global") end
             push_operand(v, v.global_types[idx])
 
         elseif op == 0x24 then -- global.set
             local idx = read_leb128_u(r)
-            if v.global_types[idx] == nil then error("unknown global") end
-            if not v.global_mutable[idx] then error("global is immutable") end
+            if v.global_types[idx] == nil then fail("unknown global") end
+            if not v.global_mutable[idx] then fail("global is immutable") end
             pop_operand(v, v.global_types[idx])
 
         elseif op == 0x3F then -- memory.size
             read_leb128_u(r) -- reserved
-            if not v.has_memory then error("unknown memory") end
+            if not v.has_memory then fail("unknown memory") end
             push_operand(v, I32)
 
         elseif op == 0x40 then -- memory.grow
             read_leb128_u(r) -- reserved
-            if not v.has_memory then error("unknown memory") end
+            if not v.has_memory then fail("unknown memory") end
             pop_operand(v, I32)
             push_operand(v, I32)
 
@@ -638,13 +642,13 @@ local function validate_function_body(module, func_idx, func_def)
         elseif op >= 0x28 and op <= 0x3E then
             -- Memory load/store - read memarg, then use signature table
             read_memarg(r)
-            if not v.has_memory then error("unknown memory") end
+            if not v.has_memory then fail("unknown memory") end
             local sig = op_sig[op]
             if sig then
                 pop_operands(v, sig[1])
                 push_operands(v, sig[2])
             else
-                error(string.format("unknown opcode 0x%02X", op))
+                fail(string.format("unknown opcode 0x%02X", op))
             end
 
         elseif op == 0xFC then -- extended opcodes
@@ -664,14 +668,14 @@ local function validate_function_body(module, func_idx, func_def)
                 pop_operands(v, sig[1])
                 push_operands(v, sig[2])
             else
-                error(string.format("unknown opcode 0x%02X", op))
+                fail(string.format("unknown opcode 0x%02X", op))
             end
         end
     end
 
     -- After processing all bytecode, control stack should be empty
     if v.ctrl_sp ~= 0 then
-        error("type mismatch") -- unclosed blocks
+        fail("type mismatch") -- unclosed blocks
     end
 end
 
@@ -702,14 +706,14 @@ local function validate_module(module)
     end
 
     -- Validate: at most 1 memory and 1 table (MVP)
-    if num_memories > 1 then error("multiple memories") end
-    if num_tables > 1 then error("multiple tables") end
+    if num_memories > 1 then fail("multiple memories") end
+    if num_tables > 1 then fail("multiple tables") end
 
     -- Validate import type indices
     for _, imp in ipairs(module.imports) do
         if imp.kind == WasmParser.EXT_FUNC then
             if not imp.desc or imp.desc.type_idx >= #module.types then
-                error("unknown type")
+                fail("unknown type")
             end
         end
     end
@@ -717,47 +721,56 @@ local function validate_module(module)
     -- Validate function type indices
     for _, type_idx in ipairs(module.func_type_indices) do
         if type_idx >= #module.types then
-            error("unknown type")
+            fail("unknown type")
         end
     end
 
     -- Validate export indices
     for _, exp in ipairs(module.exports) do
         if exp.kind == WasmParser.EXT_FUNC then
-            if not module.funcs[exp.index] then error("unknown function") end
+            if not module.funcs[exp.index] then fail("unknown function") end
         elseif exp.kind == WasmParser.EXT_GLOBAL then
-            if exp.index >= total_globals then error("unknown global") end
+            if exp.index >= total_globals then fail("unknown global " .. exp.index) end
         elseif exp.kind == WasmParser.EXT_MEMORY then
-            if num_memories == 0 or exp.index >= num_memories then error("unknown memory") end
+            if num_memories == 0 or exp.index >= num_memories then fail("unknown memory " .. exp.index) end
         elseif exp.kind == WasmParser.EXT_TABLE then
-            if num_tables == 0 or exp.index >= num_tables then error("unknown table") end
+            if num_tables == 0 or exp.index >= num_tables then fail("unknown table") end
         end
     end
 
     -- Validate start function
     if module.start_func then
         local fdef = module.funcs[module.start_func]
-        if not fdef then error("unknown function") end
+        if not fdef then fail("unknown function") end
         local ftype = module.types[fdef.type_idx + 1]
-        if not ftype then error("unknown type") end
+        if not ftype then fail("unknown type") end
         if #ftype.params ~= 0 or #ftype.results ~= 0 then
-            error("start function")
+            fail("start function")
         end
     end
 
     -- Helper: validate an init expression's global.get reference
+    -- Returns the type produced, or 0xFF for invalid/unknown expressions
+    local INVALID_TYPE = 0xFF
     local function validate_init_global_ref(init_opcode, init_val)
+        -- Check for invalid_expr sentinel from parser
+        if type(init_val) == "table" and init_val.invalid_expr then
+            if init_val.invalid_expr == "const" then
+                fail("constant expression required")
+            end
+            return INVALID_TYPE -- "type" reason: validator reports type mismatch
+        end
         if init_opcode == 0x23 then -- global.get
             local ref_idx = init_val.global_idx
             if ref_idx >= num_import_globals then
-                error("unknown global")
+                fail("unknown global " .. ref_idx)
             end
             local found_idx = 0
             for _, imp in ipairs(module.imports) do
                 if imp.kind == WasmParser.EXT_GLOBAL then
                     if found_idx == ref_idx then
                         if imp.desc.mutable then
-                            error("constant expression required")
+                            fail("constant expression required")
                         end
                         return imp.desc.valtype
                     end
@@ -776,28 +789,31 @@ local function validate_module(module)
 
     -- Validate element segments
     for _, seg in ipairs(module.element_segments) do
-        if num_tables == 0 then error("unknown table") end
+        if num_tables == 0 then fail("unknown table") end
         for _, fidx in ipairs(seg.func_indices) do
-            if not module.funcs[fidx] then error("unknown function") end
+            if not module.funcs[fidx] then fail("unknown function") end
         end
         -- Offset must be i32
         local init_type = validate_init_global_ref(seg.offset_opcode, seg.offset)
-        if init_type and init_type ~= I32 then error("type mismatch") end
+        if init_type and init_type ~= I32 then fail("type mismatch") end
     end
 
     -- Validate data segments
     for _, seg in ipairs(module.data_segments) do
-        if num_memories == 0 then error("unknown memory") end
+        if seg.passive then goto continue_data end
+        local mem_idx = seg.memory_idx or 0
+        if mem_idx >= num_memories then fail("unknown memory " .. mem_idx) end
         -- Offset must be i32
         local init_type = validate_init_global_ref(seg.offset_opcode, seg.offset)
-        if init_type and init_type ~= I32 then error("type mismatch") end
+        if init_type and init_type ~= I32 then fail("type mismatch") end
+        ::continue_data::
     end
 
     -- Validate global init expressions
     for i, g in ipairs(module.globals) do
         local init_type = validate_init_global_ref(g.init_opcode, g.init)
         if init_type and init_type ~= g.valtype then
-            error("type mismatch")
+            fail("type mismatch")
         end
     end
 
@@ -805,7 +821,7 @@ local function validate_module(module)
     local export_names = {}
     for _, exp in ipairs(module.exports) do
         if export_names[exp.name] then
-            error("duplicate export name")
+            fail("duplicate export name")
         end
         export_names[exp.name] = true
     end
@@ -813,10 +829,7 @@ local function validate_module(module)
     -- Validate each function body
     for idx, fdef in pairs(module.funcs) do
         if not fdef.import and fdef.code then
-            local ok, err = pcall(validate_function_body, module, idx, fdef)
-            if not ok then
-                error(err)
-            end
+            validate_function_body(module, idx, fdef)
         end
     end
 end
