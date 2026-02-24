@@ -1,4 +1,4 @@
-/* NetHack Factorio port configuration header */
+/* NetHack 3.6 Factorio port configuration header */
 #ifndef FACTORIOCONF_H
 #define FACTORIOCONF_H
 
@@ -51,9 +51,5 @@
 
 /* Ensure we have syscf support for sysconf defaults */
 #define SYSCF
-
-/* Self-recover support */
-#define SELF_RECOVER
-#define CHECK_PANIC_SAVE
 
 #endif /* FACTORIOCONF_H */

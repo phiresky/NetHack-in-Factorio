@@ -929,6 +929,90 @@ end
 -- 0x01: nop
 dispatch[0x01] = function(state) end
 
+-- Helper: unwind block stack looking for a try_table with matching catch clause.
+-- If found, sets up the branch and returns true. If not found, returns false
+-- (exception must propagate to caller).
+local function handle_exception(state, exception)
+    local bsp = state.block_sp
+    while bsp >= 1 do
+        local block = state.block_stack[bsp]
+        if block.opcode == 0x1F and block.catches then
+            -- try_table block: check catch clauses
+            for _, clause in ipairs(block.catches) do
+                local matched = false
+                if clause.kind == 0 then -- catch tagidx
+                    matched = (exception.tag == clause.tagidx)
+                elseif clause.kind == 1 then -- catch_all
+                    matched = true
+                elseif clause.kind == 2 then -- catch_ref tagidx
+                    matched = (exception.tag == clause.tagidx)
+                elseif clause.kind == 3 then -- catch_all_ref
+                    matched = true
+                end
+                if matched then
+                    -- Restore stack to block height
+                    state.sp = block.stack_height
+
+                    -- Push exception values for catch/catch_ref
+                    if clause.kind == 0 or clause.kind == 2 then
+                        for _, v in ipairs(exception.values) do
+                            push(state, v)
+                        end
+                    end
+
+                    -- Push exnref for catch_ref/catch_all_ref
+                    if clause.kind == 2 or clause.kind == 3 then
+                        push(state, exception) -- the exception object itself serves as exnref
+                    end
+
+                    -- Branch to the label (clause.depth is relative to the try_table's position)
+                    state.block_sp = bsp
+                    state.exception = nil
+                    do_branch(state, clause.depth)
+                    return true
+                end
+            end
+        end
+        bsp = bsp - 1
+    end
+    -- No handler found in current function
+    return false
+end
+
+-- 0x08: throw
+dispatch[0x08] = function(state)
+    local tagidx = read_leb128_u(state)
+    local module = state.module or (state.instance and state.instance.module)
+    local tags = state.instance and state.instance.tags
+    local tag = tags and tags[tagidx]
+    local values = {}
+    if tag then
+        local type_info = module.types[tag.type_idx + 1]
+        if type_info then
+            for i = #type_info.params, 1, -1 do
+                values[i] = pop(state)
+            end
+        end
+    end
+    local exception = {tag = tagidx, values = values}
+    if not handle_exception(state, exception) then
+        state.exception = exception
+        state.running = false
+    end
+end
+
+-- 0x0A: throw_ref
+dispatch[0x0A] = function(state)
+    local exnref = pop(state)
+    if type(exnref) ~= "table" or exnref.tag == nil then
+        fail("throw_ref: invalid exnref")
+    end
+    if not handle_exception(state, exnref) then
+        state.exception = exnref
+        state.running = false
+    end
+end
+
 -- 0x02: block
 dispatch[0x02] = function(state)
     local n_params, n_results = read_blocktype(state)
@@ -976,6 +1060,9 @@ dispatch[0x04] = function(state)
             if op == 0x02 or op == 0x03 or op == 0x04 then
                 read_blocktype(state) -- consume block type
                 depth = depth + 1
+            elseif op == 0x1F then -- try_table
+                skip_instruction_operands(state, op)
+                depth = depth + 1
             elseif op == 0x05 then -- else
                 if depth == 1 then
                     -- Found our else, continue execution in else branch
@@ -1005,6 +1092,9 @@ dispatch[0x05] = function(state)
         local op = read_byte(state)
         if op == 0x02 or op == 0x03 or op == 0x04 then
             read_blocktype(state)
+            depth = depth + 1
+        elseif op == 0x1F then -- try_table
+            skip_instruction_operands(state, op)
             depth = depth + 1
         elseif op == 0x0B then
             depth = depth - 1
@@ -1060,9 +1150,38 @@ dispatch[0x0B] = function(state)
     end
 end
 
+-- 0x1F: try_table
+dispatch[0x1F] = function(state)
+    local n_params, n_results = read_blocktype(state)
+    local num_catches = read_leb128_u(state)
+    local catches = {}
+    for i = 1, num_catches do
+        local kind = read_byte(state) -- 0=catch, 1=catch_all, 2=catch_ref, 3=catch_all_ref
+        local tagidx = nil
+        if kind == 0 or kind == 2 then
+            tagidx = read_leb128_u(state)
+        end
+        local depth = read_leb128_u(state) -- label index (branch depth)
+        catches[i] = {kind = kind, tagidx = tagidx, depth = depth}
+    end
+    local bsp = state.block_sp + 1
+    state.block_sp = bsp
+    state.block_stack[bsp] = {
+        opcode = 0x1F,
+        arity = n_results, -- branch arity = results for try_table (like block)
+        stack_height = state.sp - n_params,
+        continuation_pc = nil,
+        catches = catches,
+    }
+end
+
 -- Helper: skip instruction operands for code scanning
 function skip_instruction_operands(state, op)
-    if op == 0x0C or op == 0x0D then -- br, br_if
+    if op == 0x08 then -- throw
+        read_leb128_u(state) -- tagidx
+    elseif op == 0x0A then -- throw_ref
+        -- no operands
+    elseif op == 0x0C or op == 0x0D then -- br, br_if
         read_leb128_u(state)
     elseif op == 0x0E then -- br_table
         local count = read_leb128_u(state)
@@ -1078,6 +1197,16 @@ function skip_instruction_operands(state, op)
         read_leb128_u(state) -- table index (reserved, must be 0 in MVP)
     elseif op == 0x1A or op == 0x1B then -- drop, select
         -- no operands
+    elseif op == 0x1F then -- try_table
+        read_blocktype(state)
+        local num_catches = read_leb128_u(state)
+        for _ = 1, num_catches do
+            local kind = read_byte(state)
+            if kind == 0 or kind == 2 then -- catch / catch_ref have tagidx
+                read_leb128_u(state)
+            end
+            read_leb128_u(state) -- label depth
+        end
     elseif op >= 0x20 and op <= 0x24 then -- local.get/set/tee, global.get/set
         read_leb128_u(state)
     elseif op >= 0x28 and op <= 0x3E then -- memory load/store ops
@@ -1138,6 +1267,9 @@ local function do_branch(state, depth)
             local op = read_byte(state)
             if op == 0x02 or op == 0x03 or op == 0x04 then
                 read_blocktype(state)
+                skip_depth = skip_depth + 1
+            elseif op == 0x1F then -- try_table
+                skip_instruction_operands(state, op)
                 skip_depth = skip_depth + 1
             elseif op == 0x0B then
                 skip_depth = skip_depth - 1
@@ -2466,6 +2598,7 @@ dispatch[0xFC] = function(state)
     end
 end
 
+Opcodes.handle_exception = handle_exception
 Opcodes.nan_mt = nan_mt
 Opcodes.dispatch = dispatch
 Opcodes.do_branch = do_branch

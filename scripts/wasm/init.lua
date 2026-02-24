@@ -20,6 +20,7 @@ local SECTION_START    = 8
 local SECTION_ELEMENT  = 9
 local SECTION_CODE     = 10
 local SECTION_DATA     = 11
+local SECTION_TAG      = 13
 
 -- Type constants
 local TYPE_I32    = 0x7F
@@ -33,6 +34,7 @@ local EXT_FUNC   = 0
 local EXT_TABLE  = 1
 local EXT_MEMORY = 2
 local EXT_GLOBAL = 3
+local EXT_TAG    = 4
 
 local function new_parser(bytes)
     return setmetatable({
@@ -260,6 +262,10 @@ function Parser:parse_import_section(size)
             local valtype = self:read_valtype()
             local mutability = self:read_byte()
             desc = {valtype = valtype, mutable = mutability == 1}
+        elseif kind == EXT_TAG then
+            local attribute = self:read_byte() -- must be 0 (exception)
+            local type_idx = self:read_leb128_u()
+            desc = {attribute = attribute, type_idx = type_idx}
         else
             fail("Unknown import kind: " .. kind)
         end
@@ -403,6 +409,18 @@ function Parser:parse_element_section(size)
     return elements
 end
 
+-- Parse tag section (exception handling)
+function Parser:parse_tag_section(size)
+    local count = self:read_leb128_u()
+    local tags = {}
+    for i = 1, count do
+        local attribute = self:read_byte() -- must be 0 (exception)
+        local type_idx = self:read_leb128_u()
+        tags[i] = {attribute = attribute, type_idx = type_idx}
+    end
+    return tags
+end
+
 -- Parse code section
 function Parser:parse_code_section(size)
     local count = self:read_leb128_u()
@@ -505,6 +523,7 @@ local function parse(bytes)
         element_segments = {},
         code_bodies = {},
         data_segments = {},
+        tags = {},
     }
 
     -- Parse sections
@@ -538,6 +557,8 @@ local function parse(bytes)
             module.code_bodies = p:parse_code_section(section_size)
         elseif section_id == SECTION_DATA then
             module.data_segments = p:parse_data_section(section_size)
+        elseif section_id == SECTION_TAG then
+            module.tags = p:parse_tag_section(section_size)
         else
             -- Skip unknown/custom section
             p.pos = section_end
@@ -551,9 +572,12 @@ local function parse(bytes)
 
     -- Build funcs array combining imports and module functions
     module.num_import_funcs = 0
+    module.num_import_tags = 0
     for _, imp in ipairs(module.imports) do
         if imp.kind == EXT_FUNC then
             module.num_import_funcs = module.num_import_funcs + 1
+        elseif imp.kind == EXT_TAG then
+            module.num_import_tags = module.num_import_tags + 1
         end
     end
 
@@ -599,4 +623,5 @@ return {
     EXT_TABLE = EXT_TABLE,
     EXT_MEMORY = EXT_MEMORY,
     EXT_GLOBAL = EXT_GLOBAL,
+    EXT_TAG = EXT_TAG,
 }

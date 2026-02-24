@@ -1,4 +1,4 @@
-/* NetHack 3.7 winfactorio.c - Factorio WASM window port */
+/* NetHack 3.6 winfactorio.c - Factorio WASM window port */
 /* Copyright (c) 2026, NetHack-Factorio project */
 /* NetHack may be freely redistributed.  See license for details. */
 
@@ -17,7 +17,7 @@
 
 /* ================================================================
  * WASM imports - provided by the Lua host environment.
- * Declared as extern functions; Emscripten generates WASM import
+ * Declared as extern functions; clang generates WASM import
  * entries for them. The Lua WASM interpreter supplies implementations.
  * ================================================================ */
 
@@ -44,67 +44,65 @@ extern void host_exit_nhwindows(const char *str, int len);
 extern void host_curs(int winid, int x, int y);
 extern void host_cliparound(int x, int y);
 extern void host_delay_output(void);
-extern void host_update_inventory(int arg);
+extern void host_update_inventory(void);
 extern void host_mark_synch(void);
 
 /* ================================================================
  * Forward declarations for all window port functions
  * ================================================================ */
 
-static void factorio_init_nhwindows(int *, char **);
-static void factorio_player_selection(void);
-static void factorio_askname(void);
-static void factorio_get_nh_event(void);
-static void factorio_exit_nhwindows(const char *);
-static void factorio_suspend_nhwindows(const char *);
-static void factorio_resume_nhwindows(void);
-static winid factorio_create_nhwindow(int);
-static void factorio_clear_nhwindow(winid);
-static void factorio_display_nhwindow(winid, boolean);
-static void factorio_destroy_nhwindow(winid);
-static void factorio_curs(winid, int, int);
-static void factorio_putstr(winid, int, const char *);
-static void factorio_putmixed(winid, int, const char *);
-static void factorio_display_file(const char *, boolean);
-static void factorio_start_menu(winid, unsigned long);
-static void factorio_add_menu(winid, const glyph_info *, const ANY_P *,
-                              char, char, int, int, const char *,
-                              unsigned int);
-static void factorio_end_menu(winid, const char *);
-static int factorio_select_menu(winid, int, MENU_ITEM_P **);
-static char factorio_message_menu(char, int, const char *);
-static void factorio_mark_synch(void);
-static void factorio_wait_synch(void);
+static void FDECL(factorio_init_nhwindows, (int *, char **));
+static void NDECL(factorio_player_selection);
+static void NDECL(factorio_askname);
+static void NDECL(factorio_get_nh_event);
+static void FDECL(factorio_exit_nhwindows, (const char *));
+static void FDECL(factorio_suspend_nhwindows, (const char *));
+static void NDECL(factorio_resume_nhwindows);
+static winid FDECL(factorio_create_nhwindow, (int));
+static void FDECL(factorio_clear_nhwindow, (winid));
+static void FDECL(factorio_display_nhwindow, (winid, BOOLEAN_P));
+static void FDECL(factorio_destroy_nhwindow, (winid));
+static void FDECL(factorio_curs, (winid, int, int));
+static void FDECL(factorio_putstr, (winid, int, const char *));
+static void FDECL(factorio_putmixed, (winid, int, const char *));
+static void FDECL(factorio_display_file, (const char *, BOOLEAN_P));
+static void FDECL(factorio_start_menu, (winid));
+static void FDECL(factorio_add_menu, (winid, int, const ANY_P *, CHAR_P,
+                                       CHAR_P, int, const char *, BOOLEAN_P));
+static void FDECL(factorio_end_menu, (winid, const char *));
+static int FDECL(factorio_select_menu, (winid, int, MENU_ITEM_P **));
+static char FDECL(factorio_message_menu, (CHAR_P, int, const char *));
+static void NDECL(factorio_update_inventory);
+static void NDECL(factorio_mark_synch);
+static void NDECL(factorio_wait_synch);
 #ifdef CLIPPING
-static void factorio_cliparound(int, int);
+static void FDECL(factorio_cliparound, (int, int));
 #endif
-static void factorio_print_glyph(winid, coordxy, coordxy,
-                                 const glyph_info *, const glyph_info *);
-static void factorio_raw_print(const char *);
-static void factorio_raw_print_bold(const char *);
-static int factorio_nhgetch(void);
-static int factorio_nh_poskey(coordxy *, coordxy *, int *);
-static void factorio_nhbell(void);
-static int factorio_doprev_message(void);
-static char factorio_yn_function(const char *, const char *, char);
-static void factorio_getlin(const char *, char *);
-static int factorio_get_ext_cmd(void);
-static void factorio_number_pad(int);
-static void factorio_delay_output(void);
-static void factorio_outrip(winid, int, time_t);
-static void factorio_preference_update(const char *);
-static char *factorio_getmsghistory(boolean);
-static void factorio_putmsghistory(const char *, boolean);
-static void factorio_status_init(void);
-static void factorio_status_finish(void);
-static void factorio_status_enablefield(int, const char *, const char *,
-                                        boolean);
-static void factorio_status_update(int, genericptr_t, int, int, int,
-                                   unsigned long *);
-static boolean factorio_can_suspend(void);
-static void factorio_update_inventory(int);
-static win_request_info *factorio_ctrl_nhwindow(winid, int,
-                                                win_request_info *);
+static void FDECL(factorio_print_glyph, (winid, XCHAR_P, XCHAR_P, int, int));
+static void FDECL(factorio_raw_print, (const char *));
+static void FDECL(factorio_raw_print_bold, (const char *));
+static int NDECL(factorio_nhgetch);
+static int FDECL(factorio_nh_poskey, (int *, int *, int *));
+static void NDECL(factorio_nhbell);
+static int NDECL(factorio_doprev_message);
+static char FDECL(factorio_yn_function, (const char *, const char *, CHAR_P));
+static void FDECL(factorio_getlin, (const char *, char *));
+static int NDECL(factorio_get_ext_cmd);
+static void FDECL(factorio_number_pad, (int));
+static void NDECL(factorio_delay_output);
+static void NDECL(factorio_start_screen);
+static void NDECL(factorio_end_screen);
+static void FDECL(factorio_outrip, (winid, int, time_t));
+static void FDECL(factorio_preference_update, (const char *));
+static char *FDECL(factorio_getmsghistory, (BOOLEAN_P));
+static void FDECL(factorio_putmsghistory, (const char *, BOOLEAN_P));
+static void NDECL(factorio_status_init);
+static void NDECL(factorio_status_finish);
+static void FDECL(factorio_status_enablefield,
+                   (int, const char *, const char *, BOOLEAN_P));
+static void FDECL(factorio_status_update,
+                   (int, genericptr_t, int, int, int, unsigned long *));
+static boolean NDECL(factorio_can_suspend);
 
 /* ================================================================
  * The window_procs structure - registered with NetHack core
@@ -112,7 +110,6 @@ static win_request_info *factorio_ctrl_nhwindow(winid, int,
 
 struct window_procs factorio_procs = {
     "factorio",
-    wp_safestartup, /* reuse safestartup id; no dedicated enum value */
     (WC_COLOR | WC_HILITE_PET | WC_ASCII_MAP | WC_INVERSE
      | WC_EIGHT_BIT_IN),
     (WC2_DARKGRAY | WC2_SUPPRESS_HIST | WC2_URGENT_MESG
@@ -142,6 +139,7 @@ struct window_procs factorio_procs = {
     factorio_end_menu,
     factorio_select_menu,
     factorio_message_menu,
+    factorio_update_inventory,
     factorio_mark_synch,
     factorio_wait_synch,
 #ifdef CLIPPING
@@ -170,6 +168,8 @@ struct window_procs factorio_procs = {
 #endif
     (char *(*)(void)) 0,          /* get_color_string */
 #endif
+    factorio_start_screen,
+    factorio_end_screen,
     factorio_outrip,
     factorio_preference_update,
     factorio_getmsghistory,
@@ -179,8 +179,6 @@ struct window_procs factorio_procs = {
     factorio_status_enablefield,
     factorio_status_update,
     factorio_can_suspend,
-    factorio_update_inventory,
-    factorio_ctrl_nhwindow,
 };
 
 /* ================================================================
@@ -188,13 +186,15 @@ struct window_procs factorio_procs = {
  * ================================================================ */
 
 static void
-factorio_init_nhwindows(int *argcp UNUSED, char **argv UNUSED)
+factorio_init_nhwindows(argcp, argv)
+int *argcp UNUSED;
+char **argv UNUSED;
 {
     iflags.window_inited = TRUE;
 }
 
 static void
-factorio_player_selection(void)
+factorio_player_selection()
 {
     /* Auto-select: random role, race, gender, alignment.
      * This avoids interactive character creation menus. */
@@ -210,19 +210,20 @@ factorio_player_selection(void)
 }
 
 static void
-factorio_askname(void)
+factorio_askname()
 {
-    Strcpy(svp.plname, "Player");
+    Strcpy(plname, "Player");
 }
 
 static void
-factorio_get_nh_event(void)
+factorio_get_nh_event()
 {
     /* no-op */
 }
 
 static void
-factorio_exit_nhwindows(const char *str)
+factorio_exit_nhwindows(str)
+const char *str;
 {
     if (str) {
         host_exit_nhwindows(str, (int) strlen(str));
@@ -232,49 +233,60 @@ factorio_exit_nhwindows(const char *str)
 }
 
 static void
-factorio_suspend_nhwindows(const char *str UNUSED)
+factorio_suspend_nhwindows(str)
+const char *str UNUSED;
 {
     /* cannot suspend in WASM */
 }
 
 static void
-factorio_resume_nhwindows(void)
+factorio_resume_nhwindows()
 {
     /* no-op */
 }
 
 static winid
-factorio_create_nhwindow(int type)
+factorio_create_nhwindow(type)
+int type;
 {
     return (winid) host_create_nhwindow(type);
 }
 
 static void
-factorio_clear_nhwindow(winid window)
+factorio_clear_nhwindow(window)
+winid window;
 {
     host_clear_nhwindow((int) window);
 }
 
 static void
-factorio_display_nhwindow(winid window, boolean blocking)
+factorio_display_nhwindow(window, blocking)
+winid window;
+boolean blocking;
 {
     host_display_nhwindow((int) window, (int) blocking);
 }
 
 static void
-factorio_destroy_nhwindow(winid window)
+factorio_destroy_nhwindow(window)
+winid window;
 {
     host_destroy_nhwindow((int) window);
 }
 
 static void
-factorio_curs(winid window, int x, int y)
+factorio_curs(window, x, y)
+winid window;
+int x, y;
 {
     host_curs((int) window, x, y);
 }
 
 static void
-factorio_putstr(winid window, int attr, const char *str)
+factorio_putstr(window, attr, str)
+winid window;
+int attr;
+const char *str;
 {
     if (str) {
         host_putstr((int) window, attr, str, (int) strlen(str));
@@ -282,7 +294,10 @@ factorio_putstr(winid window, int attr, const char *str)
 }
 
 static void
-factorio_putmixed(winid window, int attr, const char *str)
+factorio_putmixed(window, attr, str)
+winid window;
+int attr;
+const char *str;
 {
     /* putmixed handles encoded glyphs in strings; for our port
      * we just treat it like putstr since the Lua side handles
@@ -291,42 +306,43 @@ factorio_putmixed(winid window, int attr, const char *str)
 }
 
 static void
-factorio_display_file(const char *fname UNUSED, boolean complain UNUSED)
+factorio_display_file(fname, complain)
+const char *fname UNUSED;
+boolean complain UNUSED;
 {
     /* no-op: we don't display help files etc. in Factorio */
 }
 
 static void
-factorio_start_menu(winid window, unsigned long mbehavior UNUSED)
+factorio_start_menu(window)
+winid window;
 {
     host_start_menu((int) window);
 }
 
 static void
-factorio_add_menu(
-    winid window,
-    const glyph_info *glyphinfo,
-    const anything *identifier,
-    char ch,
-    char gch,
-    int attr,
-    int clr UNUSED,
-    const char *str,
-    unsigned int itemflags)
+factorio_add_menu(window, glyph, identifier, ch, gch, attr, str, preselected)
+winid window;
+int glyph;
+const anything *identifier;
+char ch, gch;
+int attr;
+const char *str;
+boolean preselected;
 {
-    int glyph_val = glyphinfo ? glyphinfo->glyph : 0;
     int id_val = identifier ? identifier->a_int : 0;
-    int presel = (itemflags & MENU_ITEMFLAGS_SELECTED) ? 1 : 0;
 
     if (str) {
-        host_add_menu_item((int) window, glyph_val, id_val,
+        host_add_menu_item((int) window, glyph, id_val,
                            (int) ch, (int) gch, attr,
-                           str, (int) strlen(str), presel);
+                           str, (int) strlen(str), (int) preselected);
     }
 }
 
 static void
-factorio_end_menu(winid window, const char *prompt)
+factorio_end_menu(window, prompt)
+winid window;
+const char *prompt;
 {
     if (prompt) {
         host_end_menu((int) window, prompt, (int) strlen(prompt));
@@ -336,7 +352,10 @@ factorio_end_menu(winid window, const char *prompt)
 }
 
 static int
-factorio_select_menu(winid window, int how, menu_item **menu_list)
+factorio_select_menu(window, how, menu_list)
+winid window;
+int how;
+menu_item **menu_list;
 {
     int result;
 
@@ -353,34 +372,42 @@ factorio_select_menu(winid window, int how, menu_item **menu_list)
         *menu_list = (menu_item *) alloc(sizeof(menu_item));
         (*menu_list)->item.a_int = sel_id;
         (*menu_list)->count = -1;
-        (*menu_list)->itemflags = 0;
         return 1;
     }
     return result; /* 0 = nothing selected, -1 = cancelled */
 }
 
 static char
-factorio_message_menu(char let UNUSED, int how UNUSED,
-                      const char *mesg UNUSED)
+factorio_message_menu(let, how, mesg)
+char let UNUSED;
+int how UNUSED;
+const char *mesg UNUSED;
 {
     return '\033';
 }
 
 static void
-factorio_mark_synch(void)
+factorio_update_inventory()
+{
+    host_update_inventory();
+}
+
+static void
+factorio_mark_synch()
 {
     host_mark_synch();
 }
 
 static void
-factorio_wait_synch(void)
+factorio_wait_synch()
 {
     /* no-op: Factorio renders synchronously */
 }
 
 #ifdef CLIPPING
 static void
-factorio_cliparound(int x, int y)
+factorio_cliparound(x, y)
+int x, y;
 {
     host_cliparound(x, y);
 }
@@ -388,26 +415,26 @@ factorio_cliparound(int x, int y)
 
 /*
  * Print a glyph at position (x,y) on the map window.
- * Extract the TTY character and color from the glyph_info struct.
+ * Use mapglyph() to convert the glyph integer to character/color.
  */
 static void
-factorio_print_glyph(
-    winid window UNUSED,
-    coordxy x,
-    coordxy y,
-    const glyph_info *glyphinfo,
-    const glyph_info *bkglyphinfo UNUSED)
+factorio_print_glyph(window, x, y, glyph, bkglyph)
+winid window UNUSED;
+xchar x, y;
+int glyph;
+int bkglyph UNUSED;
 {
-    if (glyphinfo) {
-        host_print_glyph(x, y,
-                         glyphinfo->ttychar,
-                         glyphinfo->gm.sym.color,
-                         (int) glyphinfo->gm.glyphflags);
-    }
+    int ch;
+    int color;
+    unsigned special;
+
+    (void) mapglyph(glyph, &ch, &color, &special, x, y, 0);
+    host_print_glyph((int) x, (int) y, ch, color, (int) special);
 }
 
 static void
-factorio_raw_print(const char *str)
+factorio_raw_print(str)
+const char *str;
 {
     if (str) {
         host_raw_print(str, (int) strlen(str));
@@ -415,14 +442,15 @@ factorio_raw_print(const char *str)
 }
 
 static void
-factorio_raw_print_bold(const char *str)
+factorio_raw_print_bold(str)
+const char *str;
 {
     /* bold and normal are the same for our port */
     factorio_raw_print(str);
 }
 
 static int
-factorio_nhgetch(void)
+factorio_nhgetch()
 {
     /* This is the critical input function.
      * In the WASM interpreter, this import triggers a coroutine yield
@@ -431,7 +459,8 @@ factorio_nhgetch(void)
 }
 
 static int
-factorio_nh_poskey(coordxy *x, coordxy *y, int *mod)
+factorio_nh_poskey(x, y, mod)
+int *x, *y, *mod;
 {
     /* No mouse support; treat as regular key input */
     *x = 0;
@@ -441,19 +470,21 @@ factorio_nh_poskey(coordxy *x, coordxy *y, int *mod)
 }
 
 static void
-factorio_nhbell(void)
+factorio_nhbell()
 {
     /* no-op: no bell in Factorio */
 }
 
 static int
-factorio_doprev_message(void)
+factorio_doprev_message()
 {
     return 0;
 }
 
 static char
-factorio_yn_function(const char *query, const char *resp, char def)
+factorio_yn_function(query, resp, def)
+const char *query, *resp;
+char def;
 {
     int qlen = query ? (int) strlen(query) : 0;
     int rlen = resp ? (int) strlen(resp) : 0;
@@ -466,7 +497,9 @@ factorio_yn_function(const char *query, const char *resp, char def)
 }
 
 static void
-factorio_getlin(const char *prompt, char *outbuf)
+factorio_getlin(prompt, outbuf)
+const char *prompt;
+char *outbuf;
 {
     int len = prompt ? (int) strlen(prompt) : 0;
     int i;
@@ -493,7 +526,7 @@ factorio_getlin(const char *prompt, char *outbuf)
 }
 
 static int
-factorio_get_ext_cmd(void)
+factorio_get_ext_cmd()
 {
     /* Extended command selection - treat like getlin but for
      * the # command. Use the same mechanism. */
@@ -515,64 +548,91 @@ factorio_get_ext_cmd(void)
 }
 
 static void
-factorio_number_pad(int mode UNUSED)
+factorio_number_pad(mode)
+int mode UNUSED;
 {
     /* no-op */
 }
 
 static void
-factorio_delay_output(void)
+factorio_delay_output()
 {
     host_delay_output();
 }
 
 static void
-factorio_outrip(winid tmpwin UNUSED, int how UNUSED, time_t when UNUSED)
+factorio_start_screen()
+{
+    /* no-op */
+}
+
+static void
+factorio_end_screen()
+{
+    /* no-op */
+}
+
+static void
+factorio_outrip(tmpwin, how, when)
+winid tmpwin UNUSED;
+int how UNUSED;
+time_t when UNUSED;
 {
     /* no-op: tombstone display handled by Lua side if desired */
 }
 
 static void
-factorio_preference_update(const char *pref UNUSED)
+factorio_preference_update(pref)
+const char *pref UNUSED;
 {
     /* no-op */
 }
 
 static char *
-factorio_getmsghistory(boolean init UNUSED)
+factorio_getmsghistory(init)
+boolean init UNUSED;
 {
     return (char *) 0;
 }
 
 static void
-factorio_putmsghistory(const char *msg UNUSED, boolean is_restoring UNUSED)
+factorio_putmsghistory(msg, is_restoring)
+const char *msg UNUSED;
+boolean is_restoring UNUSED;
 {
     /* no-op */
 }
 
 static void
-factorio_status_init(void)
+factorio_status_init()
 {
     /* no-op */
 }
 
 static void
-factorio_status_finish(void)
+factorio_status_finish()
 {
     /* no-op */
 }
 
 static void
-factorio_status_enablefield(int fieldidx UNUSED, const char *nm UNUSED,
-                            const char *fmt UNUSED, boolean enable UNUSED)
+factorio_status_enablefield(fieldidx, nm, fmt, enable)
+int fieldidx UNUSED;
+const char *nm UNUSED;
+const char *fmt UNUSED;
+boolean enable UNUSED;
 {
     /* no-op */
 }
 
 static void
-factorio_status_update(int idx, genericptr_t ptr, int chg UNUSED,
-                       int percent, int color,
-                       unsigned long *colormasks UNUSED)
+factorio_status_update(idx, ptr, chg, percent, color, colormasks)
+int idx;
+genericptr_t ptr;
+int chg UNUSED;
+int percent;
+int color;
+unsigned long *colormasks UNUSED;
 {
     const char *val;
     char numbuf[32];
@@ -600,22 +660,9 @@ factorio_status_update(int idx, genericptr_t ptr, int chg UNUSED,
 }
 
 static boolean
-factorio_can_suspend(void)
+factorio_can_suspend()
 {
     return FALSE;
-}
-
-static void
-factorio_update_inventory(int arg)
-{
-    host_update_inventory(arg);
-}
-
-static win_request_info *
-factorio_ctrl_nhwindow(winid window UNUSED, int request UNUSED,
-                       win_request_info *wri UNUSED)
-{
-    return (win_request_info *) 0;
 }
 
 /* winfactorio.c */
