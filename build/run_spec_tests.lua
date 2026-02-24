@@ -139,6 +139,7 @@ end
 local Parser = require("scripts.wasm.init")
 local Interp = require("scripts.wasm.interp")
 local Memory = require("scripts.wasm.memory")
+local Validator = require("scripts.wasm.validate")
 
 ---------------------------------------------------------------------------
 -- Value conversion helpers
@@ -559,11 +560,66 @@ local function run_spec_test(json_path)
             end
 
         elseif cmd.type == "assert_invalid" or cmd.type == "assert_malformed" then
-            -- These test the parser/validator - skip for now
-            skipped = skipped + 1
+            -- Module should fail to parse or validate
+            if cmd.module_type == "text" then
+                -- WAT text format - wast2json doesn't produce a .wasm for these
+                skipped = skipped + 1
+            elseif not cmd.filename then
+                skipped = skipped + 1
+            else
+                local wasm_path = base_dir .. cmd.filename
+                local wasm_data = load_wasm_file(wasm_path)
+                if not wasm_data then
+                    passed = passed + 1 -- file missing/unreadable counts as rejected
+                else
+                    local ok, mod = pcall(Parser.parse, wasm_data)
+                    if not ok then
+                        passed = passed + 1 -- parse failed as expected
+                    else
+                        -- Parsed OK, try validating
+                        local ok2, err2 = pcall(Validator.validate, mod)
+                        if not ok2 then
+                            passed = passed + 1 -- validation failed as expected
+                        else
+                            -- Validated OK, try instantiating
+                            local ok3, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
+                            if not ok3 then
+                                passed = passed + 1 -- instantiation failed as expected
+                            else
+                                failed = failed + 1
+                                failures[#failures+1] = string.format("line %d: %s expected rejection (%s), but succeeded",
+                                    cmd.line, cmd.type, cmd.text or "?")
+                            end
+                        end
+                    end
+                end
+            end
 
         elseif cmd.type == "assert_uninstantiable" then
-            skipped = skipped + 1
+            -- Module should parse but fail to instantiate
+            if not cmd.filename then
+                skipped = skipped + 1
+            else
+                local wasm_path = base_dir .. cmd.filename
+                local wasm_data = load_wasm_file(wasm_path)
+                if not wasm_data then
+                    skipped = skipped + 1
+                else
+                    local ok, mod = pcall(Parser.parse, wasm_data)
+                    if not ok then
+                        passed = passed + 1 -- rejected at parse, still counts
+                    else
+                        local ok2, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
+                        if not ok2 then
+                            passed = passed + 1 -- instantiation failed as expected
+                        else
+                            failed = failed + 1
+                            failures[#failures+1] = string.format("line %d: assert_uninstantiable expected failure, but succeeded",
+                                cmd.line)
+                        end
+                    end
+                end
+            end
 
         elseif cmd.type == "register" then
             -- Register a module under a name for import

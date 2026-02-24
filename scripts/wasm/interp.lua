@@ -190,6 +190,9 @@ function Interp.instantiate(module, imports)
     for i, seg in ipairs(module.data_segments) do
         local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
         if type(offset) == "number" then
+            if offset + #seg.data > instance.memory.byte_length or offset < 0 then
+                error("out of bounds memory access")
+            end
             instance.memory:write_bytes(offset, seg.data)
         end
         instance.data_segments_raw[i] = seg.data
@@ -207,6 +210,14 @@ function Interp.instantiate(module, imports)
     for i, seg in ipairs(module.element_segments) do
         local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
         if type(offset) == "number" then
+            -- Bounds check against table size
+            local tbl_size = 0
+            if #module.tables > 0 then
+                tbl_size = module.tables[1].limits.initial or 0
+            end
+            if offset + #seg.func_indices > tbl_size or offset < 0 then
+                error("out of bounds table access")
+            end
             for j, fidx in ipairs(seg.func_indices) do
                 instance.table[offset + j - 1] = fidx
             end
