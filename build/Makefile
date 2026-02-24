@@ -11,12 +11,13 @@ NETHACK = ../NetHack
 
 CFLAGS = -O2 -g0
 CFLAGS += -I$(NETHACK)/include
+CFLAGS += -I$(NETHACK)/submodules/lua
 CFLAGS += -I.
 
 # NetHack configuration: use Unix config as base, override with our defines
 CFLAGS += -DFACTORIO_GRAPHICS
 CFLAGS += -DSAFEPROCS
-CFLAGS += -DCLIPPING
+# CLIPPING is already defined in config.h, don't re-define here
 CFLAGS += -DNO_SIGNAL
 CFLAGS += -DNOTPARMDECL
 CFLAGS += -DNOTTYGRAPHICS
@@ -25,6 +26,9 @@ CFLAGS += -DGCC_WARN
 CFLAGS += -DNOMAIL
 CFLAGS += -DNO_FILE_LINKS
 CFLAGS += -DSYSCF
+
+# Build Lua as a library (not standalone interpreter) to avoid duplicate main()
+CFLAGS += -DMAKE_LIB
 
 # Suppress warnings from NetHack's old-style C code
 CFLAGS += -Wno-implicit-function-declaration
@@ -37,10 +41,11 @@ CFLAGS += -Wno-parentheses
 
 LDFLAGS = -s WASM=1
 LDFLAGS += -s TOTAL_MEMORY=4194304
-LDFLAGS += -s ALLOW_MEMORY_GROWTH=0
+LDFLAGS += -s ALLOW_MEMORY_GROWTH=1
 LDFLAGS += -s NO_EXIT_RUNTIME=1
 LDFLAGS += -s EXPORTED_FUNCTIONS='["_main"]'
 LDFLAGS += -s ERROR_ON_UNDEFINED_SYMBOLS=0
+# We use host imports for I/O, so undefined symbols are expected
 # We use host imports for I/O, so undefined symbols are expected
 
 # ================================================================
@@ -185,11 +190,18 @@ NH_SRC += $(NETHACK)/src/date.c
 # Shared window port code (safeproc.c provides fallback implementations)
 WIN_SHARE_SRC = $(NETHACK)/win/share/safeproc.c
 
+# System shared code (POSIX regex for pattern matching)
+SYS_SHARE_SRC = $(NETHACK)/sys/share/posixregex.c
+
+# Lua 5.4 (bundled with NetHack as a submodule)
+# onelua.c is a single-file build of the full Lua library
+LUA_SRC = $(NETHACK)/submodules/lua/onelua.c
+
 # Our custom sources
 FACTORIO_SRC = winfactorio.c sysfactorio.c
 
 # All sources
-ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(FACTORIO_SRC)
+ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC) $(LUA_SRC)
 
 # ================================================================
 # Build targets

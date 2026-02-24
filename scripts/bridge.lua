@@ -158,8 +158,13 @@ function Bridge.create_imports(memory_ref)
 
   -- Blocking imports: these return a special table that tells the interpreter to pause.
   -- The interpreter checks for this sentinel and switches to "waiting_input" state.
+  --
+  -- IMPORTANT: The C window port calls host_yn_function / host_getlin to set up
+  -- the UI prompt, then calls host_nhgetch to actually wait for user input.
+  -- So yn_function and getlin are NON-blocking (void return). Only nhgetch and
+  -- select_menu block.
 
-  -- BLOCKING: wait for a key press
+  -- BLOCKING: wait for a key press (THE primary input function)
   imports["env.host_nhgetch"] = {
     blocking = true,
     handler = function()
@@ -167,33 +172,30 @@ function Bridge.create_imports(memory_ref)
     end,
   }
 
-  -- BLOCKING: yn_function - ask yes/no/other question
-  imports["env.host_yn_function"] = {
-    blocking = true,
-    handler = function(query_ptr, qlen, resp_ptr, rlen, def)
-      local memory = memory_ref()
-      local query = Bridge.read_string_len(memory, query_ptr, qlen)
-      local resp = ""
-      if resp_ptr ~= 0 and rlen > 0 then
-        resp = Bridge.read_string_len(memory, resp_ptr, rlen)
-      end
-      -- Show the question to the player
-      Gui.add_message(query, 0)
-      return {input_type = "yn", query = query, resp = resp, def = def}
-    end,
-  }
+  -- NON-BLOCKING: yn_function sets up a yes/no prompt, nhgetch blocks for the answer
+  imports["env.host_yn_function"] = function(query_ptr, qlen, resp_ptr, rlen, def)
+    local memory = memory_ref()
+    local query = Bridge.read_string_len(memory, query_ptr, qlen)
+    local resp = ""
+    if resp_ptr ~= 0 and rlen > 0 then
+      resp = Bridge.read_string_len(memory, resp_ptr, rlen)
+    end
+    Gui.add_message(query, 0)
+    -- Store pending yn state so the GUI knows what to show when nhgetch blocks
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
+  end
 
-  -- BLOCKING: getlin - get a line of text input
-  imports["env.host_getlin"] = {
-    blocking = true,
-    handler = function(prompt_ptr, len)
-      local memory = memory_ref()
-      local prompt = Bridge.read_string_len(memory, prompt_ptr, len)
-      return {input_type = "getlin", prompt = prompt}
-    end,
-  }
+  -- NON-BLOCKING: getlin sets up a text prompt, nhgetch blocks for each character
+  imports["env.host_getlin"] = function(prompt_ptr, len)
+    local memory = memory_ref()
+    local prompt = Bridge.read_string_len(memory, prompt_ptr, len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    storage.nh_bridge.pending_getlin = {prompt = prompt}
+  end
 
-  -- BLOCKING: select_menu - show menu and get selection
+  -- BLOCKING: select_menu - show menu and get selection count
+  -- The C code then calls nhgetch to get each selection ID.
   imports["env.host_select_menu"] = {
     blocking = true,
     handler = function(winid, how)

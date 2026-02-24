@@ -42,11 +42,15 @@ local function init_modules()
       awaiting_input = false,   -- true when NetHack is waiting for player input
       input_type = nil,         -- "getch", "yn", "getlin", "menu"
       input_info = nil,         -- additional info about what input is needed
+      input_queue = {},         -- queued key codes to auto-feed to nhgetch
       running = false,          -- true when interpreter is actively executing
       current_level = "level_1",
       level_counter = 1,
       pending_start = nil,      -- player_index to start game for
     }
+  end
+  if not storage.nh_main.input_queue then
+    storage.nh_main.input_queue = {}
   end
 end
 
@@ -90,46 +94,103 @@ local wasm_instance = nil
 -- Interpreter Execution
 ---------------------------------------------------------------------------
 
--- Run the interpreter for up to max_instructions.
--- Updates state based on interpreter result.
-local function run_interpreter(max_instructions)
+-- Update Factorio player position to match where NetHack thinks @ is
+local function update_player_position()
+  local player = game.connected_players[1]
+  if player then
+    local pos = Display.get_player_pos()
+    local surface = Display.get_current_surface()
+    if surface and pos then
+      player.teleport({x = pos.x + 0.5, y = pos.y + 0.5}, surface)
+      Input.record_position(player.index, pos.x, pos.y)
+    end
+  end
+end
+
+-- Run the interpreter, automatically draining the input queue.
+--
+-- The input protocol:
+--   host_nhgetch is the ONLY getch-style blocking import. When it blocks,
+--   we check for queued inputs (from getlin/menu) and auto-feed them.
+--   If the queue is empty, we check bridge state for pending prompts
+--   (yn_function / getlin set these non-blockingly before nhgetch is called).
+--   host_select_menu also blocks (returns count); subsequent nhgetch calls
+--   get selection IDs from the queue.
+local function run_and_process(max_instructions)
   local state = storage.nh_main
   if not wasm_instance or not state.running then return end
 
-  local result = WasmInterp.run(wasm_instance, max_instructions or MAX_INSTRUCTIONS_PER_RUN)
+  while true do
+    local result = WasmInterp.run(wasm_instance, max_instructions or MAX_INSTRUCTIONS_PER_RUN)
 
-  if result.status == "waiting_input" then
-    state.awaiting_input = true
-    state.input_type = result.input_type
-    state.input_info = result
+    if result.status == "waiting_input" then
+      -- Auto-feed from input queue if available
+      if #state.input_queue > 0 then
+        local value = table.remove(state.input_queue, 1)
+        WasmInterp.provide_input(wasm_instance, value)
+        max_instructions = MAX_INSTRUCTIONS_PER_RUN
+        -- continue loop to keep executing
+      else
+        -- No queued input - determine what UI to show
+        state.awaiting_input = true
 
-    -- Show appropriate GUI for the input type
-    local player = game.connected_players[1]
-    if player then
-      if result.input_type == "yn" then
-        Gui.show_yn_prompt(player, result.query, result.resp, result.def)
-      elseif result.input_type == "getlin" then
-        Gui.show_getlin_prompt(player, result.prompt)
-      elseif result.input_type == "menu" then
-        Gui.show_menu(player, result.winid, result.how)
+        if result.input_type == "menu" then
+          -- host_select_menu blocked - show menu GUI
+          state.input_type = "menu"
+          state.input_info = result
+          local player = game.connected_players[1]
+          if player then
+            Gui.show_menu(player, result.winid, result.how)
+          end
+
+        elseif result.input_type == "getch" then
+          -- host_nhgetch blocked - check for pending prompts set by
+          -- the non-blocking host_yn_function / host_getlin imports
+          local bridge = storage.nh_bridge or {}
+
+          if bridge.pending_yn then
+            state.input_type = "yn"
+            state.input_info = bridge.pending_yn
+            local player = game.connected_players[1]
+            if player then
+              Gui.show_yn_prompt(player, bridge.pending_yn.query,
+                                 bridge.pending_yn.resp, bridge.pending_yn.def)
+            end
+
+          elseif bridge.pending_getlin then
+            state.input_type = "getlin"
+            state.input_info = bridge.pending_getlin
+            local player = game.connected_players[1]
+            if player then
+              Gui.show_getlin_prompt(player, bridge.pending_getlin.prompt)
+            end
+
+          else
+            -- Regular getch: waiting for direction/command key
+            state.input_type = "getch"
+            state.input_info = nil
+          end
+        end
+        break  -- exit loop, wait for user input
       end
-      -- "getch" just waits for player action - no special GUI
+
+    elseif result.status == "running" then
+      -- Hit instruction limit, still executing (e.g., level generation)
+      state.awaiting_input = false
+      break
+
+    elseif result.status == "finished" then
+      state.running = false
+      state.awaiting_input = false
+      Gui.add_message("NetHack has ended.", 0)
+      break
+
+    elseif result.status == "error" then
+      state.running = false
+      state.awaiting_input = false
+      Gui.add_message("NetHack error: " .. (result.message or "unknown"), 0)
+      break
     end
-
-  elseif result.status == "running" then
-    -- Hit instruction limit, still executing (e.g., during level generation)
-    -- Will continue on next tick
-    state.awaiting_input = false
-
-  elseif result.status == "finished" then
-    state.running = false
-    state.awaiting_input = false
-    Gui.add_message("NetHack has ended.", 0)
-
-  elseif result.status == "error" then
-    state.running = false
-    state.awaiting_input = false
-    Gui.add_message("NetHack error: " .. (result.message or "unknown"), 0)
   end
 end
 
@@ -154,7 +215,8 @@ local function start_nethack(player)
   Input.record_position(player.index, 0, 0)
 
   -- Start NetHack by calling main()
-  local main_idx = WasmInterp.get_export(wasm_instance, "main")
+  local main_idx = WasmInterp.get_export(wasm_instance, "__main_argc_argv")
+                or WasmInterp.get_export(wasm_instance, "main")
                 or WasmInterp.get_export(wasm_instance, "_main")
 
   if not main_idx then
@@ -168,14 +230,15 @@ local function start_nethack(player)
   state.game_started = true
 
   -- Run until we hit nhgetch (waiting for first input)
-  run_interpreter()
+  run_and_process()
 end
 
 ---------------------------------------------------------------------------
 -- Input Handling
 ---------------------------------------------------------------------------
 
--- Provide a key input to the interpreter and resume execution
+-- Provide a key input to the interpreter and resume execution.
+-- Used for getch (direction/command) and yn (single key answer).
 local function advance_turn(key_code)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
@@ -184,59 +247,81 @@ local function advance_turn(key_code)
   state.input_type = nil
   state.input_info = nil
 
-  -- Provide the input value to the interpreter
-  WasmInterp.provide_input(wasm_instance, key_code)
-
-  -- Resume execution
-  run_interpreter()
-
-  -- After turn processes, update player position in Factorio
-  local player = game.connected_players[1]
-  if player then
-    local pos = Display.get_player_pos()
-    local surface = Display.get_current_surface()
-    if surface and pos then
-      player.teleport({x = pos.x + 0.5, y = pos.y + 0.5}, surface)
-      Input.record_position(player.index, pos.x, pos.y)
-    end
+  -- Clear any pending prompt state (yn_function or getlin already consumed)
+  if storage.nh_bridge then
+    storage.nh_bridge.pending_yn = nil
+    storage.nh_bridge.pending_getlin = nil
   end
+
+  WasmInterp.provide_input(wasm_instance, key_code)
+  run_and_process()
+  update_player_position()
 end
 
--- Provide string input (for getlin)
+-- Provide string input (for getlin).
+-- The C code reads the response character-by-character via host_nhgetch,
+-- so we queue all characters + null terminator and let run_and_process drain.
 local function advance_turn_string(text)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
 
-  -- Write the string into WASM memory at a known buffer location
-  local memory = wasm_instance.memory
-  local buf_addr = wasm_instance.getlin_buffer or 0x100000
-  Bridge.write_string(memory, buf_addr, text)
+  -- Clear pending getlin state
+  if storage.nh_bridge then
+    storage.nh_bridge.pending_getlin = nil
+  end
+
+  -- Queue characters for nhgetch to consume one-by-one
+  -- First char goes via provide_input, rest via queue
+  local queue = state.input_queue
+  if text == "\027" then
+    -- ESC = cancel
+    queue[#queue + 1] = 27
+  else
+    for i = 1, #text do
+      queue[#queue + 1] = string.byte(text, i)
+    end
+  end
+  queue[#queue + 1] = 0  -- null terminator ends the getlin loop
 
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
 
-  WasmInterp.provide_input(wasm_instance, 0)
-  run_interpreter()
+  -- Feed first character, run_and_process drains the rest
+  local first = table.remove(state.input_queue, 1)
+  WasmInterp.provide_input(wasm_instance, first)
+  run_and_process()
+  update_player_position()
 end
 
--- Provide menu selection result
+-- Provide menu selection result.
+-- host_select_menu is blocking and returns the count. Then the C code calls
+-- host_nhgetch to get each selection identifier. We queue the IDs.
 local function advance_turn_menu(result)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
 
-  local count = -1
-  if result and not result.cancelled and result.selections then
+  local count
+  if result and result.cancelled then
+    count = -1
+  elseif result and result.selections and #result.selections > 0 then
     count = #result.selections
-    -- Write selection data into WASM memory if needed
+    -- Queue selection IDs for subsequent nhgetch calls
+    for _, sel in ipairs(result.selections) do
+      state.input_queue[#state.input_queue + 1] = sel.identifier
+    end
+  else
+    count = 0
   end
 
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
 
+  -- Provide count to resume from select_menu; run_and_process feeds IDs via queue
   WasmInterp.provide_input(wasm_instance, count)
-  run_interpreter()
+  run_and_process()
+  update_player_position()
 end
 
 ---------------------------------------------------------------------------
@@ -277,14 +362,23 @@ local function on_player_changed_position(event)
 end
 
 -- Custom input: non-movement commands
+-- Also handles yn prompts (user can press y/n/ESC on keyboard instead of clicking)
 local function on_custom_input(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
   if not state.awaiting_input then return end
-  if state.input_type ~= "getch" then return end
+  if state.input_type ~= "getch" and state.input_type ~= "yn" then return end
 
   local key = Input.custom_input_to_key(event.input_name)
   if not key then return end
+
+  -- For yn prompts, close the GUI before advancing
+  if state.input_type == "yn" then
+    local player = game.get_player(event.player_index)
+    if player and player.gui.screen.nh_yn_frame then
+      player.gui.screen.nh_yn_frame.destroy()
+    end
+  end
 
   advance_turn(key)
 end
@@ -357,7 +451,7 @@ local function on_tick(event)
 
   -- Continue running if not waiting for input (e.g., level generation)
   if state.running and not state.awaiting_input then
-    run_interpreter(MAX_INSTRUCTIONS_PER_TICK)
+    run_and_process(MAX_INSTRUCTIONS_PER_TICK)
   end
 end
 

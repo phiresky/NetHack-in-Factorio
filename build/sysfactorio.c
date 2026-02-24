@@ -49,7 +49,6 @@ main(int argc, char *argv[])
 
     plnamesuffix();
 
-    dlb_init();
     vision_init();
     init_sound_disp_gamewindows();
 
@@ -200,5 +199,68 @@ int getuid(void) { return 1000; }
 int getgid(void) { return 1000; }
 int getpid(void) { return 1; }
 #endif
+
+/* ================================================================
+ * Unix-specific function stubs (referenced but not needed in WASM)
+ * ================================================================ */
+
+/* Shell escape - not available in WASM */
+int
+dosh(void)
+{
+    return 0;
+}
+
+/* Suspend (ctrl-Z) - not available in WASM */
+int
+dosuspend(void)
+{
+    return 0;
+}
+
+/* Enable/disable keyboard interrupts - no-op in WASM */
+void
+intron(void)
+{
+}
+
+void
+introff(void)
+{
+}
+
+/* Check if a file exists */
+boolean
+file_exists(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (f) {
+        fclose(f);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* after_opt_showpaths() - show file paths then exit (--showpaths option) */
+void
+after_opt_showpaths(const char *dir UNUSED)
+{
+    nh_terminate(EXIT_SUCCESS);
+}
+
+/* error() - fatal error handler */
+void
+error(const char *fmt, ...)
+{
+    va_list ap;
+    char buf[BUFSZ];
+
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+
+    raw_printf("Error: %s", buf);
+    nh_terminate(EXIT_FAILURE);
+}
 
 /* sysfactorio.c */

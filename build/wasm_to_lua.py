@@ -5,7 +5,7 @@ The output is a Lua module that returns a table with:
   - M.size: the byte count of the WASM binary
   - M.data: the raw WASM bytes as a Lua string
 
-Factorio's Lua 5.2 supports hex escapes (\xNN) in string literals.
+Factorio's Lua 5.2 supports hex escapes (backslash-xNN) in string literals.
 We split the data into chunks to avoid excessively long lines.
 """
 
@@ -26,15 +26,19 @@ def wasm_to_lua(wasm_path, lua_path):
         f.write('local M = {}\n\n')
         f.write('M.size = %d\n\n' % size)
 
-        # Write as concatenated Lua string with hex escapes.
-        # Split into chunks to keep lines reasonable.
-        CHUNK = 2048
-        f.write('M.data = ""\n')
+        # Write as table of string chunks, joined with table.concat.
+        # Avoids Lua's 200 C-level nesting limit for .. chains.
+        CHUNK = 4096
+        f.write('local _t = {}\n')
+        idx = 0
         for i in range(0, size, CHUNK):
             chunk = data[i:i + CHUNK]
             hex_str = ''.join('\\x%02x' % b for b in chunk)
-            f.write('  .. "%s"\n' % hex_str)
+            idx += 1
+            f.write('_t[%d] = "%s"\n' % (idx, hex_str))
 
+        f.write('M.data = table.concat(_t)\n')
+        f.write('_t = nil\n')
         f.write('\nreturn M\n')
 
     print(f"Done. Lua module written ({os.path.getsize(lua_path)} bytes)")

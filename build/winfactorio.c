@@ -3,6 +3,7 @@
 /* NetHack may be freely redistributed.  See license for details. */
 
 #include "hack.h"
+#include "func_tab.h"
 
 /*
  * Factorio window port for NetHack.
@@ -502,7 +503,15 @@ factorio_get_ext_cmd(void)
     if (buf[0] == '\033')
         return -1;
 
-    return get_ext_cmd_id(buf);
+    /* Search extcmdlist for matching command name */
+    {
+        int i;
+        for (i = 0; extcmdlist[i].ef_txt; i++) {
+            if (!strcmpi(buf, extcmdlist[i].ef_txt))
+                return i;
+        }
+    }
+    return -1;
 }
 
 static void

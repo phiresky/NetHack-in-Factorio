@@ -5,6 +5,8 @@ NetHack/
 # Build artifacts
 build/tests/testsuite/
 build/tests/spec/
+build/nethack.wasm
+build/nethack.js
 *.o
 
 # Generated files
