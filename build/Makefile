@@ -1,8 +1,9 @@
 # Makefile for NetHack-Factorio WASM build
-# Compiles NetHack C source to WebAssembly via Emscripten,
+# Compiles NetHack 3.6.7 C source to WebAssembly via Emscripten,
 # with the Factorio window port.
 
 CC = emcc
+HOSTCC = cc
 NETHACK = ../NetHack
 
 # ================================================================
@@ -11,7 +12,6 @@ NETHACK = ../NetHack
 
 CFLAGS = -O2 -g0
 CFLAGS += -I$(NETHACK)/include
-CFLAGS += -I$(NETHACK)/submodules/lua
 CFLAGS += -I.
 
 # NetHack configuration: use Unix config as base, override with our defines
@@ -26,9 +26,6 @@ CFLAGS += -DGCC_WARN
 CFLAGS += -DNOMAIL
 CFLAGS += -DNO_FILE_LINKS
 CFLAGS += -DSYSCF
-
-# Build Lua as a library (not standalone interpreter) to avoid duplicate main()
-CFLAGS += -DMAKE_LIB
 
 # Suppress warnings from NetHack's old-style C code
 CFLAGS += -Wno-implicit-function-declaration
@@ -46,13 +43,12 @@ LDFLAGS += -s NO_EXIT_RUNTIME=1
 LDFLAGS += -s EXPORTED_FUNCTIONS='["_main"]'
 LDFLAGS += -s ERROR_ON_UNDEFINED_SYMBOLS=0
 # We use host imports for I/O, so undefined symbols are expected
-# We use host imports for I/O, so undefined symbols are expected
 
 # ================================================================
 # Source files
 # ================================================================
 
-# NetHack core sources (from src/)
+# NetHack 3.6.7 core sources (from src/)
 NH_SRC = \
 	$(NETHACK)/src/allmain.c \
 	$(NETHACK)/src/alloc.c \
@@ -62,10 +58,7 @@ NH_SRC = \
 	$(NETHACK)/src/ball.c \
 	$(NETHACK)/src/bones.c \
 	$(NETHACK)/src/botl.c \
-	$(NETHACK)/src/calendar.c \
-	$(NETHACK)/src/cfgfiles.c \
 	$(NETHACK)/src/cmd.c \
-	$(NETHACK)/src/coloratt.c \
 	$(NETHACK)/src/dbridge.c \
 	$(NETHACK)/src/decl.c \
 	$(NETHACK)/src/detect.c \
@@ -89,20 +82,16 @@ NH_SRC = \
 	$(NETHACK)/src/extralev.c \
 	$(NETHACK)/src/files.c \
 	$(NETHACK)/src/fountain.c \
-	$(NETHACK)/src/getpos.c \
-	$(NETHACK)/src/glyphs.c \
 	$(NETHACK)/src/hack.c \
 	$(NETHACK)/src/hacklib.c \
-	$(NETHACK)/src/iactions.c \
-	$(NETHACK)/src/insight.c \
 	$(NETHACK)/src/invent.c \
 	$(NETHACK)/src/isaac64.c \
 	$(NETHACK)/src/light.c \
 	$(NETHACK)/src/lock.c \
 	$(NETHACK)/src/mail.c \
 	$(NETHACK)/src/makemon.c \
+	$(NETHACK)/src/mapglyph.c \
 	$(NETHACK)/src/mcastu.c \
-	$(NETHACK)/src/mdlib.c \
 	$(NETHACK)/src/mhitm.c \
 	$(NETHACK)/src/mhitu.c \
 	$(NETHACK)/src/minion.c \
@@ -119,10 +108,6 @@ NH_SRC = \
 	$(NETHACK)/src/mthrowu.c \
 	$(NETHACK)/src/muse.c \
 	$(NETHACK)/src/music.c \
-	$(NETHACK)/src/nhmd4.c \
-	$(NETHACK)/src/nhlobj.c \
-	$(NETHACK)/src/nhlsel.c \
-	$(NETHACK)/src/nhlua.c \
 	$(NETHACK)/src/objects.c \
 	$(NETHACK)/src/objnam.c \
 	$(NETHACK)/src/o_init.c \
@@ -139,27 +124,20 @@ NH_SRC = \
 	$(NETHACK)/src/read.c \
 	$(NETHACK)/src/rect.c \
 	$(NETHACK)/src/region.c \
-	$(NETHACK)/src/report.c \
 	$(NETHACK)/src/restore.c \
 	$(NETHACK)/src/rip.c \
 	$(NETHACK)/src/rnd.c \
 	$(NETHACK)/src/role.c \
 	$(NETHACK)/src/rumors.c \
 	$(NETHACK)/src/save.c \
-	$(NETHACK)/src/selvar.c \
-	$(NETHACK)/src/sfbase.c \
-	$(NETHACK)/src/sfstruct.c \
 	$(NETHACK)/src/shk.c \
 	$(NETHACK)/src/shknam.c \
 	$(NETHACK)/src/sit.c \
 	$(NETHACK)/src/sounds.c \
 	$(NETHACK)/src/sp_lev.c \
 	$(NETHACK)/src/spell.c \
-	$(NETHACK)/src/stairs.c \
 	$(NETHACK)/src/steal.c \
 	$(NETHACK)/src/steed.c \
-	$(NETHACK)/src/strutil.c \
-	$(NETHACK)/src/symbols.c \
 	$(NETHACK)/src/sys.c \
 	$(NETHACK)/src/teleport.c \
 	$(NETHACK)/src/timeout.c \
@@ -168,7 +146,6 @@ NH_SRC = \
 	$(NETHACK)/src/trap.c \
 	$(NETHACK)/src/uhitm.c \
 	$(NETHACK)/src/u_init.c \
-	$(NETHACK)/src/utf8map.c \
 	$(NETHACK)/src/vault.c \
 	$(NETHACK)/src/version.c \
 	$(NETHACK)/src/vision.c \
@@ -177,7 +154,6 @@ NH_SRC = \
 	$(NETHACK)/src/wield.c \
 	$(NETHACK)/src/windows.c \
 	$(NETHACK)/src/wizard.c \
-	$(NETHACK)/src/wizcmds.c \
 	$(NETHACK)/src/worm.c \
 	$(NETHACK)/src/worn.c \
 	$(NETHACK)/src/write.c \
@@ -193,21 +169,28 @@ WIN_SHARE_SRC = $(NETHACK)/win/share/safeproc.c
 # System shared code (POSIX regex for pattern matching)
 SYS_SHARE_SRC = $(NETHACK)/sys/share/posixregex.c
 
-# Lua 5.4 (bundled with NetHack as a submodule)
-# onelua.c is a single-file build of the full Lua library
-LUA_SRC = $(NETHACK)/submodules/lua/onelua.c
-
 # Our custom sources
 FACTORIO_SRC = winfactorio.c sysfactorio.c
 
 # All sources
-ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC) $(LUA_SRC)
+ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC)
+
+# ================================================================
+# Host-side tools for data generation
+# NetHack 3.6 needs makedefs, lev_comp, and dgn_comp to run
+# on the host to generate headers and data files.
+# ================================================================
+
+HOSTCFLAGS = -O2 -I$(NETHACK)/include -I. -DNOTPARMDECL -DSAFEPROCS \
+	-DFACTORIO_GRAPHICS -DNOTTYGRAPHICS -DDEFAULT_WINDOW_SYS=\"factorio\" \
+	-DNO_SIGNAL -DNOMAIL -DNO_FILE_LINKS -DSYSCF \
+	-Wno-implicit-function-declaration -Wno-format -Wno-parentheses
 
 # ================================================================
 # Build targets
 # ================================================================
 
-.PHONY: all clean
+.PHONY: all clean host-tools gen-data
 
 all: nethack.wasm
 

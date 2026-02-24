@@ -3,11 +3,31 @@
 
 The output Lua module returns a table mapping filenames to file contents.
 Text files use Lua long strings ([=[...]=]); binary files use hex escapes.
+
+Usage: embed_data.py <output.lua> <dir1> [dir2] [dir3] ...
+
+For NetHack 3.6, typical usage:
+  embed_data.py ../scripts/nethack_data.lua ../NetHack/dat datout/
+where datout/ contains compiled .lev and dungeon files from build tools.
 """
 
 import os
 import sys
 import glob
+
+
+# Files to skip (build artifacts, source files not needed at runtime)
+SKIP_FILES = {
+    'GENFILES', 'Makefile', 'gitignore', '.gitignore',
+}
+
+# Extensions to skip (source files, not runtime data)
+SKIP_EXTENSIONS = {
+    '.des',   # level description source (compiled to .lev)
+    '.def',   # dungeon definition source (compiled to 'dungeon')
+    '.base',  # processed by makedefs into final data files
+    '.txt',   # some .txt files are source, not data (bogusmon etc. are processed)
+}
 
 
 def find_long_string_level(content):
@@ -32,18 +52,31 @@ def is_text_file(data):
         return False
 
 
-def embed_data(dat_dir, output_path):
+def should_skip(filename):
+    """Check if a file should be skipped."""
+    if filename in SKIP_FILES:
+        return True
+    _, ext = os.path.splitext(filename)
+    if ext in SKIP_EXTENSIONS:
+        return True
+    return False
+
+
+def embed_data(dat_dirs, output_path):
     files = {}
-    for filepath in sorted(glob.glob(os.path.join(dat_dir, '*'))):
-        if not os.path.isfile(filepath):
+    for dat_dir in dat_dirs:
+        if not os.path.isdir(dat_dir):
             continue
-        filename = os.path.basename(filepath)
-        # Skip build-system files
-        if filename in ('GENFILES', 'Makefile', 'gitignore'):
-            continue
-        with open(filepath, 'rb') as f:
-            data = f.read()
-        files[filename] = data
+        for filepath in sorted(glob.glob(os.path.join(dat_dir, '*'))):
+            if not os.path.isfile(filepath):
+                continue
+            filename = os.path.basename(filepath)
+            if should_skip(filename):
+                continue
+            with open(filepath, 'rb') as f:
+                data = f.read()
+            # Later directories override earlier ones (compiled overrides source)
+            files[filename] = data
 
     with open(output_path, 'w') as f:
         f.write('-- Auto-generated NetHack data files\n')
@@ -70,22 +103,23 @@ def embed_data(dat_dir, output_path):
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: embed_data.py <dat_dir> <output.lua>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print("Usage: embed_data.py <output.lua> <dir1> [dir2] ...", file=sys.stderr)
         sys.exit(1)
 
-    dat_dir = sys.argv[1]
-    output_path = sys.argv[2]
+    output_path = sys.argv[1]
+    dat_dirs = sys.argv[2:]
 
-    if not os.path.isdir(dat_dir):
-        print(f"Error: {dat_dir} is not a directory", file=sys.stderr)
+    valid_dirs = [d for d in dat_dirs if os.path.isdir(d)]
+    if not valid_dirs:
+        print(f"Error: no valid directories found in {dat_dirs}", file=sys.stderr)
         sys.exit(1)
 
     out_dir = os.path.dirname(output_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    embed_data(dat_dir, output_path)
+    embed_data(valid_dirs, output_path)
 
 
 if __name__ == '__main__':

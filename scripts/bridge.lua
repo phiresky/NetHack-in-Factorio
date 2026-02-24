@@ -130,7 +130,7 @@ function Bridge.create_imports(memory_ref, instance_ref)
     -- No-op in Factorio - we don't need display delays
   end
 
-  imports["env.host_update_inventory"] = function(arg)
+  imports["env.host_update_inventory"] = function()
     -- Could trigger inventory GUI refresh
   end
 
