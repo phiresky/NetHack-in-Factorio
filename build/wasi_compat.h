@@ -23,4 +23,8 @@
 static inline int __wasi_fcntl_stub(int fd, int cmd, ...) { return 0; }
 #define fcntl __wasi_fcntl_stub
 
+/* wasi-libc has signal.h with SIG_IGN etc. but NetHack doesn't include it.
+ * Pull it in so UNIX-guarded code using SIG_IGN compiles. */
+#include <signal.h>
+
 #endif /* WASI_COMPAT_H */

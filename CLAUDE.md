@@ -14,10 +14,28 @@ inside Factorio's sandbox. Factorio's game world IS the display.
 
 ## Architecture
 ```
-Build-time:  NetHack C -> clang --target=wasm32-wasi -> nethack.wasm -> embed as Lua data
+Build-time:  NetHack 3.6.7 C -> host tools (makedefs/lev_comp/dgn_comp, -m32)
+             -> generated headers + .lev + dungeon data
+             -> clang --target=wasm32-wasi -> nethack.wasm -> embed as Lua data
 Runtime:     Player moves tile -> resume state machine -> WASM interpreter executes
              -> imported functions update Factorio world -> pause at nhgetch()
 ```
+
+## Building NetHack 3.6.7
+```bash
+# 1. Build native 32-bit host tools (generates headers + data files)
+cd NetHack/sys/unix && bash setup.sh hints/linux-minimal
+cd ../../ && make all
+
+# 2. Cross-compile to WASM
+cd ../build && TMPDIR=/tmp make
+
+# 3. Generate Lua data modules
+python3 embed_data.py ../scripts/nethack_data.lua ../NetHack/dat
+python3 wasm_to_lua.py nethack.wasm ../scripts/nethack_wasm.lua
+```
+**CRITICAL**: Native tools MUST build with `-m32` (set in `hints/linux-minimal`)
+so binary data files (dungeon, .lev) use 32-bit struct layouts matching WASM.
 
 ## Key Constraints
 - **Lua 5.2** (Factorio's embedded Lua). Use `bit32` library, NOT LuaJIT.
@@ -169,17 +187,40 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   calls to a no-op stub. Also needs `-D_WASI_EMULATED_PROCESS_CLOCKS`,
   `-D_WASI_EMULATED_SIGNAL`, `-D_WASI_EMULATED_GETPID`, `-DCROSS_TO_WASM` (disables
   PANICTRACE/popen), `-DL_tmpnam=32`, and stub `build/sys/wait.h`.
+- **Cross-compilation struct layout mismatch**: Native 64-bit host has `sizeof(long)`=8,
+  WASM 32-bit has `sizeof(long)`=4. Binary data files (dungeon, .lev) embed struct
+  layouts. Fix: build native tools with `-m32` so structs match WASM target.
+- **NOMAIL object index mismatch**: `-DNOMAIL` excludes the mail scroll from
+  `objects[]`, but native makedefs (without `-DNOMAIL`) includes it. This shifts all
+  `onames.h` indices by 1, causing "init-prob error for class 13 (923%)". Fix: don't
+  use `-DNOMAIL` — keep defines consistent between native and cross builds.
+- **NEED_VARARGS must be defined before hack.h**: NetHack's `VA_DECL` macro is only
+  available when `NEED_VARARGS` is defined before including `hack.h`. Without it,
+  `error()` and other varargs functions won't compile.
+- **wasi-libc missing headers**: `pwd.h` doesn't exist in wasi-libc. NetHack's `mail.c`
+  includes it under `#ifdef UNIX`. Fix: stub `build/pwd.h` (found via `-I.`). Similarly,
+  `signal.h` isn't included by NetHack headers but `SIG_IGN` is used in UNIX-guarded code.
+  Fix: `#include <signal.h>` in `wasi_compat.h`. Also `getuid`/`getgid` must return
+  `uid_t`/`gid_t` (not `int`) to match NetHack's `system.h` declarations.
+- **util/Makefile uses $(CC) not $(LINK) for linking**: All link rules in the generated
+  util/Makefile use `$(CC) $(LFLAGS)`, never `$(LINK)`. Set `LFLAGS=-m32` in hints file.
+- **Version check bypass for cross-compilation**: `check_version()` compares
+  `VERSION_FEATURES`, `VERSION_SANITY1-3` (struct sizes). These inherently differ
+  between 64-bit host and 32-bit WASM. Use `#ifdef FACTORIO_PORT` to only check
+  `VERSION_NUMBER`. Even with `-m32`, feature flags can differ.
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)
 - **Build toolchain**: Uses `clang --target=wasm32-wasi` with wasi-libc. Requires
   `wasi-libc` and `wasi-compiler-rt` packages. setjmp/longjmp via WASM EH proposal.
-- **Compile**: `make -C build` produces `nethack.wasm` directly (no JS glue).
-  Data files: `python3 build/embed_data.py NetHack/dat scripts/nethack_data.lua`.
+- **Compile**: Host tools first (`cd NetHack/sys/unix && bash setup.sh hints/linux-minimal && cd ../../ && make all`),
+  then `make -C build` produces `nethack.wasm` directly (no JS glue).
+  Data files: `python3 build/embed_data.py scripts/nethack_data.lua NetHack/dat`.
 - **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
   and execution state need serialization to `storage` for game save/load to work.
-- **Performance**: Startup takes ~96M instructions (clang+WASI build). May need to increase
-  `MAX_INSTRUCTIONS_PER_RUN` (currently 50K) and `MAX_INSTRUCTIONS_PER_TICK`
-  (currently 10K) significantly. Level generation alone is millions of instructions.
-- **Menu at startup**: First input prompt is a menu (likely initial --More-- or
-  inventory), not a getch. The Factorio GUI menu handler needs to work correctly.
+- **Performance**: NetHack 3.6.7 reaches first input in **1.76M instructions / 4.3s**
+  (vs 3.7's 95.8M / 216s — 54x fewer instructions). Per-instruction cost ~2.4µs.
+  -Os optimization is best for interpreted WASM (smaller code = faster dispatch).
+  WASM binary is 1.85MB (vs 3.7's ~3.6MB with embedded Lua 5.4).
+- **Menu at startup**: First input prompt is a getch (--More-- after intro text).
+  The Factorio GUI input handler needs to work correctly.

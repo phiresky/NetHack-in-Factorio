@@ -577,6 +577,8 @@ function Wasi.add_imports(imports, memory_ref, instance_ref)
     imports["env.setgid"] = function(gid) return 0 end
     imports["env.setuid"] = function(uid) return 0 end
     imports["env.execv"] = function(path, argv) return -1 end
+    imports["env.execl"] = function(path, ...) return -1 end
+    imports["env.child"] = function(wt) return 0 end
     imports["env.system"] = function(cmd) return -1 end
     imports["env.tmpnam"] = function(buf) return 0 end
 end

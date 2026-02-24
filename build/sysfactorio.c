@@ -1,4 +1,4 @@
-/* NetHack 3.7 sysfactorio.c - System stubs for Factorio WASM build */
+/* NetHack 3.6 sysfactorio.c - System stubs for Factorio WASM build */
 /* Copyright (c) 2026, NetHack-Factorio project */
 /* NetHack may be freely redistributed.  See license for details. */
 
@@ -13,7 +13,9 @@
  *   sys/unix/unixres.c   (privilege management)
  */
 
+#define NEED_VARARGS
 #include "hack.h"
+#include "dlb.h"
 
 /* External reference to the factorio window procs */
 extern struct window_procs factorio_procs;
@@ -27,14 +29,16 @@ extern struct window_procs factorio_procs;
  * ================================================================ */
 
 int
-main(int argc, char *argv[])
+main(argc, argv)
+int argc;
+char *argv[];
 {
     boolean resuming = FALSE;
 
-    early_init(argc, argv);
+    sys_early_init();
 
-    gh.hname = "nethack";
-    svh.hackpid = 1;
+    hname = "nethack";
+    hackpid = 1;
 
     /* Install the factorio window port directly */
     windowprocs = factorio_procs;
@@ -42,26 +46,21 @@ main(int argc, char *argv[])
     initoptions();
 
     /* Set player name directly - no whoami/getlogin needed */
-    if (!*svp.plname)
-        Strcpy(svp.plname, "Player");
+    if (!*plname)
+        Strcpy(plname, "Player");
 
     u.uhp = 1; /* prevent RIP on early quits */
 
     plnamesuffix();
 
-    vision_init();
-    init_sound_disp_gamewindows();
+    dlb_init(); /* must be before newgame() */
 
-    /* Create level 0 file (lock/checkpoint file) with our PID.
-     * Platform mains (pcmain.c, unixmain.c) do this before newgame().
-     * save_currentstate() expects it to exist with a valid PID. */
-    {
-        NHFILE *nhfp = create_levelfile(0, (char *) 0);
-        if (nhfp) {
-            Sfo_int(nhfp, &svh.hackpid, "svh.hackpid");
-            close_nhfile(nhfp);
-        }
-    }
+    vision_init();
+
+    display_gamewindows();
+
+    /* getlock() creates the lock file */
+    getlock();
 
     /* No save file restoration in this minimal build - always new game */
     player_selection();
@@ -82,11 +81,28 @@ main(int argc, char *argv[])
  * games from running. In WASM, we're always single-instance.
  */
 void
-getlock(void)
+getlock()
 {
     /* Create a fake lock name so the rest of NetHack is happy */
-    Sprintf(gl.lock, "1lock");
-    /* No actual file locking needed in WASM */
+    Sprintf(lock, "%d%s", (int) getuid(), plname);
+    regularize(lock);
+
+    /* Create the level 0 file (lock/checkpoint file) with our PID.
+     * save_currentstate() expects it to exist with a valid PID. */
+    {
+        int fd;
+        Sprintf(lock, "%d%s", (int) getuid(), plname);
+        regularize(lock);
+        set_levelfile_name(lock, 0);
+        fd = create_levelfile(0, (char *) 0);
+        if (fd >= 0) {
+            if (write(fd, (genericptr_t) &hackpid, sizeof hackpid)
+                != sizeof hackpid) {
+                /* error writing pid, but continue anyway */
+            }
+            close(fd);
+        }
+    }
 }
 
 /*
@@ -94,13 +110,14 @@ getlock(void)
  * Keep this functional since it's used on player names for save files.
  */
 void
-regularize(char *s)
+regularize(s)
+register char *s;
 {
-    char *lp;
+    register char *lp;
 
-    while ((lp = strchr(s, '.')) != 0
-           || (lp = strchr(s, '/')) != 0
-           || (lp = strchr(s, ' ')) != 0)
+    while ((lp = index(s, '.')) != 0
+           || (lp = index(s, '/')) != 0
+           || (lp = index(s, ' ')) != 0)
         *lp = '_';
 }
 
@@ -113,9 +130,11 @@ regularize(char *s)
  * No signals in WASM.
  */
 void
-sethanguphandler(void (*handler)(int) UNUSED)
+sethanguphandler(handler)
+void FDECL((*handler), (int));
 {
     /* no-op */
+    nhUse(handler);
 }
 
 /*
@@ -123,13 +142,13 @@ sethanguphandler(void (*handler)(int) UNUSED)
  * Always allow in the Factorio build.
  */
 boolean
-authorize_wizard_mode(void)
+authorize_wizard_mode()
 {
     return TRUE;
 }
 
 boolean
-authorize_explore_mode(void)
+authorize_explore_mode()
 {
     return TRUE;
 }
@@ -138,7 +157,7 @@ authorize_explore_mode(void)
  * get_login_name() - Return the current user's login name.
  */
 char *
-get_login_name(void)
+get_login_name()
 {
     static char buf[BUFSZ];
     Strcpy(buf, "player");
@@ -149,7 +168,8 @@ get_login_name(void)
  * append_slash() - Add a trailing slash to a path if not present.
  */
 void
-append_slash(char *name)
+append_slash(name)
+char *name;
 {
     char *ptr;
 
@@ -167,19 +187,10 @@ append_slash(char *name)
  * Always return TRUE in WASM (no user restrictions).
  */
 boolean
-check_user_string(const char *optstr UNUSED)
+check_user_string(optstr)
+char *optstr UNUSED;
 {
     return TRUE;
-}
-
-/*
- * ask_about_panic_save() - Handle panic save recovery prompt.
- * In WASM, just proceed with new game.
- */
-void
-ask_about_panic_save(void)
-{
-    return;
 }
 
 /* ================================================================
@@ -191,7 +202,7 @@ ask_about_panic_save(void)
  * In WASM, we use a simple time-based seed.
  */
 unsigned long
-sys_random_seed(void)
+sys_random_seed()
 {
     unsigned long seed;
 
@@ -202,8 +213,8 @@ sys_random_seed(void)
 }
 
 /* wasi-libc doesn't provide these POSIX functions */
-int getuid(void) { return 1000; }
-int getgid(void) { return 1000; }
+uid_t getuid(void) { return 1000; }
+gid_t getgid(void) { return 1000; }
 int getpid(void) { return 1; }
 
 /* ================================================================
@@ -212,32 +223,33 @@ int getpid(void) { return 1; }
 
 /* Shell escape - not available in WASM */
 int
-dosh(void)
+dosh()
 {
     return 0;
 }
 
 /* Suspend (ctrl-Z) - not available in WASM */
 int
-dosuspend(void)
+dosuspend()
 {
     return 0;
 }
 
 /* Enable/disable keyboard interrupts - no-op in WASM */
 void
-intron(void)
+intron()
 {
 }
 
 void
-introff(void)
+introff()
 {
 }
 
 /* Check if a file exists */
 boolean
-file_exists(const char *path)
+file_exists(path)
+const char *path;
 {
     FILE *f = fopen(path, "r");
     if (f) {
@@ -247,25 +259,18 @@ file_exists(const char *path)
     return FALSE;
 }
 
-/* after_opt_showpaths() - show file paths then exit (--showpaths option) */
-void
-after_opt_showpaths(const char *dir UNUSED)
-{
-    nh_terminate(EXIT_SUCCESS);
-}
-
 /* error() - fatal error handler */
 void
-error(const char *fmt, ...)
+error VA_DECL(const char *, s)
 {
-    va_list ap;
     char buf[BUFSZ];
+    VA_START(s);
+    VA_INIT(s, const char *);
 
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-
+    vsprintf(buf, s, the_args);
     raw_printf("Error: %s", buf);
+
+    VA_END();
     nh_terminate(EXIT_FAILURE);
 }
 
