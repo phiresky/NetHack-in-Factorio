@@ -1,5 +1,13 @@
 # NetHack-in-Factorio Development Notes
 
+## Instructions for Claude
+- **Always update this file** when you discover new insights, fix non-obvious bugs,
+  or learn something about the codebase that would be lost between sessions.
+- After fixing a tricky bug, add a short note to "Lessons Learned" explaining what
+  went wrong and why, so you don't repeat the mistake.
+- Keep "Known Issues / TODO" current — remove fixed items, add new ones.
+- When starting a new session, read this file first to restore context.
+
 ## Project
 Real NetHack C code compiled to WASM, interpreted by a pure Lua WASM interpreter
 inside Factorio's sandbox. Factorio's game world IS the display.
@@ -64,8 +72,30 @@ build/test_wasm.lua       — Unit test suite
 build/run_spec_tests.lua  — Spec test runner (with JSON parser)
 ```
 
+## Lessons Learned
+- **Don't assume MVP**: The WASM spec test suite uses multi-value extension
+  extensively (e.g. fac-ssa uses loop with `(param i64 i64) (result i64)`).
+  Emscripten output may also use it. Always handle type index blocktypes.
+- **Verify with the .wast source**: When debugging WASM behavior, read the
+  original `.wast` file in `build/tests/testsuite/` — don't guess from bytecode.
+- **LEB128 blocktype encoding**: Blocktypes use signed LEB128. Byte 0x40 is -64
+  (void), 0x7F is -1 (i32), 0x03 is +3 (type index 3). A single-byte read_byte()
+  is wrong for type indices ≥ 64.
+- **i32.mul overflow**: `a * b` can exceed 2^53 (double precision limit). Must
+  split both operands into 16-bit halves: `a_lo*b_lo + (a_lo*b_hi + a_hi*b_lo)*65536`.
+- **Signed LEB128 gotcha**: Byte 0x63 in signed LEB128 decodes as -29 (bit 6 set
+  triggers sign extension), not 99. Use proper sleb128 encoding for values ≥ 64.
+- **i64 string parsing**: Values like "18446744073709551615" exceed double precision.
+  Use string-based long division by 4294967296 to split into {lo, hi}.
+- **Memory max_pages**: Each module specifies its own max in limits. Must pass to
+  Memory.new and enforce in grow(), not just use a global MAX_PAGES.
+- **Call stack OOM**: Without a depth limit, infinite recursion (e.g. spec test
+  `runaway`) consumes 20GB+ RAM. Limit to 1000 frames.
+
 ## Known Issues / TODO
 - f32 precision: multiplication of denormals/small values loses precision
 - address tests: out-of-bounds memory access doesn't trap (need bounds checking)
 - i64.div_s: MIN_INT64 / -1 overflow should trap but doesn't
 - Some float conversion edge cases in `conversions` tests
+- call_indirect: 4 remaining failures (likely multi-value related)
+- loop: 1 remaining failure (nesting test, f32 comparison format)
