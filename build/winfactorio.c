@@ -17,7 +17,7 @@
 
 /* ================================================================
  * WASM imports - provided by the Lua host environment.
- * Declared as extern functions; Emscripten generates WASM import
+ * Declared as extern functions; clang generates WASM import
  * entries for them. The Lua WASM interpreter supplies implementations.
  * ================================================================ */
 

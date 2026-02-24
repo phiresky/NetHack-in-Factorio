@@ -201,15 +201,10 @@ sys_random_seed(void)
     return seed;
 }
 
-#ifndef __EMSCRIPTEN__
-/* These are only needed if Emscripten doesn't provide them.
- * Emscripten's libc normally supplies these, but if we're using
- * -s NO_FILESYSTEM or very minimal builds, we may need stubs. */
-
+/* wasi-libc doesn't provide these POSIX functions */
 int getuid(void) { return 1000; }
 int getgid(void) { return 1000; }
 int getpid(void) { return 1; }
-#endif
 
 /* ================================================================
  * Unix-specific function stubs (referenced but not needed in WASM)

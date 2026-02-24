@@ -4,7 +4,7 @@
 
 local Display = require("scripts.display")
 local Gui = require("scripts.gui")
-local Emscripten = require("scripts.wasm.emscripten")
+local Wasi = require("scripts.wasm.wasi")
 
 local Bridge = {}
 
@@ -204,8 +204,8 @@ function Bridge.create_imports(memory_ref, instance_ref)
     end,
   }
 
-  -- Add Emscripten runtime imports (invoke_*, WASI, syscalls, time)
-  Emscripten.add_imports(imports, memory_ref, instance_ref)
+  -- Add WASI runtime imports (filesystem, clock, environment)
+  Wasi.add_imports(imports, memory_ref, instance_ref)
 
   return imports
 end

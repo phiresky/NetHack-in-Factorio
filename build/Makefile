@@ -1,15 +1,18 @@
 # Makefile for NetHack-Factorio WASM build
-# Compiles NetHack C source to WebAssembly via Emscripten,
+# Compiles NetHack C source to WebAssembly via clang + wasi-libc,
 # with the Factorio window port.
 
-CC = emcc
+CC = clang
 NETHACK = ../NetHack
+SYSROOT = /usr/share/wasi-sysroot
+TARGET = --target=wasm32-wasi --sysroot=$(SYSROOT)
 
 # ================================================================
 # Compiler flags
 # ================================================================
 
-CFLAGS = -O2 -g0
+CFLAGS = -Os -g0
+CFLAGS += $(TARGET)
 CFLAGS += -I$(NETHACK)/include
 CFLAGS += -I$(NETHACK)/submodules/lua
 CFLAGS += -I.
@@ -30,23 +33,33 @@ CFLAGS += -DSYSCF
 # Build Lua as a library (not standalone interpreter) to avoid duplicate main()
 CFLAGS += -DMAKE_LIB
 
+# wasi-libc compatibility: L_tmpnam not defined, clock() needs emulation
+CFLAGS += -DL_tmpnam=32
+CFLAGS += -D_WASI_EMULATED_PROCESS_CLOCKS
+CFLAGS += -D_WASI_EMULATED_SIGNAL
+CFLAGS += -D_WASI_EMULATED_GETPID
+CFLAGS += -DCROSS_TO_WASM
+CFLAGS += -include wasi_compat.h
+
 # Suppress warnings from NetHack's old-style C code
 CFLAGS += -Wno-implicit-function-declaration
 CFLAGS += -Wno-format
 CFLAGS += -Wno-parentheses
 
 # ================================================================
-# Linker flags (Emscripten-specific)
+# Linker flags (clang + WASI)
 # ================================================================
 
-LDFLAGS = -s WASM=1
-LDFLAGS += -s TOTAL_MEMORY=4194304
-LDFLAGS += -s ALLOW_MEMORY_GROWTH=1
-LDFLAGS += -s NO_EXIT_RUNTIME=1
-LDFLAGS += -s EXPORTED_FUNCTIONS='["_main"]'
-LDFLAGS += -s ERROR_ON_UNDEFINED_SYMBOLS=0
-# We use host imports for I/O, so undefined symbols are expected
-# We use host imports for I/O, so undefined symbols are expected
+LDFLAGS = $(TARGET)
+LDFLAGS += -Wl,--allow-undefined
+LDFLAGS += -Wl,--initial-memory=4194304
+LDFLAGS += -Wl,--export=memory
+LDFLAGS += -mllvm -wasm-enable-sjlj
+LDFLAGS += -lsetjmp
+LDFLAGS += -lwasi-emulated-process-clocks
+LDFLAGS += -lwasi-emulated-signal
+LDFLAGS += -lwasi-emulated-getpid
+LDFLAGS += -mllvm -wasm-use-legacy-eh=false
 
 # ================================================================
 # Source files
@@ -212,8 +225,8 @@ ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC) $(LUA_SRC)
 all: nethack.wasm
 
 nethack.wasm: $(ALL_SRC) factorioconf.h
-	$(CC) $(CFLAGS) $(LDFLAGS) $(ALL_SRC) -o nethack.js
-	@echo "Build complete: nethack.wasm + nethack.js"
+	$(CC) $(CFLAGS) $(LDFLAGS) $(ALL_SRC) -o nethack.wasm
+	@echo "Build complete: nethack.wasm"
 
 # Convert WASM to Lua module for embedding in Factorio mod
 lua: nethack.wasm
@@ -221,5 +234,5 @@ lua: nethack.wasm
 	@echo "Lua module generated: ../scripts/nethack_wasm.lua"
 
 clean:
-	rm -f nethack.js nethack.wasm nethack.wast
+	rm -f nethack.wasm
 	rm -f ../scripts/nethack_wasm.lua

@@ -13,6 +13,7 @@ local unpack = table.unpack or unpack
 
 local dispatch = Opcodes.dispatch
 local op_push = Opcodes.push
+local handle_exception = Opcodes.handle_exception
 
 local function fail(msg) error({msg = msg}) end
 local op_pop = Opcodes.pop
@@ -120,6 +121,7 @@ function Interp.instantiate(module, imports)
         data_segments_raw = {},
         element_segments_raw = {},
         exec = nil,             -- execution state (set by call(), persists between run()s)
+        total_instructions = 0, -- accumulates across ALL run() calls (incl. nested)
     }
 
     -- Allocate memory
@@ -168,6 +170,20 @@ function Interp.instantiate(module, imports)
         local val = eval_init_expr(g.init, g.init_opcode, instance.globals)
         instance.globals[global_idx] = val
         global_idx = global_idx + 1
+    end
+
+    -- Initialize tags (imported + module-defined)
+    instance.tags = {} -- 0-indexed
+    local tag_idx = 0
+    for _, imp in ipairs(module.imports) do
+        if imp.kind == WasmParser.EXT_TAG then
+            instance.tags[tag_idx] = {type_idx = imp.desc.type_idx}
+            tag_idx = tag_idx + 1
+        end
+    end
+    for _, tag in ipairs(module.tags) do
+        instance.tags[tag_idx] = {type_idx = tag.type_idx}
+        tag_idx = tag_idx + 1
     end
 
     -- Build import function table
@@ -565,8 +581,44 @@ function Interp.run(instance, max_instructions)
             end
 
             -- Function ended
-            if call_sp > 0 then
-                -- Restore caller frame
+            if state.exception then
+                -- Exception propagation: unwind call frames until handled
+                while call_sp > 0 do
+                    local frame = call_stack[call_sp]
+                    call_stack[call_sp] = nil
+                    call_sp = call_sp - 1
+
+                    -- Restore caller frame
+                    state.sp = frame.stack_base
+                    state.locals = frame.locals
+                    state.pc = frame.pc
+                    state.code = frame.code
+                    state.block_stack = frame.block_stack
+                    state.block_sp = frame.block_sp
+                    state.running = true
+                    state.do_return = false
+                    state.call_func = nil
+                    func_idx = frame.func_idx
+
+                    -- Try to handle exception in this frame
+                    if handle_exception(state, state.exception) then
+                        state.exception = nil
+                        break
+                    end
+                    -- Not handled, keep unwinding
+                    state.running = false
+                end
+
+                if state.exception then
+                    -- Unhandled exception at top level
+                    exec.finished = true
+                    exec.state = state
+                    exec.call_sp = call_sp
+                    exec.func_idx = func_idx
+                    fail("unhandled exception (tag=" .. tostring(state.exception.tag) .. ")")
+                end
+            elseif call_sp > 0 then
+                -- Normal return: restore caller frame
                 local frame = call_stack[call_sp]
                 call_stack[call_sp] = nil -- allow GC
                 call_sp = call_sp - 1
@@ -607,6 +659,9 @@ function Interp.run(instance, max_instructions)
     exec.call_stack = call_stack
     exec.call_sp = call_sp
     exec.func_idx = func_idx
+
+    -- Accumulate instructions into instance-level counter
+    instance.total_instructions = instance.total_instructions + instructions
 
     if not ok then
         exec.finished = true

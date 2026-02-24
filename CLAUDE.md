@@ -14,7 +14,7 @@ inside Factorio's sandbox. Factorio's game world IS the display.
 
 ## Architecture
 ```
-Build-time:  NetHack C -> Emscripten -> nethack.wasm -> embed as Lua data
+Build-time:  NetHack C -> clang --target=wasm32-wasi -> nethack.wasm -> embed as Lua data
 Runtime:     Player moves tile -> resume state machine -> WASM interpreter executes
              -> imported functions update Factorio world -> pause at nhgetch()
 ```
@@ -24,6 +24,8 @@ Runtime:     Player moves tile -> resume state machine -> WASM interpreter execu
 - **No coroutines** in Factorio data stage. Interpreter is a resumable state machine.
 - **No `string.pack/unpack`** (Lua 5.3+). Manual IEEE 754 encode/decode.
 - **`storage`** not `global` for Factorio 2.0 persistent state.
+- **WASM Exception Handling**: setjmp/longjmp uses WASM EH proposal (`try_table`/`throw`)
+  instead of Emscripten's `invoke_*` pattern. Compiled with `-mllvm -wasm-enable-sjlj`.
 
 ## WASM Interpreter
 
@@ -36,6 +38,17 @@ The interpreter must support the **multi-value extension** (not just MVP):
 - Blocks/loops/ifs can have **parameters** consumed from the stack.
 - Functions can return **multiple values**.
 - `end` and `do_branch` must copy N values (not just top-of-stack).
+
+### Exception Handling Extension
+The interpreter supports the WASM exception handling proposal:
+- **Tag section** (section 13): parsed in `init.lua`, stores tag type indices.
+- **`try_table` (0x1F)**: opens a block with catch clauses. Each clause specifies
+  kind (catch/catch_all/catch_ref/catch_all_ref), optional tag index, and branch depth.
+- **`throw` (0x08)**: creates exception with tag + values, unwinds to matching catch.
+- **`throw_ref` (0x0A)**: re-throws an exnref from the stack.
+- Exception propagation crosses call frames via `state.exception` in `interp.lua`.
+- `skip_instruction_operands` and block-depth tracking must handle 0x1F alongside
+  0x02/0x03/0x04.
 
 ### i64 Representation
 i64 values are `{lo, hi}` tables (two u32 halves) since Lua doubles only have
@@ -66,11 +79,11 @@ comparisons) is implemented manually using bit32.
 
 ## File Structure
 ```
-scripts/wasm/init.lua       — WASM binary parser
+scripts/wasm/init.lua       — WASM binary parser (incl. tag section)
 scripts/wasm/interp.lua     — Interpreter core (state machine, instantiate, call, run)
-scripts/wasm/opcodes.lua    — Opcode dispatch (~170 instructions)
+scripts/wasm/opcodes.lua    — Opcode dispatch (~175 instructions, incl. EH)
 scripts/wasm/memory.lua     — Linear memory implementation
-scripts/wasm/emscripten.lua — Emscripten/WASI runtime (invoke_*, VFS, syscalls, time)
+scripts/wasm/wasi.lua       — WASI snapshot preview1 runtime (VFS, clock, args, preopen)
 scripts/bridge.lua          — WASM imports -> Factorio API (NetHack-specific)
 scripts/display.lua         — print_glyph -> surfaces/entities
 scripts/input.lua           — Player movement -> WASM input
@@ -89,7 +102,7 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
 ## Lessons Learned
 - **Don't assume MVP**: The WASM spec test suite uses multi-value extension
   extensively (e.g. fac-ssa uses loop with `(param i64 i64) (result i64)`).
-  Emscripten output may also use it. Always handle type index blocktypes.
+  clang+WASI output may also use it. Always handle type index blocktypes.
 - **Verify with the .wast source**: When debugging WASM behavior, read the
   original `.wast` file in `build/tests/testsuite/` — don't guess from bytecode.
 - **LEB128 blocktype encoding**: Blocktypes use signed LEB128. Byte 0x40 is -64
@@ -145,20 +158,27 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   opens level 0 to verify the PID, then recreates it with checkpoint data. If level 0
   doesn't exist, `tricked_fileremoved()` kills the game via `done(TRICKED)`.
   Fix: pre-create in VFS as `"\x01\x00\x00\x00"` (little-endian PID=1).
-- **Import return types must match WASM signatures**: `_mktime_js` returns i64, so
-  the Lua import must return `{lo, hi}` table, not a plain number. A plain number
-  causes "attempt to index a number" when i64 opcodes try to access `.lo`/`.hi`.
+- **WASI preopened directories**: wasi-libc startup calls `fd_prestat_get` on fd 3, 4, 5, ...
+  until EBADF. Must provide fd 3 = "/" as a preopened directory. VFS files opened via
+  `path_open` get fds starting at 4.
+- **WASI entry point**: WASI binaries export `_start` (not `_main` or `__main_argc_argv`).
+  `_start` takes no arguments; argc/argv are provided via `args_get`/`args_sizes_get`.
+- **wasi-libc build compat**: wasi-libc provides `struct flock` and `fcntl()` declaration
+  but not `F_SETLK`/`F_WRLCK`/`F_UNLCK` constants. The `build/wasi_compat.h` header
+  (force-included via `-include`) provides these missing constants and redirects `fcntl`
+  calls to a no-op stub. Also needs `-D_WASI_EMULATED_PROCESS_CLOCKS`,
+  `-D_WASI_EMULATED_SIGNAL`, `-D_WASI_EMULATED_GETPID`, `-DCROSS_TO_WASM` (disables
+  PANICTRACE/popen), `-DL_tmpnam=32`, and stub `build/sys/wait.h`.
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)
-- **NetHack WASM runs**: Loads in ~59M instructions, reaches first input prompt.
-  Tested with `lua5.2 build/test_instantiate.lua`.
-- **No Emscripten installed**: Cannot compile `nethack.wasm` without `emcc`.
-  `scripts/nethack_wasm.lua` (embedded WASM data) must be generated by
-  `make lua` in `build/`. Data files: `python3 build/embed_data.py NetHack/dat scripts/nethack_data.lua`.
+- **Build toolchain**: Uses `clang --target=wasm32-wasi` with wasi-libc. Requires
+  `wasi-libc` and `wasi-compiler-rt` packages. setjmp/longjmp via WASM EH proposal.
+- **Compile**: `make -C build` produces `nethack.wasm` directly (no JS glue).
+  Data files: `python3 build/embed_data.py NetHack/dat scripts/nethack_data.lua`.
 - **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
   and execution state need serialization to `storage` for game save/load to work.
-- **Performance**: Startup takes ~59M instructions. May need to increase
+- **Performance**: Startup takes ~96M instructions (clang+WASI build). May need to increase
   `MAX_INSTRUCTIONS_PER_RUN` (currently 50K) and `MAX_INSTRUCTIONS_PER_TICK`
   (currently 10K) significantly. Level generation alone is millions of instructions.
 - **Menu at startup**: First input prompt is a menu (likely initial --More-- or

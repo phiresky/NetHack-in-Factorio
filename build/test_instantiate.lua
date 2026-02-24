@@ -125,43 +125,23 @@ local ok, err = pcall(function()
 
     print("")
 
-    -- Try calling __wasm_call_ctors
-    local ctors_idx = WasmInterp.get_export(instance, "__wasm_call_ctors")
-    if ctors_idx then
-        print("Calling __wasm_call_ctors (func idx " .. ctors_idx .. ")...")
-        WasmInterp.call(instance, ctors_idx, {})
-        local result = WasmInterp.run(instance, 10000000)
-        print("  Status: " .. result.status)
-        if result.status == "error" then
-            local msg = result.message
-            if type(msg) == "table" then msg = msg.msg or tostring(msg) end
-            print("  Error: " .. tostring(msg))
-            return
-        end
-        print("  __wasm_call_ctors completed successfully!")
-    else
-        print("  No __wasm_call_ctors export found")
-    end
-
     print("")
 
-    -- Try calling main
-    local main_idx = WasmInterp.get_export(instance, "__main_argc_argv")
-                  or WasmInterp.get_export(instance, "main")
-                  or WasmInterp.get_export(instance, "_main")
-    if main_idx then
-        print("Calling main() (func idx " .. main_idx .. ")...")
+    -- Try calling _start (WASI entry point)
+    local start_idx = WasmInterp.get_export(instance, "_start")
+    if start_idx then
+        print("Calling _start() (func idx " .. start_idx .. ")...")
         print("  Running up to 500M instructions to see how far we get...")
-        WasmInterp.call(instance, main_idx, {0, 0})
-        local total_instructions = 0
+        WasmInterp.call(instance, start_idx, {})
         local result
         repeat
             result = WasmInterp.run(instance, 1000000)
-            total_instructions = total_instructions + 1000000
-            if total_instructions % 1000000 == 0 then
-                print("  ... " .. (total_instructions / 1000000) .. "M instructions executed")
+            local total = instance.total_instructions
+            if total % 10000000 < 1000000 then
+                print("  ... " .. string.format("%.1fM", total / 1000000) .. " instructions executed")
             end
-        until result.status ~= "running" or total_instructions >= 500000000
+        until result.status ~= "running" or instance.total_instructions >= 500000000
+        print("  Total instructions: " .. instance.total_instructions)
         print("  Status: " .. result.status)
         if result.status == "error" then
             local msg = result.message
@@ -176,7 +156,7 @@ local ok, err = pcall(function()
             print("  Still running (hit instruction limit)")
         end
     else
-        print("  No main export found!")
+        print("  No _start export found!")
     end
 
     print("")

@@ -82,19 +82,6 @@ local function load_wasm_nethack()
   local instance = WasmInterp.instantiate(module, imports)
   instance_ref.inst = instance
 
-  -- Run Emscripten constructors (__wasm_call_ctors) before main
-  local ctors_idx = WasmInterp.get_export(instance, "__wasm_call_ctors")
-  if ctors_idx then
-    WasmInterp.call(instance, ctors_idx, {})
-    local result = WasmInterp.run(instance, 10000000)
-    if result.status == "error" then
-      local msg = result.message
-      if type(msg) == "table" then msg = msg.msg or tostring(msg) end
-      Gui.add_message("Error in __wasm_call_ctors: " .. tostring(msg), 0)
-      return nil
-    end
-  end
-
   -- Store instance in a non-serialized location (rebuilt on load)
   storage.nh_main.wasm_instance_id = "active"
   return instance
@@ -227,18 +214,16 @@ local function start_nethack(player)
   -- Record initial position
   Input.record_position(player.index, 0, 0)
 
-  -- Start NetHack by calling main()
-  local main_idx = WasmInterp.get_export(wasm_instance, "__main_argc_argv")
-                or WasmInterp.get_export(wasm_instance, "main")
-                or WasmInterp.get_export(wasm_instance, "_main")
+  -- Start NetHack by calling _start (WASI entry point)
+  local start_idx = WasmInterp.get_export(wasm_instance, "_start")
 
-  if not main_idx then
-    Gui.add_message("Error: Could not find main() in WASM module", 0)
+  if not start_idx then
+    Gui.add_message("Error: Could not find _start in WASM module", 0)
     return
   end
 
-  -- Begin execution - call main(0, 0) for argc=0, argv=NULL
-  WasmInterp.call(wasm_instance, main_idx, {0, 0})
+  -- Begin execution - _start takes no args (argc/argv via WASI args_get)
+  WasmInterp.call(wasm_instance, start_idx, {})
   state.running = true
   state.game_started = true
 
