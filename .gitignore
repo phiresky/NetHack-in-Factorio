@@ -23,3 +23,9 @@ scripts/nethack_wasm.lua
 # OS
 .DS_Store
 Thumbs.db
+
+.vscode
+.bash_profile
+.bashrc
+.gitconfig
+.claude

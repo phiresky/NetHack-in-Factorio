@@ -8,13 +8,14 @@ local Memory = {}
 Memory.__index = Memory
 
 local PAGE_SIZE = 65536
-local MAX_PAGES = 256 -- 16MB max
+local MAX_PAGES = 65536 -- 4GB max (WASM spec limit)
 
 function Memory.new(initial_pages, max_pages)
     initial_pages = initial_pages or 64
     local self = setmetatable({}, Memory)
     self.page_count = initial_pages
     self.max_pages = max_pages or MAX_PAGES
+    self.byte_length = initial_pages * PAGE_SIZE
     self.data = {}
     -- Pre-fill with zeros: each entry = 4 bytes, total entries = pages * 16384
     local total_entries = initial_pages * (PAGE_SIZE / 4)
@@ -40,6 +41,7 @@ function Memory:grow(delta_pages)
         self.data[i] = 0
     end
     self.page_count = new_pages
+    self.byte_length = new_pages * PAGE_SIZE
     return old_pages
 end
 
@@ -60,12 +62,11 @@ function Memory:store_byte(addr, val)
 end
 
 function Memory:load_i32(addr)
+    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local align = bit32.band(addr, 3)
     if align == 0 then
-        -- Aligned access
         return self.data[bit32.rshift(addr, 2)] or 0
     end
-    -- Unaligned: read byte by byte
     local b0 = self:load_byte(addr)
     local b1 = self:load_byte(addr + 1)
     local b2 = self:load_byte(addr + 2)
@@ -74,14 +75,13 @@ function Memory:load_i32(addr)
 end
 
 function Memory:store_i32(addr, val)
+    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     val = bit32.band(val, 0xFFFFFFFF)
     local align = bit32.band(addr, 3)
     if align == 0 then
-        -- Aligned access
         self.data[bit32.rshift(addr, 2)] = val
         return
     end
-    -- Unaligned: write byte by byte
     self:store_byte(addr, bit32.band(val, 0xFF))
     self:store_byte(addr + 1, bit32.band(bit32.rshift(val, 8), 0xFF))
     self:store_byte(addr + 2, bit32.band(bit32.rshift(val, 16), 0xFF))
@@ -89,13 +89,17 @@ function Memory:store_i32(addr, val)
 end
 
 function Memory:load_i16_u(addr)
+    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local b0 = self:load_byte(addr)
     local b1 = self:load_byte(addr + 1)
     return bit32.bor(b0, bit32.lshift(b1, 8))
 end
 
 function Memory:load_i16_s(addr)
-    local val = self:load_i16_u(addr)
+    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
+    local b0 = self:load_byte(addr)
+    local b1 = self:load_byte(addr + 1)
+    local val = bit32.bor(b0, bit32.lshift(b1, 8))
     if val >= 0x8000 then
         val = val - 0x10000
     end
@@ -103,16 +107,19 @@ function Memory:load_i16_s(addr)
 end
 
 function Memory:store_i16(addr, val)
+    if addr + 2 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     val = bit32.band(val, 0xFFFF)
     self:store_byte(addr, bit32.band(val, 0xFF))
     self:store_byte(addr + 1, bit32.band(bit32.rshift(val, 8), 0xFF))
 end
 
 function Memory:load_i8_u(addr)
+    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     return self:load_byte(addr)
 end
 
 function Memory:load_i8_s(addr)
+    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local val = self:load_byte(addr)
     if val >= 0x80 then
         val = val - 0x100
@@ -121,19 +128,21 @@ function Memory:load_i8_s(addr)
 end
 
 function Memory:store_i8(addr, val)
+    if addr + 1 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     self:store_byte(addr, bit32.band(val, 0xFF))
 end
 
 -- Load/store for i64 as {lo, hi} pair
 function Memory:load_i64(addr)
+    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local lo = self:load_i32(addr)
     local hi = self:load_i32(addr + 4)
     return {lo, hi}
 end
 
 function Memory:store_i64(addr, val)
+    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     if type(val) == "number" then
-        -- Convert single number to lo/hi
         self:store_i32(addr, bit32.band(val, 0xFFFFFFFF))
         self:store_i32(addr + 4, 0)
     else
@@ -154,6 +163,7 @@ local math_huge = math.huge
 
 -- Store a Lua number (f64) into memory as IEEE 754 double
 function Memory:store_f64(addr, val)
+    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local lo, hi
     if val == 0 then
         if 1 / val < 0 then -- negative zero
@@ -193,6 +203,7 @@ end
 
 -- Load a Lua number (f64) from memory as IEEE 754 double
 function Memory:load_f64(addr)
+    if addr + 8 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local lo = self:load_i32(addr)
     local hi = self:load_i32(addr + 4)
     local sign = bit32.btest(hi, 0x80000000) and -1 or 1
@@ -218,6 +229,7 @@ end
 
 -- f32 store/load using IEEE 754 single precision
 function Memory:store_f32(addr, val)
+    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local bits
     if val == 0 then
         if 1 / val < 0 then
@@ -251,6 +263,7 @@ function Memory:store_f32(addr, val)
 end
 
 function Memory:load_f32(addr)
+    if addr + 4 > self.byte_length or addr < 0 then error("out of bounds memory access") end
     local bits = self:load_i32(addr)
     local sign = bit32.btest(bits, 0x80000000) and -1 or 1
     local exp = bit32.band(bit32.rshift(bits, 23), 0xFF)

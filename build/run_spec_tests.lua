@@ -586,8 +586,22 @@ end
 local spec_dir = "build/tests/spec/"
 
 -- Determine which tests to run
-local test_files = arg
-if #test_files == 0 then
+local test_files = {}
+if #arg == 1 and arg[1]:sub(-1) == "/" then
+    -- Directory argument: list all JSON files in it
+    spec_dir = arg[1]
+    local p = io.popen("ls " .. spec_dir .. "*.json 2>/dev/null")
+    if p then
+        for line in p:lines() do
+            test_files[#test_files+1] = line
+        end
+        p:close()
+    end
+elseif #arg > 0 then
+    for _, a in ipairs(arg) do
+        test_files[#test_files+1] = a
+    end
+else
     -- Default: run all JSON files in spec dir
     local p = io.popen("ls " .. spec_dir .. "*.json 2>/dev/null")
     if p then

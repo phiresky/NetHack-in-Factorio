@@ -179,20 +179,33 @@ local function to_u32(v)
     return bit32.band(v, 0xFFFFFFFF)
 end
 
--- f32 truncation: round a Lua double to single precision
+-- f32 truncation: round a Lua double to single precision (round-to-nearest, ties-to-even)
 local function f32_trunc(v)
     if v ~= v then return v end -- NaN
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
-    -- Use frexp/ldexp to truncate mantissa to 24 bits
     local sign = 1
     if v < 0 then sign = -1; v = -v end
-    local m, e = math.frexp(v)
-    -- Single precision has 24 bits of mantissa (including implicit 1)
-    m = math_floor(m * 16777216 + 0.5) / 16777216 -- 2^24
-    local result = sign * math.ldexp(m, e)
+    local m, e = math.frexp(v) -- m in [0.5, 1.0), v = m * 2^e
+    -- Determine mantissa precision based on f32 exponent range
+    local prec
+    if e >= -125 then
+        prec = 24 -- normal: 24 mantissa bits (including implicit 1)
+    elseif e >= -149 then
+        prec = e + 149 -- denormal: fewer bits
+    else
+        return sign == -1 and -0.0 or 0.0 -- underflow to zero
+    end
+    -- Scale mantissa and round to integer (round-to-nearest, ties-to-even)
+    local scaled = math.ldexp(m, prec)
+    local rounded = math_floor(scaled)
+    local frac = scaled - rounded
+    if frac > 0.5 or (frac == 0.5 and rounded % 2 == 1) then
+        rounded = rounded + 1
+    end
+    local result = sign * math.ldexp(rounded, e - prec)
     -- Check overflow to infinity
-    if result > 3.4028234663852886e+38 then return sign * math_huge end
+    if math_abs(result) > 3.4028234663852886e+38 then return sign * math_huge end
     return result
 end
 
@@ -392,6 +405,10 @@ end
 
 local function i64_div_s(a, b)
     if i64_is_zero(b) then error("integer divide by zero") end
+    -- Overflow: INT64_MIN / -1
+    if a[1] == 0 and a[2] == 0x80000000 and b[1] == 0xFFFFFFFF and b[2] == 0xFFFFFFFF then
+        error("integer overflow")
+    end
     local a_neg = i64_is_neg(a)
     local b_neg = i64_is_neg(b)
     local ua = a_neg and i64_neg(a) or a
@@ -648,6 +665,8 @@ local function f32_nearest(v)
     if v ~= v then return v end
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
+    -- Values >= 2^23 are already integers in f32
+    if math_abs(v) >= 8388608 then return v end
     local r = math_floor(v + 0.5)
     -- Banker's rounding: if exactly halfway, round to even
     if v + 0.5 == r and r % 2 ~= 0 then r = r - 1 end
@@ -686,7 +705,10 @@ local function f64_nearest(v)
     if v ~= v then return v end
     if v == math_huge or v == -math_huge then return v end
     if v == 0 then return v end
+    -- Values >= 2^52 are already integers in double precision
+    if math_abs(v) >= 4503599627370496 then return v end
     local r = math_floor(v + 0.5)
+    -- Banker's rounding: ties to even
     if v + 0.5 == r and r % 2 ~= 0 then r = r - 1 end
     return r
 end
@@ -1014,12 +1036,22 @@ dispatch[0x11] = function(state)
         error("undefined element " .. tostring(elem_idx))
     end
     local func_idx = tbl[elem_idx]
-    -- Type check
+    -- Type check: must match param and result types exactly
     local expected_type = state.instance.module.types[type_idx + 1]
     local actual_type = state.instance.module.types[state.instance.module.funcs[func_idx].type_idx + 1]
     if expected_type and actual_type then
         if #expected_type.params ~= #actual_type.params or #expected_type.results ~= #actual_type.results then
             error("indirect call type mismatch")
+        end
+        for i = 1, #expected_type.params do
+            if expected_type.params[i] ~= actual_type.params[i] then
+                error("indirect call type mismatch")
+            end
+        end
+        for i = 1, #expected_type.results do
+            if expected_type.results[i] ~= actual_type.results[i] then
+                error("indirect call type mismatch")
+            end
         end
     end
     state.call_func = func_idx
@@ -1114,7 +1146,7 @@ end
 dispatch[0x2D] = function(state)
     local offset = read_memarg(state)
     local base = pop(state)
-    push(state, state.memory:load_byte(base + offset))
+    push(state, state.memory:load_i8_u(base + offset))
 end
 
 -- 0x2E: i32.load16_s
@@ -1149,7 +1181,7 @@ end
 dispatch[0x31] = function(state)
     local offset = read_memarg(state)
     local base = pop(state)
-    push(state, {state.memory:load_byte(base + offset), 0})
+    push(state, {state.memory:load_i8_u(base + offset), 0})
 end
 
 -- 0x32: i64.load16_s
@@ -1225,7 +1257,7 @@ dispatch[0x3A] = function(state)
     local offset = read_memarg(state)
     local val = pop(state)
     local base = pop(state)
-    state.memory:store_byte(base + offset, bit32.band(val, 0xFF))
+    state.memory:store_i8(base + offset, val)
 end
 
 -- 0x3B: i32.store16
@@ -1241,8 +1273,8 @@ dispatch[0x3C] = function(state)
     local offset = read_memarg(state)
     local val = pop(state)
     local base = pop(state)
-    local byte_val = type(val) == "table" and bit32.band(val[1], 0xFF) or bit32.band(val, 0xFF)
-    state.memory:store_byte(base + offset, byte_val)
+    local byte_val = type(val) == "table" and val[1] or val
+    state.memory:store_i8(base + offset, byte_val)
 end
 
 -- 0x3D: i64.store16
@@ -1888,8 +1920,9 @@ end
 dispatch[0xA8] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    -- Truncate toward zero, then check range [-2^31, 2^31-1]
+    val = val >= 0 and math_floor(val) or -math_floor(-val)
     if val >= 2147483648 or val < -2147483648 then error("integer overflow") end
-    val = val >= 0 and math_floor(val) or math_ceil(val)
     if val < 0 then val = val + 0x100000000 end
     push(state, val)
 end
@@ -1898,16 +1931,18 @@ end
 dispatch[0xA9] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    -- Truncate toward zero, then check range [0, 2^32-1]
+    val = val >= 0 and math_floor(val) or -math_floor(-val)
     if val >= 4294967296 or val < 0 then error("integer overflow") end
-    push(state, math_floor(val))
+    push(state, val)
 end
 
 -- 0xAA: i32.trunc_f64_s
 dispatch[0xAA] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    val = val >= 0 and math_floor(val) or -math_floor(-val)
     if val >= 2147483648 or val < -2147483648 then error("integer overflow") end
-    val = val >= 0 and math_floor(val) or math_ceil(val)
     if val < 0 then val = val + 0x100000000 end
     push(state, val)
 end
@@ -1916,8 +1951,9 @@ end
 dispatch[0xAB] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    val = val >= 0 and math_floor(val) or -math_floor(-val)
     if val >= 4294967296 or val < 0 then error("integer overflow") end
-    push(state, math_floor(val))
+    push(state, val)
 end
 
 -- 0xAC: i64.extend_i32_s
@@ -1939,6 +1975,8 @@ end
 dispatch[0xAE] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    -- Trap if trunc(val) not in [-2^63, 2^63-1]
+    if val >= 9223372036854775808 or val < -9223372036854775808 then error("integer overflow") end
     push(state, f64_to_i64_s(val))
 end
 
@@ -1946,7 +1984,8 @@ end
 dispatch[0xAF] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
-    if val < 0 then error("integer overflow") end
+    -- Truncate toward zero, then check range [0, 2^64-1]
+    if val >= 18446744073709551616 or val <= -1.0 then error("integer overflow") end
     push(state, f64_to_i64_u(val))
 end
 
@@ -1954,6 +1993,7 @@ end
 dispatch[0xB0] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
+    if val >= 9223372036854775808 or val < -9223372036854775808 then error("integer overflow") end
     push(state, f64_to_i64_s(val))
 end
 
@@ -1961,7 +2001,7 @@ end
 dispatch[0xB1] = function(state)
     local val = pop(state)
     if val ~= val then error("invalid conversion to integer") end
-    if val < 0 then error("integer overflow") end
+    if val >= 18446744073709551616 or val <= -1.0 then error("integer overflow") end
     push(state, f64_to_i64_u(val))
 end
 
@@ -2118,18 +2158,24 @@ dispatch[0xFC] = function(state)
     elseif sub_op == 4 then -- i64.trunc_sat_f32_s
         local val = pop(state)
         if val ~= val then push(state, {0, 0}); return end
+        if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
+        if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
         push(state, f64_to_i64_s(val))
     elseif sub_op == 5 then -- i64.trunc_sat_f32_u
         local val = pop(state)
-        if val ~= val or val < 0 then push(state, {0, 0}); return end
+        if val ~= val or val <= -1.0 then push(state, {0, 0}); return end
+        if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
         push(state, f64_to_i64_u(val))
     elseif sub_op == 6 then -- i64.trunc_sat_f64_s
         local val = pop(state)
         if val ~= val then push(state, {0, 0}); return end
+        if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
+        if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
         push(state, f64_to_i64_s(val))
     elseif sub_op == 7 then -- i64.trunc_sat_f64_u
         local val = pop(state)
-        if val ~= val or val < 0 then push(state, {0, 0}); return end
+        if val ~= val or val <= -1.0 then push(state, {0, 0}); return end
+        if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
         push(state, f64_to_i64_u(val))
     elseif sub_op == 8 then -- memory.init
         local seg_idx = read_leb128_u(state)
