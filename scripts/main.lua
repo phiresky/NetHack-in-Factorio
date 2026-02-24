@@ -75,12 +75,25 @@ local function load_wasm_nethack()
     return instance_ref.inst.memory
   end
 
-  -- Create host import functions
-  local imports = Bridge.create_imports(memory_ref)
+  -- Create host import functions (pass instance_ref for invoke_* re-entrancy)
+  local imports = Bridge.create_imports(memory_ref, instance_ref)
 
   -- Instantiate the WASM module
   local instance = WasmInterp.instantiate(module, imports)
   instance_ref.inst = instance
+
+  -- Run Emscripten constructors (__wasm_call_ctors) before main
+  local ctors_idx = WasmInterp.get_export(instance, "__wasm_call_ctors")
+  if ctors_idx then
+    WasmInterp.call(instance, ctors_idx, {})
+    local result = WasmInterp.run(instance, 10000000)
+    if result.status == "error" then
+      local msg = result.message
+      if type(msg) == "table" then msg = msg.msg or tostring(msg) end
+      Gui.add_message("Error in __wasm_call_ctors: " .. tostring(msg), 0)
+      return nil
+    end
+  end
 
   -- Store instance in a non-serialized location (rebuilt on load)
   storage.nh_main.wasm_instance_id = "active"

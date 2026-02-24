@@ -52,6 +52,17 @@ main(int argc, char *argv[])
     vision_init();
     init_sound_disp_gamewindows();
 
+    /* Create level 0 file (lock/checkpoint file) with our PID.
+     * Platform mains (pcmain.c, unixmain.c) do this before newgame().
+     * save_currentstate() expects it to exist with a valid PID. */
+    {
+        NHFILE *nhfp = create_levelfile(0, (char *) 0);
+        if (nhfp) {
+            Sfo_int(nhfp, &svh.hackpid, "svh.hackpid");
+            close_nhfile(nhfp);
+        }
+    }
+
     /* No save file restoration in this minimal build - always new game */
     player_selection();
     newgame();

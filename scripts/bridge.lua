@@ -4,6 +4,7 @@
 
 local Display = require("scripts.display")
 local Gui = require("scripts.gui")
+local Emscripten = require("scripts.wasm.emscripten")
 
 local Bridge = {}
 
@@ -19,7 +20,7 @@ function Bridge.read_string(memory, ptr, max_len)
   max_len = max_len or 1024
   local chars = {}
   for i = 0, max_len - 1 do
-    local b = memory.load_byte(ptr + i)
+    local b = memory:load_byte(ptr + i)
     if b == 0 then break end
     chars[#chars + 1] = string.char(b)
   end
@@ -31,7 +32,7 @@ function Bridge.read_string_len(memory, ptr, len)
   if len <= 0 then return "" end
   local chars = {}
   for i = 0, len - 1 do
-    local b = memory.load_byte(ptr + i)
+    local b = memory:load_byte(ptr + i)
     chars[#chars + 1] = string.char(b)
   end
   return table.concat(chars)
@@ -40,15 +41,15 @@ end
 -- Helper: write a string into WASM memory (null-terminated)
 function Bridge.write_string(memory, ptr, str)
   for i = 1, #str do
-    memory.store_byte(ptr + i - 1, string.byte(str, i))
+    memory:store_byte(ptr + i - 1, string.byte(str, i))
   end
-  memory.store_byte(ptr + #str, 0)
+  memory:store_byte(ptr + #str, 0)
 end
 
 -- Create the import table for the WASM instance
 -- Returns a table of { module.name = function(...) }
 -- Blocking imports return a special sentinel that tells the interpreter to pause
-function Bridge.create_imports(memory_ref)
+function Bridge.create_imports(memory_ref, instance_ref)
   local imports = {}
 
   -- Immediate imports (execute and continue)
@@ -202,6 +203,9 @@ function Bridge.create_imports(memory_ref)
       return {input_type = "menu", winid = winid, how = how}
     end,
   }
+
+  -- Add Emscripten runtime imports (invoke_*, WASI, syscalls, time)
+  Emscripten.add_imports(imports, memory_ref, instance_ref)
 
   return imports
 end

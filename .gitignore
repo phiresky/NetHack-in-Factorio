@@ -11,6 +11,7 @@ build/nethack.js
 
 # Generated files
 scripts/nethack_wasm.lua
+scripts/nethack_data.lua
 
 # Lua artifacts
 *.luac
@@ -43,3 +44,5 @@ scripts/nethack_wasm.lua
 /objects
 /refs
 /config
+
+/build/spec
