@@ -13,6 +13,7 @@
  *   sys/unix/unixres.c   (privilege management)
  */
 
+#define NEED_VARARGS
 #include "hack.h"
 #include "dlb.h"
 
@@ -265,13 +266,12 @@ const char *path;
 void
 error VA_DECL(const char *, s)
 {
+    char buf[BUFSZ];
     VA_START(s);
     VA_INIT(s, const char *);
 
-    raw_printf("Error: ");
-    /* Note: can't easily use vsnprintf with K&R VA_DECL,
-     * so just print the format string directly */
-    raw_print(s);
+    vsprintf(buf, s, the_args);
+    raw_printf("Error: %s", buf);
 
     VA_END();
     nh_terminate(EXIT_FAILURE);
