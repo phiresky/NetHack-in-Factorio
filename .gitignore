@@ -1,0 +1,25 @@
+# External docs/sources
+factorio-docs
+NetHack/
+
+# Build artifacts
+build/tests/testsuite/
+build/tests/spec/
+*.o
+
+# Generated files
+scripts/nethack_wasm.lua
+
+# Lua artifacts
+*.luac
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
