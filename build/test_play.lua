@@ -161,23 +161,14 @@ local imports = Bridge.create_imports(memory_ref, instance_ref)
 local instance = WasmInterp.instantiate(module, imports)
 instance_ref.inst = instance
 
--- Run __wasm_call_ctors
-local ctors_idx = WasmInterp.get_export(instance, "__wasm_call_ctors")
-if ctors_idx then
-    WasmInterp.call(instance, ctors_idx, {})
-    local result = WasmInterp.run(instance, 10000000)
-    if result.status == "error" then
-        print("FAILED in __wasm_call_ctors: " .. tostring(result.message))
-        os.exit(1)
-    end
+-- Start via WASI entry point
+local start_idx = WasmInterp.get_export(instance, "_start")
+if not start_idx then
+    print("No _start export found!")
+    os.exit(1)
 end
 
--- Start main
-local main_idx = WasmInterp.get_export(instance, "__main_argc_argv")
-              or WasmInterp.get_export(instance, "main")
-              or WasmInterp.get_export(instance, "_main")
-
-WasmInterp.call(instance, main_idx, {0, 0})
+WasmInterp.call(instance, start_idx, {})
 
 -- Run until first input prompt
 local function run_until_input(label, max)

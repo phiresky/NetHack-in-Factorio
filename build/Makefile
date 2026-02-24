@@ -41,6 +41,7 @@ CFLAGS += -include wasi_compat.h
 CFLAGS += -Wno-implicit-function-declaration
 CFLAGS += -Wno-format
 CFLAGS += -Wno-parentheses
+CFLAGS += -Wno-deprecated-non-prototype
 
 # ================================================================
 # Linker flags (clang + WASI)
