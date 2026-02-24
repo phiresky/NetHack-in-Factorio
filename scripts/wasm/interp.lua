@@ -121,9 +121,11 @@ function Interp.instantiate(module, imports)
 
     -- Allocate memory
     local mem_def = module.memory_def
-    local initial_pages = 64
+    local initial_pages = 1
+    local max_pages = nil
     if mem_def then
-        initial_pages = mem_def.initial or 64
+        initial_pages = mem_def.initial or 1
+        max_pages = mem_def.maximum
     end
     -- Check if memory is imported
     for _, imp in ipairs(module.imports) do
@@ -131,11 +133,17 @@ function Interp.instantiate(module, imports)
             local mem = resolve_import(imports, imp.module, imp.name)
             if mem then
                 instance.memory = mem
+            else
+                -- Use import's limits if no provider found
+                if imp.desc and imp.desc.limits then
+                    initial_pages = imp.desc.limits.initial or 0
+                    max_pages = imp.desc.limits.maximum
+                end
             end
         end
     end
     if not instance.memory then
-        instance.memory = Memory.new(initial_pages)
+        instance.memory = Memory.new(initial_pages, max_pages)
     end
 
     -- Set up imported globals
@@ -486,6 +494,9 @@ function Interp.run(instance, max_instructions)
                     else
                         -- WASM-to-WASM call: save current frame, set up new one
                         call_sp = call_sp + 1
+                        if call_sp > 1000 then
+                            error("call stack exhausted")
+                        end
                         call_stack[call_sp] = {
                             locals = state.locals,
                             pc = state.pc,

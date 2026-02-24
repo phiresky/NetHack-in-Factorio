@@ -713,11 +713,9 @@ dispatch[0x02] = function(state)
     state.block_stack[bsp] = {
         opcode = 0x02,
         arity = arity,
-        stack_height = state.sp - arity, -- after popping arity params (blocks don't consume params for MVP)
+        stack_height = state.sp, -- blocks don't consume params in MVP
         continuation_pc = nil, -- filled in when we hit 'end'
     }
-    -- We need to find the matching 'end' to store continuation_pc
-    -- But we do this lazily - branch will scan forward
 end
 
 -- 0x03: loop
@@ -727,7 +725,8 @@ dispatch[0x03] = function(state)
     state.block_sp = bsp
     state.block_stack[bsp] = {
         opcode = 0x03,
-        arity = 0, -- loops branch to the start, not end - so 0 results on branch
+        arity = 0, -- branch arity: loops branch to start, so 0 params in MVP
+        result_arity = arity, -- result arity: used when falling through end
         stack_height = state.sp,
         continuation_pc = state.pc, -- loop jumps back to just after the loop opcode
     }
@@ -793,8 +792,8 @@ dispatch[0x05] = function(state)
     local bsp = state.block_sp
     local block = state.block_stack[bsp]
     state.block_sp = bsp - 1
-    -- Keep arity values on stack
-    local results = block.arity
+    -- Keep result values on stack
+    local results = block.result_arity or block.arity
     if results > 0 then
         local val = state.stack[state.sp]
         state.sp = block.stack_height + results
@@ -814,8 +813,9 @@ dispatch[0x0B] = function(state)
     end
     local block = state.block_stack[bsp]
     state.block_sp = bsp - 1
-    -- Restore stack to block height + arity results
-    local results = block.arity
+    -- Restore stack to block height + result values
+    -- For loops, result_arity differs from branch arity
+    local results = block.result_arity or block.arity
     if results > 0 then
         local val = state.stack[state.sp]
         state.sp = block.stack_height + results

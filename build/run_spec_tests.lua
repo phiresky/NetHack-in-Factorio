@@ -153,16 +153,31 @@ local function str_to_u32(s)
 end
 
 -- Convert string decimal to i64 {lo, hi} pair
+-- Uses string-based long division for values that exceed double precision
 local function str_to_i64(s)
-    local n = tonumber(s)
-    if not n then return {0, 0} end
-    -- For values that fit in double precision
-    if n >= 0 and n <= 4294967295 then
+    if not s or s == "" then return {0, 0} end
+    -- For small values, use fast path
+    if #s <= 9 then
+        local n = tonumber(s)
+        if not n then return {0, 0} end
         return {n, 0}
     end
-    local hi = math.floor(n / 4294967296)
-    local lo = n - hi * 4294967296
-    if lo < 0 then lo = lo + 4294967296; hi = hi - 1 end
+    -- String-based long division by 4294967296 to split into {lo, hi}
+    local remainder = 0
+    local quotient_digits = {}
+    for i = 1, #s do
+        local d = tonumber(s:sub(i, i))
+        if not d then return {0, 0} end
+        remainder = remainder * 10 + d
+        local q = math.floor(remainder / 4294967296)
+        remainder = remainder % 4294967296
+        if #quotient_digits > 0 or q > 0 then
+            quotient_digits[#quotient_digits + 1] = tostring(q)
+        end
+    end
+    local lo = remainder
+    local hi_str = table.concat(quotient_digits)
+    local hi = tonumber(hi_str) or 0
     return {bit32.band(lo, 0xFFFFFFFF), bit32.band(hi, 0xFFFFFFFF)}
 end
 
@@ -184,15 +199,15 @@ local function bits_to_f32(s)
 end
 
 -- Convert bit pattern string to f64 value
+-- The bit pattern is a decimal string representing a 64-bit unsigned integer
 local function bits_to_f64(s)
-    local n = tonumber(s)
-    if not n then return 0.0 end
-    if n == 0 then return 0.0 end
-    -- Decode from 64-bit pattern
-    local lo = n % 4294967296
-    local hi = math.floor(n / 4294967296)
-    lo = bit32.band(lo, 0xFFFFFFFF)
-    hi = bit32.band(hi, 0xFFFFFFFF)
+    if not s or s == "" then return 0.0 end
+    -- Use str_to_i64 to accurately parse the 64-bit bit pattern
+    local pair = str_to_i64(s)
+    local lo = pair[1]
+    local hi = pair[2]
+    if lo == 0 and hi == 0 then return 0.0 end
+    if lo == 0 and hi == 0x80000000 then return -0.0 end
     local sign = bit32.btest(hi, 0x80000000) and -1 or 1
     local exp = bit32.band(bit32.rshift(hi, 20), 0x7FF)
     local mant_hi = bit32.band(hi, 0xFFFFF)

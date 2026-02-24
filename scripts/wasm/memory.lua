@@ -10,10 +10,11 @@ Memory.__index = Memory
 local PAGE_SIZE = 65536
 local MAX_PAGES = 256 -- 16MB max
 
-function Memory.new(initial_pages)
+function Memory.new(initial_pages, max_pages)
     initial_pages = initial_pages or 64
     local self = setmetatable({}, Memory)
     self.page_count = initial_pages
+    self.max_pages = max_pages or MAX_PAGES
     self.data = {}
     -- Pre-fill with zeros: each entry = 4 bytes, total entries = pages * 16384
     local total_entries = initial_pages * (PAGE_SIZE / 4)
@@ -30,7 +31,7 @@ end
 function Memory:grow(delta_pages)
     local old_pages = self.page_count
     local new_pages = old_pages + delta_pages
-    if new_pages > MAX_PAGES then
+    if new_pages > self.max_pages then
         return 0xFFFFFFFF -- -1 as u32, failure
     end
     local old_entries = old_pages * (PAGE_SIZE / 4)
