@@ -86,4 +86,7 @@ for i = 0, 25 do
   inp("nh-menu-" .. ch, "ALT + " .. string.upper(ch), "none")
 end
 
+-- Click-to-travel: left click on distant tile triggers NetHack travel command
+inp("nh-click-move",  "mouse-button-1", "none")
+
 data:extend(inputs)

@@ -51,6 +51,12 @@ extern void host_mark_synch(void);
 extern void host_describe_result(const char *buf, int buf_len,
                                  const char *monbuf, int monbuf_len);
 
+/* Click-to-travel: non-blocking imports to read click coordinates
+ * after host_nhgetch returns 0 (signaling a mouse click). */
+extern int host_poskey_x(void);
+extern int host_poskey_y(void);
+extern int host_poskey_mod(void);
+
 /* Player selection dialog imports */
 extern void host_plsel_setup_role(int idx, const char *name, int len, int allow);
 extern void host_plsel_setup_race(int idx, const char *noun, int len, int allow);
@@ -271,6 +277,7 @@ int *argcp UNUSED;
 char **argv UNUSED;
 {
     iflags.window_inited = TRUE;
+    /* flags.travelcmd defaults to TRUE (options.c), enabling click-to-travel */
 }
 
 static void
@@ -639,11 +646,18 @@ static int
 factorio_nh_poskey(x, y, mod)
 int *x, *y, *mod;
 {
-    /* No mouse support; treat as regular key input */
+    int ch = host_nhgetch();
+    if (ch == 0) {
+        /* Click event: read coordinates from non-blocking imports */
+        *x = host_poskey_x();
+        *y = host_poskey_y();
+        *mod = host_poskey_mod();
+        return 0;
+    }
     *x = 0;
     *y = 0;
     *mod = 0;
-    return host_nhgetch();
+    return ch;
 }
 
 static void
