@@ -1014,6 +1014,14 @@ function Interp.instantiate(module, imports, compiled_sources)
         end
     end
 
+    -- Pre-compute block maps for O(1) branching
+    local build_block_map = Opcodes.build_block_map
+    for idx, func_def in pairs(module.funcs) do
+        if type(idx) == "number" and not func_def.import and func_def.code then
+            func_def.code.block_map = build_block_map(func_def.code.code)
+        end
+    end
+
     -- Load compiled functions (AOT or JIT)
     if Interp.use_compiler then
         local compiled = {}
@@ -1134,6 +1142,7 @@ function Interp.call(instance, func_idx, args)
         module = module,
         pc = 1,
         code = func_def.import and {} or func_def.code.code,
+        block_map = (not func_def.import and func_def.code) and func_def.code.block_map or {},
         block_stack = block_stack,
         block_sp = 1,
         running = true,
@@ -1141,12 +1150,11 @@ function Interp.call(instance, func_idx, args)
         call_func = nil,
     }
 
-    -- Function-level block
+    -- Function-level block (block_pc not needed - function-level exit uses running=false)
     block_stack[1] = {
         opcode = 0x02,
         arity = #type_info.results,
         stack_height = 0,
-        continuation_pc = nil,
     }
 
     -- Call stack for nested calls
@@ -1261,6 +1269,7 @@ function Interp.run(instance, max_instructions)
         local mem_len = memory.byte_length
         local block_stack = state.block_stack
         local block_sp = state.block_sp
+        local block_map = state.block_map
         local globals = state.globals
         local running = true
         local max_instr = max_instructions or 50000
@@ -1365,11 +1374,6 @@ function Interp.run(instance, max_instructions)
                     local target_type = module.types[target_def.type_idx + 1]
                     local num_params = #target_type.params
 
-                    local call_args = {}
-                    for i = num_params, 1, -1 do
-                        call_args[i] = stack[sp]; sp = sp - 1
-                    end
-
                     if target_def.import then
                         local import_fn = instance.import_funcs[target_idx]
                         if not import_fn then
@@ -1378,9 +1382,11 @@ function Interp.run(instance, max_instructions)
                         end
 
                         if type(import_fn) == "table" and import_fn.blocking then
-                            state.sp = sp; state.locals = loc
+                            local args_start = sp - num_params + 1
+                            state.sp = sp - num_params; state.locals = loc
                             state.memory = memory; state.globals = globals
-                            local handler_result = import_fn.handler(unpack(call_args))
+                            local handler_result = import_fn.handler(unpack(stack, args_start, sp))
+                            sp = sp - num_params
                             exec.waiting_input = true
                             exec.blocking_return_arity = #target_type.results
                             exec.state = state; exec.call_stack = call_stack
@@ -1390,7 +1396,9 @@ function Interp.run(instance, max_instructions)
                             return
                         end
 
-                        local result = import_fn(unpack(call_args))
+                        local args_start = sp - num_params + 1
+                        local result = import_fn(unpack(stack, args_start, sp))
+                        sp = sp - num_params
                         if #target_type.results > 0 and result ~= nil then
                             sp = sp + 1; stack[sp] = result
                         end
@@ -1399,6 +1407,7 @@ function Interp.run(instance, max_instructions)
                         entry_point = ctx.resume_point
                     else
                         -- WASM-to-WASM call: push frame, set up callee
+                        local args_base = sp - num_params
                         call_sp = call_sp + 1
                         if call_sp > 1000 then fail("call stack exhaustion") end
                         call_stack[call_sp] = {
@@ -1407,7 +1416,8 @@ function Interp.run(instance, max_instructions)
                             code = code,
                             block_stack = block_stack,
                             block_sp = block_sp,
-                            stack_base = sp,
+                            block_map = block_map,
+                            stack_base = args_base,
                             return_arity = #target_type.results,
                             func_idx = func_idx,
                             compiled_resume = ctx.resume_point,
@@ -1415,9 +1425,10 @@ function Interp.run(instance, max_instructions)
 
                         func_idx = target_idx
                         loc = {}
-                        for i = 1, num_params do
-                            loc[i - 1] = call_args[i]
+                        for i = 0, num_params - 1 do
+                            loc[i] = stack[args_base + 1 + i]
                         end
+                        sp = args_base
                         local new_local_offset = num_params
                         for _, decl in ipairs(target_def.code.locals) do
                             local def_val = default_value(decl.type)
@@ -1430,13 +1441,13 @@ function Interp.run(instance, max_instructions)
                         entry_point = 0
                         pc = 1
                         code = target_def.code.code
+                        block_map = target_def.code.block_map
                         block_stack = {}
                         block_sp = 1
                         block_stack[1] = {
                             opcode = 0x02,
                             arity = #target_type.results,
                             stack_height = sp,
-                            continuation_pc = nil,
                         }
                         running = true
                         break  -- Exit compiled loop, re-enter outer loop for callee
@@ -1449,8 +1460,8 @@ function Interp.run(instance, max_instructions)
                     -- Save state before exiting
                     state.sp = sp; state.pc = pc; state.locals = loc
                     state.code = code; state.block_stack = block_stack
-                    state.block_sp = block_sp; state.memory = memory
-                    state.globals = globals
+                    state.block_sp = block_sp; state.block_map = block_map
+                    state.memory = memory; state.globals = globals
                     exec.call_stack = call_stack
                     exec.call_sp = call_sp; exec.func_idx = func_idx
                     return
@@ -1464,7 +1475,8 @@ function Interp.run(instance, max_instructions)
                 if not inline_opcodes then
                     -- Inlining disabled: use dispatch table for all opcodes
                     state.sp = sp; state.pc = pc; state.locals = loc
-                    state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                    state.code = code; state.block_stack = block_stack
+                    state.block_sp = block_sp; state.block_map = block_map
                     local handler = dispatch[op]
                     if not handler then
                         fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, pc - 1, func_idx))
@@ -1472,7 +1484,8 @@ function Interp.run(instance, max_instructions)
                     handler(state)
                     sp = state.sp; pc = state.pc; loc = state.locals
                     code = state.code; block_stack = state.block_stack
-                    block_sp = state.block_sp; running = state.running
+                    block_sp = state.block_sp; block_map = state.block_map
+                    running = state.running
                     memory = state.memory; mem_data = memory.data
                     mem_len = memory.byte_length; globals = state.globals
 
@@ -1488,10 +1501,7 @@ function Interp.run(instance, max_instructions)
                         local target_type = module.types[target_def.type_idx + 1]
                         local num_params = #target_type.params
 
-                        local call_args = {}
-                        for i = num_params, 1, -1 do
-                            call_args[i] = stack[sp]; sp = sp - 1
-                        end
+                        local args_base = sp - num_params
 
                         if target_def.import then
                             local import_fn = instance.import_funcs[target_idx]
@@ -1499,10 +1509,13 @@ function Interp.run(instance, max_instructions)
                                 fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
                             end
 
+                            local args_start = args_base + 1
                             if type(import_fn) == "table" and import_fn.blocking then
+                                sp = args_base
                                 state.sp = sp; state.pc = pc; state.locals = loc
-                                state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
-                                local handler_result = import_fn.handler(unpack(call_args))
+                                state.code = code; state.block_stack = block_stack
+                                state.block_sp = block_sp; state.block_map = block_map
+                                local handler_result = import_fn.handler(unpack(stack, args_start, args_start + num_params - 1))
                                 exec.waiting_input = true
                                 exec.blocking_return_arity = #target_type.results
                                 exec.state = state; exec.call_stack = call_stack
@@ -1511,7 +1524,8 @@ function Interp.run(instance, max_instructions)
                                 return
                             end
 
-                            local result = import_fn(unpack(call_args))
+                            local result = import_fn(unpack(stack, args_start, args_start + num_params - 1))
+                            sp = args_base
                             if #target_type.results > 0 and result ~= nil then
                                 sp = sp + 1; stack[sp] = result
                             end
@@ -1525,16 +1539,18 @@ function Interp.run(instance, max_instructions)
                                 code = code,
                                 block_stack = block_stack,
                                 block_sp = block_sp,
-                                stack_base = sp,
+                                block_map = block_map,
+                                stack_base = args_base,
                                 return_arity = #target_type.results,
                                 func_idx = func_idx,
                             }
 
                             func_idx = target_idx
                             loc = {}
-                            for i = 1, num_params do
-                                loc[i - 1] = call_args[i]
+                            for i = 0, num_params - 1 do
+                                loc[i] = stack[args_base + 1 + i]
                             end
+                            sp = args_base
                             local new_local_offset = num_params
                             for _, decl in ipairs(target_def.code.locals) do
                                 local def_val = default_value(decl.type)
@@ -1546,13 +1562,13 @@ function Interp.run(instance, max_instructions)
 
                             pc = 1
                             code = target_def.code.code
+                            block_map = target_def.code.block_map
                             block_stack = {}
                             block_sp = 1
                             block_stack[1] = {
                                 opcode = 0x02,
                                 arity = #target_type.results,
                                 stack_height = sp,
-                                continuation_pc = nil,
                             }
                         end
                     end
@@ -1636,13 +1652,41 @@ function Interp.run(instance, max_instructions)
                     end
                     local cond = stack[sp]; sp = sp - 1
                     if cond ~= 0 then
-                        -- Branch taken: flush to state, use do_branch, refresh
-                        state.sp = sp; state.pc = pc; state.locals = loc
-                        state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
-                        do_branch(state, depth)
-                        sp = state.sp; pc = state.pc
-                        block_stack = state.block_stack; block_sp = state.block_sp
-                        running = state.running
+                        -- Inlined do_branch using cached locals (no flush/refresh)
+                        local target_idx = block_sp - depth
+                        local target_block = block_stack[target_idx]
+                        local arity = target_block.arity
+                        if target_block.opcode == 0x03 then
+                            -- Loop: branch to start
+                            if arity > 0 then
+                                local base = target_block.stack_height
+                                for i = arity - 1, 0, -1 do
+                                    stack[base + 1 + i] = stack[sp - (arity - 1 - i)]
+                                end
+                                sp = base + arity
+                            else
+                                sp = target_block.stack_height
+                            end
+                            block_sp = target_idx
+                            pc = target_block.continuation_pc
+                        else
+                            -- Block/if/try_table: branch to end
+                            if arity > 0 then
+                                local base = target_block.stack_height
+                                for i = arity - 1, 0, -1 do
+                                    stack[base + 1 + i] = stack[sp - (arity - 1 - i)]
+                                end
+                                sp = base + arity
+                            else
+                                sp = target_block.stack_height
+                            end
+                            block_sp = target_idx - 1
+                            if block_sp <= 0 then
+                                running = false
+                            else
+                                pc = block_map[target_block.block_pc].end_pc
+                            end
+                        end
                     end
 
                 elseif op == 0x71 then -- i32.and (3.3%)
@@ -1736,15 +1780,80 @@ function Interp.run(instance, max_instructions)
                             opcode = 0x02,
                             arity = 0,
                             stack_height = sp,
-                            continuation_pc = nil,
+                            block_pc = pc - 2, -- position of 0x02 byte
                         }
                     else
                         -- Non-void blocktype: dispatch
                         state.sp = sp; state.pc = pc; state.locals = loc
-                        state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                        state.code = code; state.block_stack = block_stack
+                        state.block_sp = block_sp; state.block_map = block_map
                         dispatch[0x02](state)
                         sp = state.sp; pc = state.pc
                         block_stack = state.block_stack; block_sp = state.block_sp
+                    end
+
+                elseif op == 0x04 then -- if
+                    local opcode_pc = pc - 1
+                    local bt = code[pc]
+                    if bt == 0x40 then
+                        -- Void if (most common)
+                        pc = pc + 1
+                        local cond = stack[sp]; sp = sp - 1
+                        if cond ~= 0 then
+                            -- True: execute then branch
+                            block_sp = block_sp + 1
+                            block_stack[block_sp] = {
+                                opcode = 0x04,
+                                arity = 0,
+                                stack_height = sp,
+                                block_pc = opcode_pc,
+                            }
+                        else
+                            -- False: use block_map to skip
+                            local info = block_map[opcode_pc]
+                            if info.else_pc then
+                                -- Has else branch
+                                block_sp = block_sp + 1
+                                block_stack[block_sp] = {
+                                    opcode = 0x04,
+                                    arity = 0,
+                                    stack_height = sp,
+                                    block_pc = opcode_pc,
+                                }
+                                pc = info.else_pc
+                            else
+                                -- No else, skip entirely
+                                pc = info.end_pc
+                            end
+                        end
+                    else
+                        -- Non-void: dispatch
+                        state.sp = sp; state.pc = pc; state.locals = loc
+                        state.code = code; state.block_stack = block_stack
+                        state.block_sp = block_sp; state.block_map = block_map
+                        dispatch[0x04](state)
+                        sp = state.sp; pc = state.pc
+                        block_stack = state.block_stack; block_sp = state.block_sp
+                    end
+
+                elseif op == 0x05 then -- else
+                    -- Reached from then-branch: jump to end using block_map
+                    local block = block_stack[block_sp]
+                    pc = block_map[block.block_pc].end_pc
+                    local n_results = block.result_arity or block.arity
+                    block_sp = block_sp - 1
+                    if n_results == 0 then
+                        sp = block.stack_height
+                    elseif n_results == 1 then
+                        local val = stack[sp]
+                        sp = block.stack_height + 1
+                        stack[sp] = val
+                    else
+                        local base = block.stack_height
+                        for i = n_results - 1, 0, -1 do
+                            stack[base + 1 + i] = stack[sp - (n_results - 1 - i)]
+                        end
+                        sp = base + n_results
                     end
 
                 elseif op == 0x10 then -- call
@@ -1764,11 +1873,6 @@ function Interp.run(instance, max_instructions)
                     local target_type = module.types[target_def.type_idx + 1]
                     local num_params = #target_type.params
 
-                    local call_args = {}
-                    for i = num_params, 1, -1 do
-                        call_args[i] = stack[sp]; sp = sp - 1
-                    end
-
                     if target_def.import then
                         local import_fn = instance.import_funcs[target_idx]
                         if not import_fn then
@@ -1776,9 +1880,12 @@ function Interp.run(instance, max_instructions)
                         end
 
                         if type(import_fn) == "table" and import_fn.blocking then
-                            state.sp = sp; state.pc = pc; state.locals = loc
-                            state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
-                            local handler_result = import_fn.handler(unpack(call_args))
+                            local args_start = sp - num_params + 1
+                            state.sp = sp - num_params; state.pc = pc; state.locals = loc
+                            state.code = code; state.block_stack = block_stack
+                            state.block_sp = block_sp; state.block_map = block_map
+                            local handler_result = import_fn.handler(unpack(stack, args_start, sp))
+                            sp = sp - num_params
                             exec.waiting_input = true
                             exec.blocking_return_arity = #target_type.results
                             exec.state = state; exec.call_stack = call_stack
@@ -1787,13 +1894,16 @@ function Interp.run(instance, max_instructions)
                             return
                         end
 
-                        local result = import_fn(unpack(call_args))
+                        local args_start = sp - num_params + 1
+                        local result = import_fn(unpack(stack, args_start, sp))
+                        sp = sp - num_params
                         if #target_type.results > 0 and result ~= nil then
                             sp = sp + 1; stack[sp] = result
                         end
                         mem_len = memory.byte_length
                     else
-                        -- WASM-to-WASM call
+                        -- WASM-to-WASM call: read args directly from stack into locals
+                        local args_base = sp - num_params
                         call_sp = call_sp + 1
                         if call_sp > 1000 then fail("call stack exhaustion") end
                         call_stack[call_sp] = {
@@ -1802,16 +1912,18 @@ function Interp.run(instance, max_instructions)
                             code = code,
                             block_stack = block_stack,
                             block_sp = block_sp,
-                            stack_base = sp,
+                            block_map = block_map,
+                            stack_base = args_base,
                             return_arity = #target_type.results,
                             func_idx = func_idx,
                         }
 
                         func_idx = target_idx
                         loc = {}
-                        for i = 1, num_params do
-                            loc[i - 1] = call_args[i]
+                        for i = 0, num_params - 1 do
+                            loc[i] = stack[args_base + 1 + i]
                         end
+                        sp = args_base
                         local new_local_offset = num_params
                         for _, decl in ipairs(target_def.code.locals) do
                             local def_val = default_value(decl.type)
@@ -1823,13 +1935,13 @@ function Interp.run(instance, max_instructions)
 
                         pc = 1
                         code = target_def.code.code
+                        block_map = target_def.code.block_map
                         block_stack = {}
                         block_sp = 1
                         block_stack[1] = {
                             opcode = 0x02,
                             arity = #target_type.results,
                             stack_height = sp,
-                            continuation_pc = nil,
                         }
                     end
 
@@ -1989,7 +2101,8 @@ function Interp.run(instance, max_instructions)
                 else
                     -- Dispatch fallback for all other opcodes (~10% of instructions)
                     state.sp = sp; state.pc = pc; state.locals = loc
-                    state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                    state.code = code; state.block_stack = block_stack
+                    state.block_sp = block_sp; state.block_map = block_map
                     local handler = dispatch[op]
                     if not handler then
                         fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, pc - 1, func_idx))
@@ -1998,7 +2111,8 @@ function Interp.run(instance, max_instructions)
                     -- Refresh all cached locals from state
                     sp = state.sp; pc = state.pc; loc = state.locals
                     code = state.code; block_stack = state.block_stack
-                    block_sp = state.block_sp; running = state.running
+                    block_sp = state.block_sp; block_map = state.block_map
+                    running = state.running
                     memory = state.memory; mem_data = memory.data
                     mem_len = memory.byte_length; globals = state.globals
 
@@ -2015,10 +2129,7 @@ function Interp.run(instance, max_instructions)
                         local target_type = module.types[target_def.type_idx + 1]
                         local num_params = #target_type.params
 
-                        local call_args = {}
-                        for i = num_params, 1, -1 do
-                            call_args[i] = stack[sp]; sp = sp - 1
-                        end
+                        local args_base = sp - num_params
 
                         if target_def.import then
                             local import_fn = instance.import_funcs[target_idx]
@@ -2026,10 +2137,13 @@ function Interp.run(instance, max_instructions)
                                 fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
                             end
 
+                            local args_start = args_base + 1
                             if type(import_fn) == "table" and import_fn.blocking then
+                                sp = args_base
                                 state.sp = sp; state.pc = pc; state.locals = loc
-                                state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
-                                local handler_result = import_fn.handler(unpack(call_args))
+                                state.code = code; state.block_stack = block_stack
+                                state.block_sp = block_sp; state.block_map = block_map
+                                local handler_result = import_fn.handler(unpack(stack, args_start, args_start + num_params - 1))
                                 exec.waiting_input = true
                                 exec.blocking_return_arity = #target_type.results
                                 exec.state = state; exec.call_stack = call_stack
@@ -2038,7 +2152,8 @@ function Interp.run(instance, max_instructions)
                                 return
                             end
 
-                            local result = import_fn(unpack(call_args))
+                            local result = import_fn(unpack(stack, args_start, args_start + num_params - 1))
+                            sp = args_base
                             if #target_type.results > 0 and result ~= nil then
                                 sp = sp + 1; stack[sp] = result
                             end
@@ -2052,16 +2167,18 @@ function Interp.run(instance, max_instructions)
                                 code = code,
                                 block_stack = block_stack,
                                 block_sp = block_sp,
-                                stack_base = sp,
+                                block_map = block_map,
+                                stack_base = args_base,
                                 return_arity = #target_type.results,
                                 func_idx = func_idx,
                             }
 
                             func_idx = target_idx
                             loc = {}
-                            for i = 1, num_params do
-                                loc[i - 1] = call_args[i]
+                            for i = 0, num_params - 1 do
+                                loc[i] = stack[args_base + 1 + i]
                             end
+                            sp = args_base
                             local new_local_offset = num_params
                             for _, decl in ipairs(target_def.code.locals) do
                                 local def_val = default_value(decl.type)
@@ -2073,13 +2190,13 @@ function Interp.run(instance, max_instructions)
 
                             pc = 1
                             code = target_def.code.code
+                            block_map = target_def.code.block_map
                             block_stack = {}
                             block_sp = 1
                             block_stack[1] = {
                                 opcode = 0x02,
                                 arity = #target_type.results,
                                 stack_height = sp,
-                                continuation_pc = nil,
                             }
                         end
                     end
@@ -2102,6 +2219,7 @@ function Interp.run(instance, max_instructions)
                     state.code = frame.code
                     state.block_stack = frame.block_stack
                     state.block_sp = frame.block_sp
+                    state.block_map = frame.block_map
                     state.running = true
                     state.do_return = false
                     state.call_func = nil
@@ -2113,7 +2231,8 @@ function Interp.run(instance, max_instructions)
                         -- Refresh cached locals from state
                         sp = state.sp; loc = state.locals; pc = state.pc
                         code = state.code; block_stack = state.block_stack
-                        block_sp = state.block_sp; running = true
+                        block_sp = state.block_sp; block_map = state.block_map
+                        running = true
                         memory = state.memory; mem_data = memory.data
                         mem_len = memory.byte_length; globals = state.globals
                         entry_point = frame.compiled_resume or 0
@@ -2138,34 +2257,48 @@ function Interp.run(instance, max_instructions)
                 call_sp = call_sp - 1
 
                 local return_arity = frame.return_arity
-                local results = {}
-                for i = return_arity, 1, -1 do
-                    results[i] = stack[sp]; sp = sp - 1
-                end
-
-                sp = frame.stack_base
-                loc = frame.locals
-                pc = frame.pc
-                code = frame.code
-                block_stack = frame.block_stack
-                block_sp = frame.block_sp
-                func_idx = frame.func_idx
-                running = true
-                state.running = true
-                entry_point = frame.compiled_resume or 0
-                -- Refresh memory cache (callee may have grown memory)
-                mem_data = memory.data
-                mem_len = memory.byte_length
-
-                for i = 1, return_arity do
-                    sp = sp + 1; stack[sp] = results[i]
+                if return_arity == 1 then
+                    -- Single return (most common): no temp table needed
+                    local result = stack[sp]
+                    sp = frame.stack_base
+                    loc = frame.locals; pc = frame.pc; code = frame.code
+                    block_stack = frame.block_stack; block_sp = frame.block_sp
+                    block_map = frame.block_map; func_idx = frame.func_idx
+                    running = true; state.running = true
+                    entry_point = frame.compiled_resume or 0
+                    mem_data = memory.data; mem_len = memory.byte_length
+                    sp = sp + 1; stack[sp] = result
+                elseif return_arity == 0 then
+                    sp = frame.stack_base
+                    loc = frame.locals; pc = frame.pc; code = frame.code
+                    block_stack = frame.block_stack; block_sp = frame.block_sp
+                    block_map = frame.block_map; func_idx = frame.func_idx
+                    running = true; state.running = true
+                    entry_point = frame.compiled_resume or 0
+                    mem_data = memory.data; mem_len = memory.byte_length
+                else
+                    -- Multi-return (rare)
+                    local results = {}
+                    for i = return_arity, 1, -1 do
+                        results[i] = stack[sp]; sp = sp - 1
+                    end
+                    sp = frame.stack_base
+                    loc = frame.locals; pc = frame.pc; code = frame.code
+                    block_stack = frame.block_stack; block_sp = frame.block_sp
+                    block_map = frame.block_map; func_idx = frame.func_idx
+                    running = true; state.running = true
+                    entry_point = frame.compiled_resume or 0
+                    mem_data = memory.data; mem_len = memory.byte_length
+                    for i = 1, return_arity do
+                        sp = sp + 1; stack[sp] = results[i]
+                    end
                 end
             else
                 -- Top-level function returned
                 state.sp = sp; state.pc = pc; state.locals = loc
                 state.code = code; state.block_stack = block_stack
-                state.block_sp = block_sp; state.memory = memory
-                state.globals = globals
+                state.block_sp = block_sp; state.block_map = block_map
+                state.memory = memory; state.globals = globals
                 exec.call_stack = call_stack
                 exec.call_sp = call_sp; exec.func_idx = func_idx
                 exec.finished = true

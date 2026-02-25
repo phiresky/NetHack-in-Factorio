@@ -113,6 +113,110 @@ local function read_memarg(state)
     return offset
 end
 
+-- Stateless helpers for bytecode scanning (used by build_block_map)
+local function skip_leb128_at(code, pos)
+    while code[pos] >= 128 do pos = pos + 1 end
+    return pos + 1
+end
+
+local function read_leb128_u_at(code, pos)
+    local result = 0
+    local shift = 0
+    while true do
+        local b = code[pos]
+        pos = pos + 1
+        result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
+        if b < 128 then return result, pos end
+        shift = shift + 7
+    end
+end
+
+-- Skip operands of a single instruction at position pos in code array
+-- Returns new position after the operands
+local function skip_operands_at(code, pos, op)
+    if op == 0x08 then return skip_leb128_at(code, pos) -- throw
+    elseif op == 0x0A then return pos -- throw_ref
+    elseif op == 0x0C or op == 0x0D then return skip_leb128_at(code, pos) -- br, br_if
+    elseif op == 0x0E then -- br_table
+        local count
+        count, pos = read_leb128_u_at(code, pos)
+        for _ = 0, count do
+            pos = skip_leb128_at(code, pos)
+        end
+        return pos
+    elseif op == 0x0F then return pos -- return
+    elseif op == 0x10 then return skip_leb128_at(code, pos) -- call
+    elseif op == 0x11 then -- call_indirect
+        pos = skip_leb128_at(code, pos)
+        return skip_leb128_at(code, pos)
+    elseif op == 0x1A or op == 0x1B then return pos -- drop, select
+    elseif op >= 0x20 and op <= 0x24 then return skip_leb128_at(code, pos)
+    elseif op >= 0x28 and op <= 0x3E then -- memory load/store
+        pos = skip_leb128_at(code, pos)
+        return skip_leb128_at(code, pos)
+    elseif op == 0x3F or op == 0x40 then return skip_leb128_at(code, pos)
+    elseif op == 0x41 then return skip_leb128_at(code, pos) -- i32.const
+    elseif op == 0x42 then return skip_leb128_at(code, pos) -- i64.const
+    elseif op == 0x43 then return pos + 4 -- f32.const
+    elseif op == 0x44 then return pos + 8 -- f64.const
+    elseif op == 0xFC then return skip_leb128_at(code, pos) -- extended ops
+    end
+    return pos
+end
+
+-- Pre-compute block structure map for a function's bytecode.
+-- Returns block_map[opcode_pc] = {end_pc=N, else_pc=M}
+-- opcode_pc is the position of the 0x02/0x03/0x04/0x1F byte.
+-- end_pc is the position after the matching 0x0B byte.
+-- else_pc (if-only) is the position after the 0x05 byte.
+function Opcodes.build_block_map(code)
+    local block_map = {}
+    local bstack = {}
+    local top = 0
+    local pos = 1
+    local len = #code
+
+    while pos <= len do
+        local op = code[pos]
+        local opcode_pc = pos
+        pos = pos + 1
+
+        if op == 0x02 or op == 0x03 or op == 0x04 then
+            top = top + 1
+            bstack[top] = opcode_pc
+            block_map[opcode_pc] = {}
+            pos = skip_leb128_at(code, pos) -- skip blocktype
+        elseif op == 0x1F then -- try_table
+            top = top + 1
+            bstack[top] = opcode_pc
+            block_map[opcode_pc] = {}
+            pos = skip_leb128_at(code, pos) -- blocktype
+            local num_catches
+            num_catches, pos = read_leb128_u_at(code, pos)
+            for _ = 1, num_catches do
+                local kind = code[pos]; pos = pos + 1
+                if kind == 0 or kind == 2 then
+                    pos = skip_leb128_at(code, pos) -- tagidx
+                end
+                pos = skip_leb128_at(code, pos) -- depth
+            end
+        elseif op == 0x05 then -- else
+            if top > 0 then
+                block_map[bstack[top]].else_pc = pos
+            end
+        elseif op == 0x0B then -- end
+            if top > 0 then
+                block_map[bstack[top]].end_pc = pos
+                top = top - 1
+            end
+        else
+            pos = skip_operands_at(code, pos, op)
+        end
+    end
+
+    return block_map
+end
+
 -- Read block type from code
 -- Returns (n_params, n_results)
 -- In multi-value extension, blocktype is a signed LEB128:
@@ -1015,6 +1119,7 @@ end
 
 -- 0x02: block
 dispatch[0x02] = function(state)
+    local block_pc = state.pc - 1
     local n_params, n_results = read_blocktype(state)
     local bsp = state.block_sp + 1
     state.block_sp = bsp
@@ -1022,12 +1127,13 @@ dispatch[0x02] = function(state)
         opcode = 0x02,
         arity = n_results, -- branch arity = results for block
         stack_height = state.sp - n_params,
-        continuation_pc = nil,
+        block_pc = block_pc,
     }
 end
 
 -- 0x03: loop
 dispatch[0x03] = function(state)
+    local block_pc = state.pc - 1
     local n_params, n_results = read_blocktype(state)
     local bsp = state.block_sp + 1
     state.block_sp = bsp
@@ -1037,11 +1143,13 @@ dispatch[0x03] = function(state)
         result_arity = n_results, -- result arity: used when falling through end
         stack_height = state.sp - n_params,
         continuation_pc = state.pc,
+        block_pc = block_pc,
     }
 end
 
 -- 0x04: if
 dispatch[0x04] = function(state)
+    local block_pc = state.pc - 1
     local n_params, n_results = read_blocktype(state)
     local cond = pop(state)
     local bsp = state.block_sp + 1
@@ -1050,35 +1158,17 @@ dispatch[0x04] = function(state)
         opcode = 0x04,
         arity = n_results, -- branch arity = results for if
         stack_height = state.sp - n_params,
-        continuation_pc = nil,
+        block_pc = block_pc,
     }
     if cond == 0 then
-        -- Skip to else or end
-        local depth = 1
-        while depth > 0 do
-            local op = read_byte(state)
-            if op == 0x02 or op == 0x03 or op == 0x04 then
-                read_blocktype(state) -- consume block type
-                depth = depth + 1
-            elseif op == 0x1F then -- try_table
-                skip_instruction_operands(state, op)
-                depth = depth + 1
-            elseif op == 0x05 then -- else
-                if depth == 1 then
-                    -- Found our else, continue execution in else branch
-                    return
-                end
-            elseif op == 0x0B then -- end
-                depth = depth - 1
-                if depth == 0 then
-                    -- No else branch, block is done
-                    state.block_sp = state.block_sp - 1
-                    return
-                end
-            else
-                -- Skip operands for other opcodes
-                skip_instruction_operands(state, op)
-            end
+        -- Use block_map for O(1) skip to else or end
+        local info = state.block_map[block_pc]
+        if info.else_pc then
+            state.pc = info.else_pc
+        else
+            -- No else branch, block is done
+            state.block_sp = bsp - 1
+            state.pc = info.end_pc
         end
     end
     -- cond is true, execute the if body
@@ -1086,25 +1176,10 @@ end
 
 -- 0x05: else
 dispatch[0x05] = function(state)
-    -- We reached else from the 'then' branch, skip to end
-    local depth = 1
-    while depth > 0 do
-        local op = read_byte(state)
-        if op == 0x02 or op == 0x03 or op == 0x04 then
-            read_blocktype(state)
-            depth = depth + 1
-        elseif op == 0x1F then -- try_table
-            skip_instruction_operands(state, op)
-            depth = depth + 1
-        elseif op == 0x0B then
-            depth = depth - 1
-        else
-            skip_instruction_operands(state, op)
-        end
-    end
-    -- Pop the if block
+    -- We reached else from the 'then' branch, jump to end using block_map
     local bsp = state.block_sp
     local block = state.block_stack[bsp]
+    state.pc = state.block_map[block.block_pc].end_pc
     state.block_sp = bsp - 1
     -- Keep result values on stack
     local n_results = block.result_arity or block.arity
@@ -1152,6 +1227,7 @@ end
 
 -- 0x1F: try_table
 dispatch[0x1F] = function(state)
+    local block_pc = state.pc - 1
     local n_params, n_results = read_blocktype(state)
     local num_catches = read_leb128_u(state)
     local catches = {}
@@ -1170,8 +1246,8 @@ dispatch[0x1F] = function(state)
         opcode = 0x1F,
         arity = n_results, -- branch arity = results for try_table (like block)
         stack_height = state.sp - n_params,
-        continuation_pc = nil,
         catches = catches,
+        block_pc = block_pc,
     }
 end
 
@@ -1250,7 +1326,7 @@ local function do_branch(state, depth)
         state.block_sp = target_idx -- keep the loop block on the stack
         state.pc = target_block.continuation_pc
     else
-        -- Block/if: branch to end, pass arity values (block results)
+        -- Block/if/try_table: branch to end, pass arity values (block results)
         if arity > 0 then
             for i = arity - 1, 0, -1 do
                 state.stack[base + 1 + i] = state.stack[sp - (arity - 1 - i)]
@@ -1260,26 +1336,10 @@ local function do_branch(state, depth)
             state.sp = base
         end
         state.block_sp = target_idx - 1 -- pop the target block too
-
-        -- Need to skip forward to the matching end
-        local skip_depth = depth + 1
-        while skip_depth > 0 do
-            local op = read_byte(state)
-            if op == 0x02 or op == 0x03 or op == 0x04 then
-                read_blocktype(state)
-                skip_depth = skip_depth + 1
-            elseif op == 0x1F then -- try_table
-                skip_instruction_operands(state, op)
-                skip_depth = skip_depth + 1
-            elseif op == 0x0B then
-                skip_depth = skip_depth - 1
-            else
-                skip_instruction_operands(state, op)
-            end
-        end
-        -- Check if we just popped the function-level block
         if state.block_sp <= 0 then
             state.running = false
+        else
+            state.pc = state.block_map[target_block.block_pc].end_pc
         end
     end
 end
