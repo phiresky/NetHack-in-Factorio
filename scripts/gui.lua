@@ -1,5 +1,5 @@
 -- gui.lua: NetHack Qt-style GUI for Factorio
--- Layout: top panel (messages | status) + toolbar, action panel on right side
+-- Layout: single top panel with menu bar + [messages | status], matching Qt port
 local Gui = {}
 
 -- Window type constants (from NetHack)
@@ -8,6 +8,9 @@ local NHW_STATUS  = 2
 local NHW_MAP     = 3
 local NHW_MENU    = 4
 local NHW_TEXT    = 5
+
+local TC = require("scripts.tile_config")
+local TOTAL_TILES = TC.n_monsters + TC.n_objects + TC.n_other
 
 local MAX_MESSAGES = 50
 
@@ -51,14 +54,14 @@ local BL_DLEVEL  = 20
 -- Fields where lower is better (for highlight direction)
 local LOW_IS_GOOD = {[BL_AC] = true}
 
--- Stat label definitions: {name, prefix, field_idx}
+-- Stat label definitions: {name, prefix, field_idx, icon}
 local STAT_LABELS = {
-  {name = "str", prefix = "St:", idx = BL_STR},
-  {name = "dx",  prefix = "Dx:", idx = BL_DX},
-  {name = "co",  prefix = "Co:", idx = BL_CO},
-  {name = "in",  prefix = "In:", idx = BL_IN},
-  {name = "wi",  prefix = "Wi:", idx = BL_WI},
-  {name = "ch",  prefix = "Ch:", idx = BL_CH},
+  {name = "str", prefix = "Str:", idx = BL_STR, icon = "nh-icon-str"},
+  {name = "dx",  prefix = "Dex:", idx = BL_DX,  icon = "nh-icon-dex"},
+  {name = "co",  prefix = "Con:", idx = BL_CO,   icon = "nh-icon-con"},
+  {name = "in",  prefix = "Int:", idx = BL_IN,   icon = "nh-icon-int"},
+  {name = "wi",  prefix = "Wis:", idx = BL_WI,   icon = "nh-icon-wis"},
+  {name = "ch",  prefix = "Cha:", idx = BL_CH,   icon = "nh-icon-cha"},
 }
 
 -- Vital label definitions
@@ -89,64 +92,115 @@ local CONDITION_BITS = {
   {mask = 0x00001000, name = "Ride"},
 }
 
--- Toolbar buttons (Qt-style horizontal bar)
+-- Toolbar buttons (Qt-style quick-access bar below menu bar)
 local TOOLBAR_BUTTONS = {
-  {name = "again", label = "Again", key = 0x01},          -- ctrl-A (repeat)
-  {name = "get",   label = "Get",   key = string.byte(",")},
-  {name = "kick",  label = "Kick",  key = 0x04},          -- ctrl-D
-  {name = "throw", label = "Throw", key = string.byte("t")},
-  {name = "fire",  label = "Fire",  key = string.byte("f")},
-  {name = "drop",  label = "Drop",  key = string.byte("d")},
-  {name = "eat",   label = "Eat",   key = string.byte("e")},
-  {name = "rest",  label = "Rest",  key = string.byte(".")},
+  {name = "again", label = "[img=nh-icon-tb-again] Again", key = 0x01},
+  {name = "get",   label = "[img=nh-icon-tb-get] Get",     key = string.byte(",")},
+  {name = "kick",  label = "[img=nh-icon-tb-kick] Kick",   key = 0x04},
+  {name = "throw", label = "[img=nh-icon-tb-throw] Throw", key = string.byte("t")},
+  {name = "fire",  label = "[img=nh-icon-tb-fire] Fire",   key = string.byte("f")},
+  {name = "drop",  label = "[img=nh-icon-tb-drop] Drop",   key = string.byte("d")},
+  {name = "eat",   label = "[img=nh-icon-tb-eat] Eat",     key = string.byte("e")},
+  {name = "rest",  label = "[img=nh-icon-tb-rest] Rest",   key = string.byte(".")},
 }
 
--- Action panel buttons (comprehensive, for side panel)
-local ACTION_BUTTONS = {
-  {header = "Move"},
-  {label = "Wait",      key = string.byte(".")},
-  {label = "Search",    key = string.byte("s")},
-  {label = "Up <",      key = string.byte("<")},
-  {label = "Down >",    key = string.byte(">")},
-  {header = "Items"},
-  {label = "Inventory", key = string.byte("i")},
-  {label = "Pickup",    key = string.byte(",")},
-  {label = "Drop",      key = string.byte("d")},
-  {label = "Apply",     key = string.byte("a")},
-  {header = "Equip"},
-  {label = "Wield",     key = string.byte("w")},
-  {label = "Wear",      key = 87},  -- W
-  {label = "Takeoff",   key = 84},  -- T
-  {label = "Put on",    key = 80},  -- P
-  {label = "Remove",    key = 82},  -- R
-  {header = "Combat"},
-  {label = "Fire",      key = string.byte("f")},
-  {label = "Throw",     key = string.byte("t")},
-  {label = "Kick",      key = 4},   -- ^D
-  {label = "Zap",       key = string.byte("z")},
-  {label = "Cast",      key = 90},  -- Z
-  {header = "Use"},
-  {label = "Eat",       key = string.byte("e")},
-  {label = "Quaff",     key = string.byte("q")},
-  {label = "Read",      key = string.byte("r")},
-  {header = "Info"},
-  {label = "Look",      key = string.byte(":")},
-  {label = "Far-look",  key = string.byte(";")},
-  {label = "What here", key = string.byte("/")},
-  {header = "Other"},
-  {label = "Open",      key = string.byte("o")},
-  {label = "Close",     key = string.byte("c")},
-  {label = "Pay",       key = string.byte("p")},
-  {label = "Pray",      key = 16},  -- ^P
-  {label = "Engrave",   key = 69},  -- E
-  {label = "Enhance",   key = 5},   -- ^E
-  {header = "Prompt"},
-  {label = "Space",     key = string.byte(" ")},
-  {label = "Enter",     key = 13},
-  {label = "Escape",    key = 27},
-  {label = "Yes",       key = string.byte("y")},
-  {label = "No",        key = string.byte("n")},
+-- Menu bar definitions (matches Qt menu bar: Game, Gear, Action, Magic, Info, Help)
+-- ext = extended command name (for # commands that need getlin follow-up)
+local MENU_BAR = {
+  {name = "game", label = "Game", items = {
+    {label = "Version",       key = string.byte("v")},
+    {label = "History",       key = string.byte("V")},
+    {label = "Options",       key = string.byte("O")},
+    {label = "Explore mode",  key = string.byte("X")},
+    {separator = true},
+    {label = "Save",          key = string.byte("S")},
+    {label = "Quit",          key = string.byte("#"), ext = "quit"},
+  }},
+  {name = "gear", label = "Gear", items = {
+    {label = "Wield weapon",      key = string.byte("w")},
+    {label = "Exchange weapons",  key = string.byte("x")},
+    {label = "Two weapon combat", key = string.byte("#"), ext = "twoweapon"},
+    {label = "Load quiver",       key = string.byte("Q")},
+    {separator = true},
+    {label = "Wear armour",       key = string.byte("W")},
+    {label = "Take off armour",   key = string.byte("T")},
+    {separator = true},
+    {label = "Put on",            key = string.byte("P")},
+    {label = "Remove",            key = string.byte("R")},
+  }},
+  {name = "action", label = "Action", items = {
+    {label = "Again",            key = 0x01},  -- ^A
+    {label = "Apply",            key = string.byte("a")},
+    {label = "Chat",             key = string.byte("#"), ext = "chat"},
+    {label = "Close door",       key = string.byte("c")},
+    {label = "Down",             key = string.byte(">")},
+    {label = "Drop",             key = string.byte("d")},
+    {label = "Drop many",        key = string.byte("D")},
+    {label = "Eat",              key = string.byte("e")},
+    {label = "Engrave",          key = string.byte("E")},
+    {label = "Fire from quiver", key = string.byte("f")},
+    {label = "Force",            key = string.byte("#"), ext = "force"},
+    {label = "Get",              key = string.byte(",")},
+    {label = "Jump",             key = string.byte("#"), ext = "jump"},
+    {label = "Kick",             key = 0x04},  -- ^D
+    {label = "Loot",             key = string.byte("#"), ext = "loot"},
+    {label = "Open door",        key = string.byte("o")},
+    {label = "Pay",              key = string.byte("p")},
+    {label = "Rest",             key = string.byte(".")},
+    {label = "Ride",             key = string.byte("#"), ext = "ride"},
+    {label = "Search",           key = string.byte("s")},
+    {label = "Sit",              key = string.byte("#"), ext = "sit"},
+    {label = "Throw",            key = string.byte("t")},
+    {label = "Untrap",           key = string.byte("#"), ext = "untrap"},
+    {label = "Up",               key = string.byte("<")},
+    {label = "Wipe face",        key = string.byte("#"), ext = "wipe"},
+  }},
+  {name = "magic", label = "Magic", items = {
+    {label = "Quaff potion",     key = string.byte("q")},
+    {label = "Read scroll/book", key = string.byte("r")},
+    {label = "Zap wand",         key = string.byte("z")},
+    {label = "Zap spell",        key = string.byte("Z")},
+    {label = "Dip",              key = string.byte("#"), ext = "dip"},
+    {label = "Rub",              key = string.byte("#"), ext = "rub"},
+    {label = "Invoke",           key = string.byte("#"), ext = "invoke"},
+    {separator = true},
+    {label = "Offer",            key = string.byte("#"), ext = "offer"},
+    {label = "Pray",             key = string.byte("#"), ext = "pray"},
+    {separator = true},
+    {label = "Teleport",         key = 0x14},  -- ^T
+    {label = "Monster action",   key = string.byte("#"), ext = "monster"},
+    {label = "Turn undead",      key = string.byte("#"), ext = "turn"},
+  }},
+  {name = "info", label = "Info", items = {
+    {label = "Inventory",          key = string.byte("i")},
+    {label = "Conduct",            key = string.byte("#"), ext = "conduct"},
+    {label = "Discoveries",        key = string.byte("\\")},
+    {label = "List/reorder spells",key = string.byte("+")},
+    {label = "Adjust letters",     key = string.byte("#"), ext = "adjust"},
+    {separator = true},
+    {label = "Name object",        key = string.byte("#"), ext = "name"},
+    {separator = true},
+    {label = "Skills",             key = string.byte("#"), ext = "enhance"},
+  }},
+  {name = "help", label = "Help", items = {
+    {label = "Help",              key = string.byte("?")},
+    {separator = true},
+    {label = "What is here",      key = string.byte(":")},
+    {label = "What is there",     key = string.byte(";")},
+    {label = "What is...",        key = string.byte("/")},
+  }},
 }
+
+-- Build a lookup from button name -> {key, ext} for click handling
+local MENUBAR_LOOKUP = {}
+for _, menu in ipairs(MENU_BAR) do
+  for i, item in ipairs(menu.items) do
+    if not item.separator then
+      local btn_name = "nh_mb_" .. menu.name .. "_" .. i
+      MENUBAR_LOOKUP[btn_name] = {key = item.key, ext = item.ext}
+    end
+  end
+end
 
 -----------------------------------------------------
 -- HP color by ratio
@@ -199,28 +253,77 @@ function Gui.create_player_gui(player)
   local ui_height = player.display_resolution.height / player.display_scale
 
   -- Layout constants
-  local ACTION_WIDTH = 150
-  local STATUS_WIDTH = 320
-  local GAP = 4
-  -- Messages: ~40% of screen, capped to reasonable bounds
-  local msg_frame_width = math.min(650, math.max(450, math.floor(ui_width * 0.40)))
-  -- Panels positioned adjacently: [messages][status][action]
-  local status_x = msg_frame_width + GAP
-  local action_x = status_x + STATUS_WIDTH + GAP
+  local STATUS_WIDTH = 500
+  local total_width = math.min(1200, math.max(800, math.floor(ui_width * 0.80)))
+  -- Messages get the remaining space after status
+  local msg_width = total_width - STATUS_WIDTH - 16  -- account for padding/separator
 
   -------------------------------------------------
-  -- Message frame (top-left)
+  -- Single top panel: menu bar + [messages | status]
   -------------------------------------------------
-  local msg_frame = screen.add{
+  local top_panel = screen.add{
     type = "frame",
-    name = "nh_msg_frame",
+    name = "nh_top_panel",
     direction = "vertical",
     style = "nh_top_frame",
   }
-  msg_frame.location = {x = 0, y = 0}
-  msg_frame.style.width = msg_frame_width
+  top_panel.location = {x = 0, y = 0}
+  top_panel.style.width = total_width
 
-  local msg_scroll = msg_frame.add{
+  -- Menu bar row
+  local menubar = top_panel.add{
+    type = "flow",
+    name = "nh_menubar",
+    direction = "horizontal",
+    style = "nh_menubar_flow",
+  }
+  for _, menu in ipairs(MENU_BAR) do
+    menubar.add{
+      type = "button",
+      name = "nh_mb_toggle_" .. menu.name,
+      caption = menu.label,
+      style = "nh_menubar_button",
+    }
+  end
+
+  -- Toolbar row (quick-access buttons)
+  local toolbar = top_panel.add{
+    type = "flow",
+    name = "nh_toolbar",
+    direction = "horizontal",
+    style = "nh_toolbar_flow",
+  }
+  for _, btn in ipairs(TOOLBAR_BUTTONS) do
+    toolbar.add{
+      type = "button",
+      name = "nh_tb_" .. btn.key,
+      caption = btn.label,
+      style = "nh_toolbar_button",
+    }
+  end
+
+  -- Separator below toolbar
+  top_panel.add{type = "line", direction = "horizontal"}
+
+  -- Content area: messages (left) | status (right)
+  local content = top_panel.add{
+    type = "flow",
+    name = "nh_top_content",
+    direction = "horizontal",
+    style = "nh_top_content_flow",
+  }
+
+  -------------------------------------------------
+  -- Messages pane (left side of content)
+  -------------------------------------------------
+  local msg_pane = content.add{
+    type = "flow",
+    name = "nh_msg_pane",
+    direction = "vertical",
+  }
+  msg_pane.style.width = msg_width
+
+  local msg_scroll = msg_pane.add{
     type = "scroll-pane",
     name = "nh_msg_scroll",
     horizontal_scroll_policy = "never",
@@ -241,43 +344,19 @@ function Gui.create_player_gui(player)
     msg_scroll.scroll_to_bottom()
   end
 
-  -- Horizontal separator before toolbar
-  msg_frame.add{type = "line", direction = "horizontal"}
-
-  -- Toolbar row
-  local toolbar = msg_frame.add{
-    type = "flow",
-    name = "nh_toolbar",
-    direction = "horizontal",
-    style = "nh_toolbar_flow",
-  }
-  for _, btn in ipairs(TOOLBAR_BUTTONS) do
-    toolbar.add{
-      type = "button",
-      name = "nh_tb_" .. btn.key,
-      caption = btn.label,
-      style = "nh_toolbar_button",
-    }
-  end
+  -- Vertical separator between messages and status
+  content.add{type = "line", direction = "vertical"}
 
   -------------------------------------------------
-  -- Status frame (top-right, next to messages)
+  -- Status pane (right side of content)
   -------------------------------------------------
-  local status_frame = screen.add{
-    type = "frame",
-    name = "nh_status_frame",
-    direction = "vertical",
-    style = "nh_top_frame",
-  }
-  status_frame.location = {x = status_x, y = 0}
-  status_frame.style.width = STATUS_WIDTH
-
-  local status_flow = status_frame.add{
+  local status_flow = content.add{
     type = "flow",
     name = "nh_status_flow",
     direction = "vertical",
     style = "nh_status_flow",
   }
+  status_flow.style.width = STATUS_WIDTH
 
   -- Player name (large bold)
   status_flow.add{
@@ -362,42 +441,6 @@ function Gui.create_player_gui(player)
   }
 
   -------------------------------------------------
-  -- Action panel (right side of screen)
-  -------------------------------------------------
-  local action_frame = screen.add{
-    type = "frame",
-    name = "nh_action_panel",
-    direction = "vertical",
-    style = "nh_action_panel_frame",
-  }
-  action_frame.location = {x = action_x, y = 0}
-
-  local action_scroll = action_frame.add{
-    type = "scroll-pane",
-    name = "nh_action_scroll",
-    horizontal_scroll_policy = "never",
-    vertical_scroll_policy = "auto-and-reserve-space",
-    style = "nh_action_scroll",
-  }
-
-  for _, entry in ipairs(ACTION_BUTTONS) do
-    if entry.header then
-      action_scroll.add{
-        type = "label",
-        caption = entry.header,
-        style = "nh_action_header",
-      }
-    else
-      action_scroll.add{
-        type = "button",
-        name = "nh_action_" .. entry.key,
-        caption = entry.label,
-        style = "nh_action_button",
-      }
-    end
-  end
-
-  -------------------------------------------------
   -- Engine state widget (bottom-left corner)
   -------------------------------------------------
   local engine_frame = screen.add{
@@ -433,12 +476,12 @@ function Gui.destroy_player_gui(player)
 
   -- Destroy all our top-level screen elements
   local names = {
-    "nh_msg_frame", "nh_status_frame", "nh_action_panel",
+    "nh_top_panel", "nh_mb_dropdown",
     "nh_engine_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
-    "nh_top_frame",
+    "nh_top_frame", "nh_msg_frame", "nh_status_frame", "nh_action_panel",
   }
   for _, name in ipairs(names) do
     if screen[name] then
@@ -475,9 +518,13 @@ end
 -- Add a single message label to the scroll pane (incremental update)
 function Gui.append_message_label(player, text, attr)
   local screen = player.gui.screen
-  local msg_frame = screen.nh_msg_frame
-  if not msg_frame then return end
-  local scroll = msg_frame.nh_msg_scroll
+  local top_panel = screen.nh_top_panel
+  if not top_panel then return end
+  local content = top_panel.nh_top_content
+  if not content then return end
+  local msg_pane = content.nh_msg_pane
+  if not msg_pane then return end
+  local scroll = msg_pane.nh_msg_scroll
   if not scroll then return end
 
   local style = (attr and attr == 1) and "nh_message_label_bold" or "nh_message_label"
@@ -560,9 +607,11 @@ end
 function Gui.render_status(player)
   local gui_data = storage.nh_gui
   local screen = player.gui.screen
-  local status_frame = screen.nh_status_frame
-  if not status_frame then return end
-  local sf = status_frame.nh_status_flow
+  local top_panel = screen.nh_top_panel
+  if not top_panel then return end
+  local content = top_panel.nh_top_content
+  if not content then return end
+  local sf = content.nh_status_flow
   if not sf then return end
 
   local fields = gui_data.status_fields
@@ -599,7 +648,10 @@ function Gui.render_status(player)
   if stats then
     for _, stat in ipairs(STAT_LABELS) do
       local v = get_val(stat.idx)
-      local text = v ~= "" and (stat.prefix .. v) or ""
+      local text = ""
+      if v ~= "" then
+        text = "[img=" .. stat.icon .. "] " .. stat.prefix .. v
+      end
       set_label(stats, "nh_st_" .. stat.name, text, get_style(stat.idx))
     end
   end
@@ -669,8 +721,17 @@ function Gui.render_status(player)
   -- Conditions row
   local cond = sf.nh_st_cond
   if cond then
-    -- Alignment
-    set_label(cond, "nh_st_align", get_val(BL_ALIGN))
+    -- Alignment with icon
+    local align_val = get_val(BL_ALIGN)
+    local align_text = align_val
+    if align_val == "Lawful" then
+      align_text = "[img=nh-icon-lawful] Lawful"
+    elseif align_val == "Neutral" then
+      align_text = "[img=nh-icon-neutral] Neutral"
+    elseif align_val == "Chaotic" then
+      align_text = "[img=nh-icon-chaotic] Chaotic"
+    end
+    set_label(cond, "nh_st_align", align_text)
 
     -- Hunger with color
     local hunger = get_val(BL_HUNGER)
@@ -910,6 +971,12 @@ function Gui.show_menu(player, winid, how)
         accel_char = string.char(item.accelerator)
       end
 
+      -- Sprite prefix for items with valid tile indices
+      local sprite_prefix = ""
+      if item.glyph and item.glyph < TOTAL_TILES then
+        sprite_prefix = "[img=nh-sprite-" .. item.glyph .. "] "
+      end
+
       if how == 0 then
         -- PICK_NONE - just display
         local flow = scroll.add{
@@ -926,14 +993,16 @@ function Gui.show_menu(player, winid, how)
         end
         flow.add{
           type = "label",
-          caption = item.text or "",
+          caption = sprite_prefix .. (item.text or ""),
         }
 
       elseif how == 1 then
         -- PICK_ONE - clickable button with accelerator
         local caption = item.text or ""
         if accel_char ~= "" then
-          caption = accel_char .. " - " .. caption
+          caption = accel_char .. " - " .. sprite_prefix .. caption
+        else
+          caption = sprite_prefix .. caption
         end
         scroll.add{
           type = "button",
@@ -963,7 +1032,7 @@ function Gui.show_menu(player, winid, how)
         end
         flow.add{
           type = "label",
-          caption = item.text or "",
+          caption = sprite_prefix .. (item.text or ""),
         }
       end
     end
@@ -1287,13 +1356,94 @@ function Gui.handle_toolbar_click(element_name)
   return nil
 end
 
--- Action panel button click -> key code
-function Gui.handle_action_click(element_name)
-  local key_str = element_name:match("^nh_action_(%d+)$")
-  if key_str then
-    return tonumber(key_str)
+-- Menu bar toggle: open/close a dropdown for the given menu name
+function Gui.handle_menubar_toggle(player, menu_name)
+  local screen = player.gui.screen
+  local dropdown = screen.nh_mb_dropdown
+
+  -- Close existing dropdown (if any)
+  if dropdown then
+    local was_same = dropdown.tags and dropdown.tags.menu == menu_name
+    dropdown.destroy()
+    if was_same then return end  -- toggle off
+  end
+
+  -- Find the menu definition
+  local menu_def
+  for _, m in ipairs(MENU_BAR) do
+    if m.name == menu_name then menu_def = m; break end
+  end
+  if not menu_def then return end
+
+  -- Find the toggle button position for dropdown placement
+  local top_panel = screen.nh_top_panel
+  if not top_panel then return end
+  local menubar = top_panel.nh_menubar
+  if not menubar then return end
+
+  -- Create dropdown frame on screen, positioned below menu bar
+  local dd = screen.add{
+    type = "frame",
+    name = "nh_mb_dropdown",
+    direction = "vertical",
+    style = "nh_dropdown_frame",
+    tags = {menu = menu_name},
+  }
+  -- Position below the top panel, offset right for the menu
+  local x_offset = 8
+  for _, m in ipairs(MENU_BAR) do
+    if m.name == menu_name then break end
+    x_offset = x_offset + 70  -- approximate button width
+  end
+  dd.location = {x = x_offset, y = 30}
+
+  local scroll = dd.add{
+    type = "scroll-pane",
+    name = "nh_mb_dd_scroll",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto-and-reserve-space",
+    style = "nh_dropdown_scroll",
+  }
+
+  for i, item in ipairs(menu_def.items) do
+    if item.separator then
+      scroll.add{type = "line", direction = "horizontal"}
+    else
+      local shortcut = ""
+      if item.ext then
+        shortcut = "  #" .. item.ext
+      elseif item.key then
+        if item.key < 32 then
+          shortcut = "  ^" .. string.char(item.key + 64)
+        else
+          shortcut = "  " .. string.char(item.key)
+        end
+      end
+      scroll.add{
+        type = "button",
+        name = "nh_mb_" .. menu_name .. "_" .. i,
+        caption = item.label .. shortcut,
+        style = "nh_dropdown_item_button",
+      }
+    end
+  end
+end
+
+-- Menu bar item click -> key code (and optional ext command), or nil
+function Gui.handle_menubar_click(element_name)
+  local info = MENUBAR_LOOKUP[element_name]
+  if info then
+    return info.key, info.ext
   end
   return nil
+end
+
+-- Close any open menu dropdown
+function Gui.close_dropdown(player)
+  local screen = player.gui.screen
+  if screen.nh_mb_dropdown then
+    screen.nh_mb_dropdown.destroy()
+  end
 end
 
 -----------------------------------------------------

@@ -44,4 +44,73 @@ for i = 0, TC.n_other - 1 do
   sprites[#sprites + 1] = tile_sprite("nh-sprite-" .. tile_idx, SHEET_OTHER, i)
 end
 
+-- GUI icons (generated from NetHack Qt XPM data by build/generate_icons.py)
+local ICON_DIR = "__nethack-factorio__/graphics/icons/"
+
+-- Stat icons (40x40)
+local stat_icons = {"str", "dex", "con", "int", "wis", "cha"}
+for _, name in ipairs(stat_icons) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-icon-" .. name,
+    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+    width = 40, height = 40,
+    scale = 0.5,
+    flags = {"icon"},
+  }
+end
+
+-- Alignment icons (40x40)
+local align_icons = {"lawful", "neutral", "chaotic"}
+for _, name in ipairs(align_icons) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-icon-" .. name,
+    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+    width = 40, height = 40,
+    scale = 0.5,
+    flags = {"icon"},
+  }
+end
+
+-- Condition icons (40x40)
+local cond_icons = {"hungry", "satiated", "confused", "blind", "stunned", "hallu",
+                    "sick-fp", "sick-il"}
+for _, name in ipairs(cond_icons) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-icon-" .. name,
+    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+    width = 40, height = 40,
+    scale = 0.5,
+    flags = {"icon"},
+  }
+end
+
+-- Encumbrance icons (40x40)
+local enc_icons = {"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}
+for _, name in ipairs(enc_icons) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-icon-" .. name,
+    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+    width = 40, height = 40,
+    scale = 0.5,
+    flags = {"icon"},
+  }
+end
+
+-- Toolbar icons (12x13)
+local tb_icons = {"tb-again", "tb-get", "tb-kick", "tb-throw",
+                  "tb-fire", "tb-drop", "tb-eat", "tb-rest"}
+for _, name in ipairs(tb_icons) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-icon-" .. name,
+    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+    width = 12, height = 13,
+    flags = {"icon"},
+  }
+end
+
 data:extend(sprites)

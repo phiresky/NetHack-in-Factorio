@@ -503,9 +503,10 @@ const char *str;
 boolean preselected;
 {
     int id_val = identifier ? identifier->a_int : 0;
+    int tile = (glyph >= 0 && glyph < MAX_GLYPH) ? (int) glyph2tile[glyph] : -1;
 
     if (str) {
-        host_add_menu_item((int) window, glyph, id_val,
+        host_add_menu_item((int) window, tile, id_val,
                            (int) ch, (int) gch, attr,
                            str, (int) strlen(str), (int) preselected);
     }

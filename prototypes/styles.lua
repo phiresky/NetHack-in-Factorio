@@ -23,25 +23,6 @@ default_gui["nh_top_frame"] = {
   },
 }
 
------------------------------------------------------
--- Message Frame (top-left panel)
------------------------------------------------------
-
-default_gui["nh_msg_frame"] = {
-  type = "frame_style",
-  top_padding = 4,
-  bottom_padding = 4,
-  left_padding = 8,
-  right_padding = 8,
-  vertical_spacing = 2,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.85,
-    },
-  },
-}
 
 default_gui["nh_msg_scroll"] = {
   type = "scroll_pane_style",
@@ -72,24 +53,8 @@ default_gui["nh_message_label_bold"] = {
 }
 
 -----------------------------------------------------
--- Status Frame (top-right panel)
+-- Status (inside top panel, right side)
 -----------------------------------------------------
-
-default_gui["nh_status_frame"] = {
-  type = "frame_style",
-  top_padding = 4,
-  bottom_padding = 4,
-  left_padding = 8,
-  right_padding = 8,
-  vertical_spacing = 1,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.85,
-    },
-  },
-}
 
 default_gui["nh_status_flow"] = {
   type = "vertical_flow_style",
@@ -145,7 +110,27 @@ default_gui["nh_gold_label"] = {
 }
 
 -----------------------------------------------------
--- Toolbar (horizontal button bar below status area)
+-- Menu Bar (Qt-style dropdown menus)
+-----------------------------------------------------
+
+default_gui["nh_menubar_flow"] = {
+  type = "horizontal_flow_style",
+  horizontal_spacing = 2,
+}
+
+default_gui["nh_menubar_button"] = {
+  type = "button_style",
+  font = "default-small-bold",
+  minimal_width = 56,
+  left_padding = 8,
+  right_padding = 8,
+  top_padding = 1,
+  bottom_padding = 1,
+  height = 24,
+}
+
+-----------------------------------------------------
+-- Toolbar (quick-access button bar below menu bar)
 -----------------------------------------------------
 
 default_gui["nh_toolbar_flow"] = {
@@ -163,13 +148,15 @@ default_gui["nh_toolbar_button"] = {
   top_padding = 2,
   bottom_padding = 2,
   height = 28,
+  rich_text_setting = "enabled",
 }
 
------------------------------------------------------
--- Action Panel (right side, collapsible)
------------------------------------------------------
+default_gui["nh_top_content_flow"] = {
+  type = "horizontal_flow_style",
+  horizontal_spacing = 4,
+}
 
-default_gui["nh_action_panel_frame"] = {
+default_gui["nh_dropdown_frame"] = {
   type = "frame_style",
   top_padding = 4,
   bottom_padding = 4,
@@ -179,37 +166,29 @@ default_gui["nh_action_panel_frame"] = {
     base = {
       position = {0, 0},
       corner_size = 8,
-      opacity = 0.8,
+      opacity = 0.92,
     },
   },
 }
 
-default_gui["nh_action_scroll"] = {
+default_gui["nh_dropdown_scroll"] = {
   type = "scroll_pane_style",
   maximal_height = 500,
-  minimal_width = 120,
+  minimal_width = 180,
   extra_padding_when_activated = 0,
 }
 
-default_gui["nh_action_button"] = {
+default_gui["nh_dropdown_item_button"] = {
   type = "button_style",
   font = "default-small",
   font_color = {r = 0.9, g = 0.9, b = 0.9},
-  minimal_width = 112,
-  maximal_width = 112,
-  left_padding = 2,
-  right_padding = 2,
+  minimal_width = 172,
+  left_padding = 6,
+  right_padding = 6,
   top_padding = 1,
   bottom_padding = 1,
   height = 24,
-}
-
-default_gui["nh_action_header"] = {
-  type = "label_style",
-  font = "default-small-bold",
-  font_color = {r = 1, g = 0.85, b = 0.4},
-  top_padding = 4,
-  bottom_padding = 0,
+  horizontally_stretchable = "on",
 }
 
 -----------------------------------------------------

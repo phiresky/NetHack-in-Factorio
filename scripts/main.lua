@@ -187,6 +187,8 @@ local function run_and_process(max_instructions)
         -- No queued input - determine what UI to show
         state.awaiting_input = true
 
+        local continue_loop = false
+
         if result.input_type == "menu" then
           -- host_select_menu blocked - show menu GUI
           state.input_type = "menu"
@@ -220,11 +222,28 @@ local function run_and_process(max_instructions)
             end
 
           elseif bridge.pending_getlin then
-            state.input_type = "getlin"
-            state.input_info = bridge.pending_getlin
-            local player = game.connected_players[1]
-            if player then
-              Gui.show_getlin_prompt(player, bridge.pending_getlin.prompt)
+            -- Auto-respond if this is an extended command from the menu bar
+            if state.pending_ext_command then
+              local ext = state.pending_ext_command
+              state.pending_ext_command = nil
+              state.awaiting_input = false
+              bridge.pending_getlin = nil
+              -- Queue ext command chars + null terminator directly
+              for ci = 1, #ext do
+                state.input_queue[#state.input_queue + 1] = string.byte(ext, ci)
+              end
+              state.input_queue[#state.input_queue + 1] = 0
+              -- Feed first char and continue the run loop (no break)
+              local first = table.remove(state.input_queue, 1)
+              WasmInterp.provide_input(wasm_instance, first)
+              continue_loop = true
+            else
+              state.input_type = "getlin"
+              state.input_info = bridge.pending_getlin
+              local player = game.connected_players[1]
+              if player then
+                Gui.show_getlin_prompt(player, bridge.pending_getlin.prompt)
+              end
             end
 
           else
@@ -233,7 +252,10 @@ local function run_and_process(max_instructions)
             state.input_info = nil
           end
         end
-        break  -- exit loop, wait for user input
+
+        if not continue_loop then
+          break  -- exit loop, wait for user input
+        end
       end
 
     elseif result.status == "running" then
@@ -520,14 +542,38 @@ local function on_gui_click(event)
     return
   end
 
-  -- Toolbar or action panel button -> key code
-  local btn_key = Gui.handle_toolbar_click(element.name)
-                  or Gui.handle_action_click(element.name)
+  -- Toolbar button -> key code
+  local tb_key = Gui.handle_toolbar_click(element.name)
+  if tb_key then
+    Gui.close_dropdown(player)
+    if state.input_type == "getch" or state.input_type == "yn" then
+      if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
+        player.gui.screen.nh_yn_frame.destroy()
+      end
+      advance_turn(tb_key)
+    end
+    return
+  end
+
+  -- Menu bar toggle button -> open/close dropdown
+  local toggle_menu = element.name:match("^nh_mb_toggle_(.+)$")
+  if toggle_menu then
+    Gui.handle_menubar_toggle(player, toggle_menu)
+    return
+  end
+
+  -- Menu bar item click -> key code (+ optional ext command)
+  local btn_key, ext_cmd = Gui.handle_menubar_click(element.name)
   if btn_key then
+    Gui.close_dropdown(player)
     if state.input_type == "getch" or state.input_type == "yn" then
       -- Close yn popup if open (inline yn has no popup)
       if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
         player.gui.screen.nh_yn_frame.destroy()
+      end
+      if ext_cmd then
+        -- Extended command: send '#', then auto-respond with the command name
+        state.pending_ext_command = ext_cmd
       end
       advance_turn(btn_key)
     end
