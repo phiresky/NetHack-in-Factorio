@@ -302,6 +302,15 @@ function Gui.create_player_gui(player)
     }
   end
 
+  -- Cancel/ESC button (shown during prompts and sub-modes)
+  local cancel_btn = toolbar.add{
+    type = "button",
+    name = "nh_cancel",
+    caption = "Cancel [ESC]",
+    style = "nh_toolbar_button",
+  }
+  cancel_btn.visible = false
+
   -- Separator below toolbar
   top_panel.add{type = "line", direction = "horizontal"}
 
@@ -1616,6 +1625,20 @@ function Gui.update_engine_state(state_text, instructions, color)
         if count_label then
           count_label.caption = count_text
         end
+      end
+    end
+  end
+end
+
+-- Show/hide the cancel button on the toolbar
+function Gui.set_cancel_visible(visible)
+  for _, player in pairs(game.connected_players) do
+    local screen = player.gui.screen
+    local top = screen.nh_top_panel
+    if top then
+      local toolbar = top.nh_toolbar
+      if toolbar and toolbar.nh_cancel then
+        toolbar.nh_cancel.visible = visible
       end
     end
   end

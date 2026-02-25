@@ -301,7 +301,7 @@ $(SPRITE_SHEETS): $(TILE_CONFIG)
 $(STAMPS)/sprites-optimized: $(TILE_CONFIG)
 	@mkdir -p $(STAMPS)
 	find graphics/sheets graphics/tiles -name '*.png' \
-		-print0 | xargs -0 -P$$(nproc) oxipng --omax -Z
+		-print0 | xargs -0 -P$$(nproc) oxipng --opt max --zopfli
 	@touch $@
 
 # ================================================================

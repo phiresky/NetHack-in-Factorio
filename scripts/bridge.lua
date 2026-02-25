@@ -317,12 +317,179 @@ function Bridge.init()
   end
 end
 
+-- Description caches (not in storage — transient, rebuilt as needed)
+-- Position cache: short descriptions keyed by "x,y", cleared each turn
+Bridge._pos_cache = {}
+-- Long description cache: keyed by entity name, persists across game session
+Bridge._long_cache = {}
+
+-- Clear position cache and abort any in-progress precache (call after each turn advance)
+function Bridge.clear_pos_cache(instance)
+  Bridge._pos_cache = {}
+  -- Abort in-progress precache and restore game exec state
+  if Bridge._precache_active and instance then
+    instance.exec = Bridge._precache_active.saved_exec
+    Bridge._precache_active = nil
+    if storage.nh_bridge then
+      storage.nh_bridge.describe_capture = nil
+      storage.nh_bridge.describe_result = nil
+    end
+  end
+end
+
+-- Pre-cache queue: list of {x, y, entity_name} to process one per tick
+Bridge._precache_queue = {}
+Bridge._precache_dirty = false
+
+-- Mark that the map may have changed (call after turn advance)
+function Bridge.mark_precache_dirty()
+  Bridge._precache_dirty = true
+end
+
+-- Scan a surface for unique NH entity types and queue uncached ones
+function Bridge.start_precache(surface)
+  Bridge._precache_dirty = false
+  local seen = {}
+  local queue = {}
+  for _, entity in pairs(surface.find_entities_filtered{name = "nh-player-marker", invert = true}) do
+    local ename = entity.name
+    if ename:find("^nh%-") and not seen[ename] and not Bridge._long_cache[ename] then
+      seen[ename] = true
+      queue[#queue + 1] = {
+        x = math.floor(entity.position.x),
+        y = math.floor(entity.position.y),
+        entity_name = ename,
+      }
+    end
+  end
+  Bridge._precache_queue = queue
+end
+
+-- Active precache state: saved game exec + in-progress describe exec
+Bridge._precache_active = nil  -- {saved_exec, entity_name}
+
+-- Process one queued pre-cache entry across multiple ticks.
+-- Runs up to `budget` WASM instructions per call. Returns true if more work remains.
+function Bridge.tick_precache(instance, budget)
+  budget = budget or 1000
+  if not instance or not instance.exec then return false end
+
+  -- Resume an in-progress precache lookup
+  if Bridge._precache_active then
+    local active = Bridge._precache_active
+    -- The instance.exec is still the describe call's state from last tick
+    local ok, err = pcall(function()
+      WasmInterp.run(instance, budget)
+    end)
+    local done = not ok or not instance.exec or instance.exec.finished
+    if done then
+      -- Finished (or errored) — read result and restore game state
+      local captured = storage.nh_bridge and storage.nh_bridge.describe_capture
+      if storage.nh_bridge then storage.nh_bridge.describe_capture = nil end
+      instance.exec = active.saved_exec
+
+      local result = storage.nh_bridge and storage.nh_bridge.describe_result
+      if storage.nh_bridge then storage.nh_bridge.describe_result = nil end
+      if result then
+        local parts = {}
+        if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
+        if result.buf ~= "" then parts[#parts + 1] = result.buf end
+        if #parts > 0 then
+          local short = table.concat(parts, "  ")
+          Bridge._pos_cache[active.x .. "," .. active.y] = short
+        end
+      end
+      if captured and #captured > 0 then
+        Bridge._long_cache[active.entity_name] = table.concat(captured, "\n")
+      else
+        Bridge._long_cache[active.entity_name] = false
+      end
+      Bridge._precache_active = nil
+    end
+    -- Still working (hit budget but exec is still running)
+    return true
+  end
+
+  -- Ensure export index is cached
+  if not Bridge._describe_idx then
+    Bridge._describe_idx = WasmInterp.get_export(instance, "nh_describe_pos")
+    if not Bridge._describe_idx then return false end
+  end
+
+  -- Pick next uncached entry from queue
+  local queue = Bridge._precache_queue
+  while #queue > 0 do
+    local entry = table.remove(queue)
+    if not Bridge._long_cache[entry.entity_name] then
+      -- Start a new describe call
+      if not storage.nh_bridge then storage.nh_bridge = {} end
+      storage.nh_bridge.describe_result = nil
+      storage.nh_bridge.describe_capture = {}
+
+      local saved_exec = instance.exec
+      local ok = pcall(function()
+        WasmInterp.call(instance, Bridge._describe_idx, {entry.x, entry.y, 1})
+        WasmInterp.run(instance, budget)
+      end)
+      if not ok then
+        instance.exec = saved_exec
+        storage.nh_bridge.describe_capture = nil
+      else
+        Bridge._precache_active = {
+          saved_exec = saved_exec,
+          entity_name = entry.entity_name,
+          x = entry.x, y = entry.y,
+        }
+      end
+      return true
+    end
+  end
+  return false
+end
+
 -- Describe a map position by calling nh_describe_pos in WASM.
 -- Safe to call while paused at nhgetch: saves/restores exec state.
+-- entity_name: Factorio prototype name (e.g. "nh-mon-little-dog"), used as long desc cache key.
 -- Returns {short=..., long=...} or nil on failure.
 -- short = lookat() one-liner, long = checkfile() encyclopedia entry (only when full=true).
-function Bridge.describe_pos(instance, x, y, full)
+function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
   if not instance or not instance.exec then return nil end
+
+  -- Abort any in-progress precache (it holds a different exec state)
+  if Bridge._precache_active then
+    instance.exec = Bridge._precache_active.saved_exec
+    Bridge._precache_active = nil
+    if storage.nh_bridge then
+      storage.nh_bridge.describe_capture = nil
+      storage.nh_bridge.describe_result = nil
+    end
+  end
+
+  local pos_key = x .. "," .. y
+
+  -- Check position cache for short description
+  local cached_short = Bridge._pos_cache[pos_key]
+  if not full then
+    if cached_short ~= nil then
+      if cached_short == false then return nil end
+      return {short = cached_short}
+    end
+  else
+    -- Full requested — check long cache by entity name
+    local cached_long = entity_name and Bridge._long_cache[entity_name]
+    if cached_long ~= nil then
+      -- Still need short desc (may or may not be cached)
+      local short = cached_short
+      if short == nil then
+        -- Fall through to WASM call below for short, but skip checkfile
+        full = false
+      elseif short == false then
+        return cached_long ~= false and {long = cached_long} or nil
+      else
+        return {short = short, long = cached_long or nil}
+      end
+    end
+  end
 
   -- Cache the export index
   if not Bridge._describe_idx then
@@ -344,7 +511,7 @@ function Bridge.describe_pos(instance, x, y, full)
   -- checkfile() with without_asking=TRUE is non-blocking, so a single run suffices.
   local ok, err = pcall(function()
     WasmInterp.call(instance, Bridge._describe_idx, {x, y, full and 1 or 0})
-    WasmInterp.run(instance, 500000)
+    WasmInterp.run(instance, max_instructions or 500000)
   end)
 
   -- Read captured checkfile text before cleanup
@@ -369,10 +536,18 @@ function Bridge.describe_pos(instance, x, y, full)
     if #parts > 0 then short_desc = table.concat(parts, "  ") end
   end
 
+  -- Cache short description (false = no description)
+  Bridge._pos_cache[pos_key] = short_desc or false
+
   -- Build long description from checkfile capture
   local long_desc = nil
   if captured and #captured > 0 then
     long_desc = table.concat(captured, "\n")
+  end
+
+  -- Cache long description keyed by entity name (persists across session)
+  if full and entity_name then
+    Bridge._long_cache[entity_name] = long_desc or false
   end
 
   if not short_desc and not long_desc then return nil end

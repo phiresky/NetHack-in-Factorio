@@ -157,7 +157,18 @@ local function update_engine_gui()
     color = {r = 0.6, g = 0.6, b = 0.6}
   end
 
+  -- Show precache progress in engine state
+  local precache_n = #Bridge._precache_queue
+  if precache_n > 0 or Bridge._precache_active then
+    local active_name = Bridge._precache_active and Bridge._precache_active.entity_name or ""
+    active_name = active_name:gsub("^nh%-[a-z]+%-", ""):gsub("%-", " ")
+    engine_state = engine_state .. "  [caching: " .. active_name .. " +" .. precache_n .. "]"
+  end
+
   Gui.update_engine_state(engine_state, instructions, color)
+  local show_cancel = state.awaiting_input and state.input_type ~= nil
+                      and state.input_type ~= "getch" and state.input_type ~= "plsel"
+  Gui.set_cancel_visible(show_cancel)
 end
 
 -- Run the interpreter, automatically draining the input queue.
@@ -320,6 +331,12 @@ local function start_nethack(player)
   run_and_process()
   update_engine_gui()
   update_player_position()
+
+  -- Pre-cache descriptions for all visible entity types
+  local surface = game.surfaces[state.level_name or "nh-dungeon-0"]
+  if surface then
+    Bridge.start_precache(surface)
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -332,6 +349,8 @@ local function advance_turn(key_code)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
 
+  Bridge.clear_pos_cache(wasm_instance)
+  Bridge.mark_precache_dirty()
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
@@ -543,18 +562,6 @@ local function on_custom_input(event)
   -- Only getch and yn accept general keyboard input
   if state.input_type ~= "getch" and state.input_type ~= "yn" then return end
 
-  -- Farlook (;) on a hovered NH entity: show full description instead of feeding to NH
-  if event.input_name == "nh-far-look" and player and state.input_type == "getch" then
-    local entity = player.selected
-    if entity and entity.valid and entity.name:find("^nh%-") then
-      local gx = math.floor(entity.position.x)
-      local gy = math.floor(entity.position.y)
-      local info = Bridge.describe_pos(wasm_instance, gx, gy, true)
-      Gui.update_hover_info(player, info)
-      return
-    end
-  end
-
   -- For yn prompts, close the GUI before advancing
   if state.input_type == "yn" then
     if player and player.gui.screen.nh_yn_frame then
@@ -585,6 +592,31 @@ local function on_gui_click(event)
     -- If waiting for a simple key press (--More--), advance with space
     if state.input_type == "getch" then
       advance_turn(string.byte(" "))
+    end
+    return
+  end
+
+  -- Cancel button -> ESC (same as pressing Escape key)
+  if element.name == "nh_cancel" then
+    if state.input_type == "menu" then
+      if player.gui.screen.nh_menu_frame then
+        player.gui.screen.nh_menu_frame.destroy()
+      end
+      if storage.nh_gui then storage.nh_gui.pending_menu = nil end
+      advance_turn_menu({cancelled = true, selections = {}})
+    elseif state.input_type == "getlin" then
+      if player.gui.screen.nh_getlin_frame then
+        player.gui.screen.nh_getlin_frame.destroy()
+      end
+      if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
+      advance_turn_string("\027")
+    elseif state.input_type == "yn" then
+      if player.gui.screen.nh_yn_frame then
+        player.gui.screen.nh_yn_frame.destroy()
+      end
+      advance_turn(27)
+    else
+      advance_turn(27)
     end
     return
   end
@@ -686,6 +718,24 @@ local function on_tick(event)
     update_engine_gui()
     update_player_position()
   end
+
+  -- Pre-cache descriptions in background (one per tick while idle)
+  if state.awaiting_input and wasm_instance then
+    local did_work = Bridge.tick_precache(wasm_instance)
+    if not did_work and Bridge._precache_dirty then
+      local disp = storage.nh_display
+      if disp and disp.current_level then
+        local level = disp.levels[disp.current_level]
+        if level then
+          local surface = game.surfaces[level.surface_name]
+          if surface then Bridge.start_precache(surface) end
+        end
+      end
+    end
+    if did_work then
+      update_engine_gui()
+    end
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -782,7 +832,7 @@ local function on_selected_entity_changed(event)
   local gx = math.floor(entity.position.x)
   local gy = math.floor(entity.position.y)
 
-  local description = Bridge.describe_pos(wasm_instance, gx, gy, false)
+  local description = Bridge.describe_pos(wasm_instance, gx, gy, true, entity.name)
   Gui.update_hover_info(player, description)
 end
 
