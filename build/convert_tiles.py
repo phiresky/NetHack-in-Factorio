@@ -266,7 +266,6 @@ def main():
     ground_mapping = {
         "nh-floor":     "floor of a room",
         "nh-corridor":  "corridor",         # plain "corridor" (not lit/engraving)
-        "nh-void":      "stone",            # unexplored / dark
         "nh-water":     "water",
         "nh-lava":      "molten lava",
         "nh-ice":       "ice",
@@ -280,6 +279,14 @@ def main():
                                  os.path.join(tiles_dir, f"{tile_name}.png"))
         else:
             print(f"  WARNING: could not find tile matching '{search_name}' for {tile_name}")
+
+    # Void tile is solid black (fog of war / unexplored)
+    void_buf = bytearray(GROUND_SIZE * GROUND_SIZE * 4)
+    for i in range(GROUND_SIZE * GROUND_SIZE):
+        void_buf[i * 4 + 3] = 255  # alpha
+    void_path = os.path.join(tiles_dir, "nh-void.png")
+    write_png(void_path, GROUND_SIZE, GROUND_SIZE, bytes(void_buf))
+    print(f"  void: {void_path} (solid black)")
 
     # Generate wall/door collision info for entities.lua
     # Identify which "other" tile indices are walls and doors

@@ -23,7 +23,7 @@ local M = {}
 local MAX_INSTRUCTIONS_PER_RUN = 50000
 
 -- Maximum instructions per tick (for background processing like level gen)
-local MAX_INSTRUCTIONS_PER_TICK = 50000
+local MAX_INSTRUCTIONS_PER_TICK = 100000
 
 ---------------------------------------------------------------------------
 -- Initialization
@@ -83,17 +83,32 @@ local wasm_instance = nil
 -- Interpreter Execution
 ---------------------------------------------------------------------------
 
--- Update Factorio player position to match where NetHack thinks @ is
+-- Correct Factorio player position if it doesn't match NetHack's @ position.
+-- Only runs when NetHack is done processing (awaiting input), to avoid snapping
+-- mid-computation. Teleports to the nearest edge of the target tile so the
+-- player stays as close as possible to their previous position.
 local function update_player_position()
+  local state = storage.nh_main
+  if not state or not state.awaiting_input then return end
+
   local player = game.connected_players[1]
-  if player then
-    local pos = Display.get_player_pos()
-    local surface = Display.get_current_surface()
-    if surface and pos then
-      player.teleport({x = pos.x + 0.5, y = pos.y + 0.5}, surface)
-      Input.record_position(player.index, pos.x, pos.y)
-    end
+  if not player then return end
+
+  local pos = Display.get_player_pos()
+  local surface = Display.get_current_surface()
+  if not surface or not pos then return end
+
+  local cur_x = math.floor(player.position.x)
+  local cur_y = math.floor(player.position.y)
+  if cur_x == pos.x and cur_y == pos.y and player.surface == surface then
+    return  -- already in the right tile
   end
+
+  -- Clamp player position into the target tile [pos.x, pos.x+1) x [pos.y, pos.y+1)
+  local eps = 0.05
+  local tx = math.max(pos.x + eps, math.min(pos.x + 1 - eps, player.position.x))
+  local ty = math.max(pos.y + eps, math.min(pos.y + 1 - eps, player.position.y))
+  player.teleport({x = tx, y = ty}, surface)
 end
 
 -- Run the interpreter, automatically draining the input queue.
@@ -199,9 +214,6 @@ local function start_nethack(player)
 
   -- Create GUI for the player
   Gui.create_player_gui(player)
-
-  -- Record initial position
-  Input.record_position(player.index, 0, 0)
 
   -- Start NetHack by calling _start (WASI entry point)
   local start_idx = WasmInterp.get_export(wasm_instance, "_start")
@@ -317,6 +329,9 @@ end
 ---------------------------------------------------------------------------
 
 -- Player movement -> NetHack direction
+-- Compares player's Factorio tile to NetHack's @ position directly.
+-- Within the same tile: no action. Cross a tile boundary: trigger move.
+-- Only teleports on mismatch (wall, trap, etc.) via update_player_position.
 local function on_player_changed_position(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
@@ -327,25 +342,23 @@ local function on_player_changed_position(event)
   local player = game.get_player(event.player_index)
   if not player then return end
 
+  local nh_pos = Display.get_player_pos()
+  if not nh_pos then return end
+
   local new_x = math.floor(player.position.x)
   local new_y = math.floor(player.position.y)
+  local dx = new_x - nh_pos.x
+  local dy = new_y - nh_pos.y
 
-  local dx, dy = Input.get_movement_delta(event.player_index, new_x, new_y)
-  if not dx then
-    Input.record_position(event.player_index, new_x, new_y)
-    return
-  end
+  -- Still within the same tile as @, do nothing
+  if dx == 0 and dy == 0 then return end
 
+  -- Crossed tile boundary - send direction to NetHack (direction_to_key clamps)
   local key = Input.direction_to_key(dx, dy)
   if not key then return end
 
-  -- Teleport player BACK to old position immediately
   Input.set_processing(true)
-  local old_pos = Display.get_player_pos()
-  player.teleport({x = old_pos.x + 0.5, y = old_pos.y + 0.5})
-
   advance_turn(key)
-
   Input.set_processing(false)
 end
 

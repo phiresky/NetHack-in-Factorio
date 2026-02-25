@@ -112,8 +112,8 @@ function Display.get_or_create_level(level_name)
       tile = { treat_missing_as_default = false },
       decorative = { treat_missing_as_default = false },
     },
-    width = MAP_W + 4,
-    height = MAP_H + 4,
+    width = MAP_W * 2 + 4,
+    height = MAP_H * 2 + 4,
     starting_area = 0,
   })
 
@@ -121,10 +121,12 @@ function Display.get_or_create_level(level_name)
   surface.request_to_generate_chunks({x = MAP_W / 2, y = MAP_H / 2}, 3)
   surface.force_generate_chunk_requests()
 
-  -- Fill the entire area with void tiles
+  -- Fill the entire surface with void tiles (surface is centered on origin)
+  local half_w = math.ceil((MAP_W * 2 + 4) / 2)
+  local half_h = math.ceil((MAP_H * 2 + 4) / 2)
   local tiles = {}
-  for y = -2, MAP_H + 1 do
-    for x = -2, MAP_W + 1 do
+  for y = -half_h, half_h do
+    for x = -half_w, half_w do
       tiles[#tiles + 1] = {name = "nh-void", position = {x = x, y = y}}
     end
   end
@@ -246,7 +248,10 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
   end
 
   -- Handle the player character '@'
-  if ch == string.byte("@") and is_monster then
+  -- NetHack 3.6.7's mapglyph() does NOT set MG_MONSTER in special flags,
+  -- so we detect the player by character alone. The player's @ is always
+  -- drawn last, so the final @ position is correct.
+  if ch == string.byte("@") then
     disp.player_pos = {x = x, y = y}
     surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
     destroy_entity_at(level_name, x, y)
