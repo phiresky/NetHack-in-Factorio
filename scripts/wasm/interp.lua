@@ -30,6 +30,10 @@ local bit32_btest = bit32.btest
 
 local Interp = {}
 
+-- Set to false to disable inlined opcodes and use dispatch table for everything.
+-- Useful for benchmarking the effect of opcode inlining.
+Interp.inline_opcodes = false
+
 ---------------------------------------------------------------------------
 -- Helpers
 ---------------------------------------------------------------------------
@@ -503,6 +507,7 @@ function Interp.run(instance, max_instructions)
         local globals = state.globals
         local running = true
         local max_instr = max_instructions or 50000
+        local inline_opcodes = Interp.inline_opcodes
 
         -- Cache bit32 functions as locals
         local bit32_band = bit32_band
@@ -532,7 +537,103 @@ function Interp.run(instance, max_instructions)
                 instructions = instructions + 1
 
                 -- Inlined opcodes ordered by frequency (covers ~90% of instructions)
-                if op == 0x20 then -- local.get (24.3%)
+                if not inline_opcodes then
+                    -- Inlining disabled: use dispatch table for all opcodes
+                    state.sp = sp; state.pc = pc; state.locals = loc
+                    state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                    local handler = dispatch[op]
+                    if not handler then
+                        fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, pc - 1, func_idx))
+                    end
+                    handler(state)
+                    sp = state.sp; pc = state.pc; loc = state.locals
+                    code = state.code; block_stack = state.block_stack
+                    block_sp = state.block_sp; running = state.running
+                    memory = state.memory; mem_data = memory.data
+                    mem_len = memory.byte_length; globals = state.globals
+
+                    if state.call_func then
+                        local target_idx = state.call_func
+                        state.call_func = nil
+
+                        local target_def = module.funcs[target_idx]
+                        if not target_def then
+                            fail("Unknown function index: " .. tostring(target_idx))
+                        end
+
+                        local target_type = module.types[target_def.type_idx + 1]
+                        local num_params = #target_type.params
+
+                        local call_args = {}
+                        for i = num_params, 1, -1 do
+                            call_args[i] = stack[sp]; sp = sp - 1
+                        end
+
+                        if target_def.import then
+                            local import_fn = instance.import_funcs[target_idx]
+                            if not import_fn then
+                                fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
+                            end
+
+                            if type(import_fn) == "table" and import_fn.blocking then
+                                state.sp = sp; state.pc = pc; state.locals = loc
+                                state.code = code; state.block_stack = block_stack; state.block_sp = block_sp
+                                local handler_result = import_fn.handler(unpack(call_args))
+                                exec.waiting_input = true
+                                exec.blocking_return_arity = #target_type.results
+                                exec.state = state; exec.call_stack = call_stack
+                                exec.call_sp = call_sp; exec.func_idx = func_idx
+                                exec._blocking_result = handler_result
+                                return
+                            end
+
+                            local result = import_fn(unpack(call_args))
+                            if #target_type.results > 0 and result ~= nil then
+                                sp = sp + 1; stack[sp] = result
+                            end
+                            mem_len = memory.byte_length
+                        else
+                            call_sp = call_sp + 1
+                            if call_sp > 1000 then fail("call stack exhaustion") end
+                            call_stack[call_sp] = {
+                                locals = loc,
+                                pc = pc,
+                                code = code,
+                                block_stack = block_stack,
+                                block_sp = block_sp,
+                                stack_base = sp,
+                                return_arity = #target_type.results,
+                                func_idx = func_idx,
+                            }
+
+                            func_idx = target_idx
+                            loc = {}
+                            for i = 1, num_params do
+                                loc[i - 1] = call_args[i]
+                            end
+                            local new_local_offset = num_params
+                            for _, decl in ipairs(target_def.code.locals) do
+                                local def_val = default_value(decl.type)
+                                for _ = 1, decl.count do
+                                    loc[new_local_offset] = def_val
+                                    new_local_offset = new_local_offset + 1
+                                end
+                            end
+
+                            pc = 1
+                            code = target_def.code.code
+                            block_stack = {}
+                            block_sp = 1
+                            block_stack[1] = {
+                                opcode = 0x02,
+                                arity = #target_type.results,
+                                stack_height = sp,
+                                continuation_pc = nil,
+                            }
+                        end
+                    end
+
+                elseif op == 0x20 then -- local.get (24.3%)
                     local b = code[pc]; pc = pc + 1
                     local idx = b
                     if b >= 128 then
