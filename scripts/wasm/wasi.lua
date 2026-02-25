@@ -550,9 +550,8 @@ function Wasi.add_imports(imports, memory_ref, instance_ref)
 
     imports["wasi_snapshot_preview1.random_get"] = function(buf_ptr, buf_len)
         local memory = memory_ref()
-        -- Simple PRNG: fill with pseudo-random bytes
-        -- Good enough for NetHack's seed initialization
-        local seed = os.time and os.time() or 42
+        -- Deterministic PRNG: fixed seed for reproducible runs
+        local seed = 42
         for i = 0, buf_len - 1 do
             seed = (seed * 1103515245 + 12345) % 2147483648
             memory:store_byte(buf_ptr + i, seed % 256)

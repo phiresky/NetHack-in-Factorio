@@ -195,6 +195,7 @@ ALL_SRC = $(NH_SRC) $(WIN_SHARE_SRC) $(SYS_SHARE_SRC) $(FACTORIO_SRC)
 SCRIPTS = ../scripts
 WASM_LUA = $(SCRIPTS)/nethack_wasm.lua
 DATA_LUA = $(SCRIPTS)/nethack_data.lua
+COMPILED_LUA = $(SCRIPTS)/nethack_compiled.lua
 
 # ================================================================
 # Build targets
@@ -208,7 +209,7 @@ DATA_LUA = $(SCRIPTS)/nethack_data.lua
 
 .PHONY: all clean
 
-all: $(WASM_LUA) $(DATA_LUA)
+all: $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA)
 
 nethack.wasm: $(ALL_SRC) factorioconf.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(ALL_SRC) -o nethack.wasm
@@ -217,9 +218,12 @@ nethack.wasm: $(ALL_SRC) factorioconf.h
 $(WASM_LUA): nethack.wasm
 	python3 wasm_to_lua.py nethack.wasm $@
 
+$(COMPILED_LUA): $(WASM_LUA) $(wildcard $(SCRIPTS)/wasm/compiler.lua $(SCRIPTS)/wasm/init.lua)
+	cd .. && lua5.2 build/compile_wasm.lua $(WASM_LUA) $@
+
 $(DATA_LUA): $(wildcard $(NETHACK)/dat/*)
 	python3 embed_data.py $@ $(NETHACK)/dat
 
 clean:
 	rm -f nethack.wasm
-	rm -f $(WASM_LUA) $(DATA_LUA)
+	rm -f $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA)

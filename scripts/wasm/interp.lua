@@ -42,6 +42,10 @@ Interp.inline_opcodes = true
 -- Set to true to use compiled functions instead of interpreting bytecode.
 Interp.use_compiler = true
 
+-- Pre-compiled source strings from AOT build step (set before instantiate).
+-- Table of {[func_idx] = "lua source string", ...} or nil for JIT mode.
+Interp.compiled_sources = nil
+
 ---------------------------------------------------------------------------
 -- Helpers
 ---------------------------------------------------------------------------
@@ -1013,9 +1017,28 @@ function Interp.instantiate(module, imports)
         end
     end
 
-    -- Compile WASM functions to Lua (JIT/AOT)
+    -- Load compiled functions (AOT or JIT)
     if Interp.use_compiler then
-        instance.compiled_funcs = Compiler.compile_module(module, instance)
+        local compiled = {}
+        local count = 0
+
+        -- Try AOT-compiled sources first (from build step)
+        local aot_sources = Interp.compiled_sources
+        if aot_sources then
+            for idx, source in pairs(aot_sources) do
+                local fn = Compiler.load_source(source, idx)
+                if fn then
+                    compiled[idx] = fn
+                    count = count + 1
+                end
+            end
+        else
+            -- Fall back to JIT compilation
+            compiled = Compiler.compile_module(module, instance)
+            for _ in pairs(compiled) do count = count + 1 end
+        end
+
+        instance.compiled_funcs = compiled
         instance.ctx = create_ctx(instance)
     end
 

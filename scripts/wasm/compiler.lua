@@ -1189,18 +1189,8 @@ end
 -- Compile a single function
 ---------------------------------------------------------------------------
 
-function Compiler.compile_function(func_def, func_idx, module)
-    if func_def.import then return nil end
-    if not func_def.code or not func_def.code.code then return nil end
-
-    local code = func_def.code.code
-    if type(code) ~= "table" then return nil end -- needs byte array
-    if #code == 0 then return nil end
-
-    local source, n_calls = generate_source(func_idx, func_def, module)
-
-    -- Wrap with bit32 locals for performance
-    local preamble = [[
+-- Preamble prepended to every compiled function source
+Compiler.preamble = [[
 local bit32 = bit32
 local band = bit32.band
 local bor = bit32.bor
@@ -1213,23 +1203,55 @@ local btest = bit32.btest
 local floor = math.floor
 ]]
 
-    local full_source = preamble .. source
+-- Generate source string for a function without calling load().
+-- Returns full_source or nil on failure.
+function Compiler.compile_function_source(func_def, func_idx, module)
+    if func_def.import then return nil end
+    if not func_def.code or not func_def.code.code then return nil end
+
+    local code = func_def.code.code
+    if type(code) ~= "table" then return nil end -- needs byte array
+    if #code == 0 then return nil end
+
+    local ok, source_or_err, n_calls = pcall(generate_source, func_idx, func_def, module)
+    if not ok then
+        if Compiler.debug then
+            io.stderr:write(string.format("Source gen error in func %d: %s\n", func_idx, tostring(source_or_err)))
+        end
+        return nil
+    end
+
+    return Compiler.preamble .. source_or_err
+end
+
+-- Compile a function: generate source, load(), return Lua function.
+function Compiler.compile_function(func_def, func_idx, module)
+    local full_source = Compiler.compile_function_source(func_def, func_idx, module)
+    if not full_source then return nil end
 
     local fn, err = load(full_source, "=wasm_func_" .. func_idx)
     if not fn then
-        -- Compilation failed — fall back to interpreter
         if Compiler.debug then
             io.stderr:write(string.format("Compile error in func %d: %s\n", func_idx, tostring(err)))
-            -- Dump the source for debugging
             local f = io.open(string.format("/tmp/claude-1000/wasm_func_%d.lua", func_idx), "w")
             if f then f:write(full_source); f:close() end
         end
         return nil
     end
 
-    -- Execute the chunk to get the inner function factory
-    local factory = fn()
-    return factory
+    return fn()
+end
+
+-- Load a pre-compiled source string (from AOT). Returns Lua function or nil.
+function Compiler.load_source(source, func_idx)
+    local fn, err = load(source, "=wasm_func_" .. func_idx)
+    if not fn then
+        if Compiler.debug then
+            io.stderr:write(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
+        end
+        return nil
+    end
+    return fn()
 end
 
 ---------------------------------------------------------------------------

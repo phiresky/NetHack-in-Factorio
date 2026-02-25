@@ -169,15 +169,34 @@ local WasmInit = require("scripts.wasm.init")
 local WasmInterp = require("scripts.wasm.interp")
 local Bridge = require("scripts.bridge")
 
--- --no-compile flag disables the compiler
+-- Process flags
+local use_aot = false
 for _, a in ipairs(arg or {}) do
     if a == "--no-compile" then WasmInterp.use_compiler = false end
+    if a == "--aot" then use_aot = true end
 end
 
 print("Loading WASM data...")
 local load_start = os.clock()
 local wasm_data = require("scripts.nethack_wasm")
 local load_elapsed = os.clock() - load_start
+
+-- Load AOT-compiled sources if available and requested
+local aot_elapsed = 0
+if WasmInterp.use_compiler then
+    if use_aot then
+        print("Loading AOT-compiled sources...")
+        local aot_start = os.clock()
+        local ok, aot = pcall(require, "scripts.nethack_compiled")
+        aot_elapsed = os.clock() - aot_start
+        if ok and aot then
+            WasmInterp.compiled_sources = aot
+            print(string.format("  AOT sources loaded in %s", fmt_time(aot_elapsed)))
+        else
+            print("  AOT sources not found, falling back to JIT")
+        end
+    end
+end
 
 print("Parsing WASM module...")
 local parse_start = os.clock()
@@ -405,12 +424,15 @@ end
 
 local play_elapsed = os.clock() - play_start
 local play_instrs = instance.total_instructions - play_instrs_before
-local total_elapsed = load_elapsed + parse_elapsed + instantiate_elapsed + startup_elapsed + play_elapsed
+local total_elapsed = load_elapsed + aot_elapsed + parse_elapsed + instantiate_elapsed + startup_elapsed + play_elapsed
 local total_instrs = instance.total_instructions
 
 print("")
 print("=== Timing Summary ===")
 print(string.format("  Load data:    %s", fmt_time(load_elapsed)))
+if aot_elapsed > 0 then
+    print(string.format("  Load AOT:     %s", fmt_time(aot_elapsed)))
+end
 print(string.format("  Parse:        %s", fmt_time(parse_elapsed)))
 print(string.format("  Instantiate:  %s", fmt_time(instantiate_elapsed)))
 print(string.format("  Startup:      %s  (%dK instr, %.0fK inst/sec)", fmt_time(startup_elapsed), startup_instrs / 1000, startup_instrs / startup_elapsed / 1000))
@@ -418,4 +440,8 @@ print(string.format("  Play (%d inputs): %s  (%dK instr, %.0fK inst/sec)", #inpu
 print(string.format("  ─────────────────────"))
 print(string.format("  Total:        %s  (%dK instr)", fmt_time(total_elapsed), total_instrs / 1000))
 print(string.format("  Overall:      %.0fK inst/sec", total_instrs / (startup_elapsed + play_elapsed) / 1000))
-print(string.format("  Compiler:     %s", tostring(WasmInterp.use_compiler)))
+local mode = "off"
+if WasmInterp.use_compiler then
+    mode = WasmInterp.compiled_sources and "AOT" or "JIT"
+end
+print(string.format("  Compiler:     %s", mode))
