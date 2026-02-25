@@ -302,6 +302,138 @@ default_gui["nh_loading_count_label"] = {
 }
 
 -----------------------------------------------------
+-- Player Selection Dialog
+-----------------------------------------------------
+
+default_gui["nh_plsel_frame"] = {
+  type = "frame_style",
+  top_padding = 12,
+  bottom_padding = 12,
+  left_padding = 16,
+  right_padding = 16,
+  minimal_width = 520,
+  maximal_width = 620,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.95,
+    },
+  },
+}
+
+default_gui["nh_plsel_name_field"] = {
+  type = "textbox_style",
+  minimal_width = 200,
+  maximal_width = 300,
+}
+
+default_gui["nh_plsel_columns_flow"] = {
+  type = "horizontal_flow_style",
+  horizontal_spacing = 8,
+  top_padding = 4,
+}
+
+default_gui["nh_plsel_list_frame"] = {
+  type = "frame_style",
+  top_padding = 4,
+  bottom_padding = 4,
+  left_padding = 4,
+  right_padding = 4,
+  graphical_set = {
+    base = {
+      position = {17, 0},
+      corner_size = 8,
+      opacity = 0.6,
+    },
+  },
+}
+
+default_gui["nh_plsel_list_scroll"] = {
+  type = "scroll_pane_style",
+  maximal_height = 260,
+  minimal_width = 120,
+  extra_padding_when_activated = 0,
+  vertical_spacing = 0,
+}
+
+default_gui["nh_plsel_list_button"] = {
+  type = "button_style",
+  font = "default",
+  font_color = {r = 0.9, g = 0.9, b = 0.9},
+  minimal_width = 112,
+  maximal_width = 140,
+  left_padding = 4,
+  right_padding = 4,
+  top_padding = 1,
+  bottom_padding = 1,
+  height = 26,
+}
+
+default_gui["nh_plsel_list_button_selected"] = {
+  type = "button_style",
+  font = "default-bold",
+  font_color = {r = 1, g = 1, b = 1},
+  default_font_color = {r = 1, g = 1, b = 1},
+  minimal_width = 112,
+  maximal_width = 140,
+  left_padding = 4,
+  right_padding = 4,
+  top_padding = 1,
+  bottom_padding = 1,
+  height = 26,
+  default_graphical_set = {
+    base = {position = {34, 17}, corner_size = 8},
+  },
+}
+
+default_gui["nh_plsel_group_frame"] = {
+  type = "frame_style",
+  top_padding = 4,
+  bottom_padding = 4,
+  left_padding = 8,
+  right_padding = 8,
+  graphical_set = {
+    base = {
+      position = {17, 0},
+      corner_size = 8,
+      opacity = 0.6,
+    },
+  },
+}
+
+default_gui["nh_plsel_radio_flow"] = {
+  type = "vertical_flow_style",
+  vertical_spacing = 2,
+}
+
+default_gui["nh_plsel_play_button"] = {
+  type = "button_style",
+  font = "default-bold",
+  minimal_width = 120,
+  left_padding = 8,
+  right_padding = 8,
+  top_padding = 4,
+  bottom_padding = 4,
+}
+
+default_gui["nh_plsel_button"] = {
+  type = "button_style",
+  font = "default",
+  minimal_width = 120,
+  left_padding = 8,
+  right_padding = 8,
+  top_padding = 2,
+  bottom_padding = 2,
+}
+
+default_gui["nh_plsel_info_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 0.7, g = 0.7, b = 0.7},
+}
+
+-----------------------------------------------------
 -- Engine State (corner display, always visible)
 -----------------------------------------------------
 

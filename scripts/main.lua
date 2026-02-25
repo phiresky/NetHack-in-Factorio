@@ -138,6 +138,7 @@ local function update_engine_gui()
     elseif sub == "yn" then engine_state = "Waiting for Y/N"
     elseif sub == "getlin" then engine_state = "Waiting for text"
     elseif sub == "menu" then engine_state = "Waiting for selection"
+    elseif sub == "plsel" then engine_state = "Character selection"
     else engine_state = "Waiting for input" end
     color = {r = 0.3, g = 0.9, b = 0.3}
   elseif state.running then
@@ -191,6 +192,15 @@ local function run_and_process(max_instructions)
           local player = game.connected_players[1]
           if player then
             Gui.show_menu(player, result.winid, result.how)
+          end
+
+        elseif result.input_type == "plsel" then
+          -- host_plsel_show blocked - show player selection dialog
+          state.input_type = "plsel"
+          state.input_info = nil
+          local player = game.connected_players[1]
+          if player then
+            Gui.show_plsel_dialog(player)
           end
 
         elseif result.input_type == "getch" then
@@ -385,6 +395,49 @@ local function advance_turn_menu(result)
   update_player_position()
 end
 
+-- Provide player selection dialog result.
+-- host_plsel_show is blocking and returns a status (0=play, -1=quit).
+-- Then the C code calls host_nhgetch to get name chars + null + 4 selection indices.
+local function advance_turn_plsel(result)
+  local state = storage.nh_main
+  if not state.awaiting_input or not wasm_instance then return end
+
+  if result.action == "quit" then
+    -- Provide -1 status; C code will call clearlocks + exit
+    state.awaiting_input = false
+    state.input_type = nil
+    state.input_info = nil
+    WasmInterp.provide_input(wasm_instance, -1)
+    run_and_process()
+    update_engine_gui()
+    return
+  end
+
+  -- Play: queue name chars + null + 4 selection indices
+  local queue = state.input_queue
+  local name = result.name or "Player"
+  for i = 1, #name do
+    queue[#queue + 1] = string.byte(name, i)
+  end
+  queue[#queue + 1] = 0  -- null terminator ends askname's read loop
+
+  -- Selection indices (or -1 for random)
+  queue[#queue + 1] = result.role >= 0 and result.role or -1
+  queue[#queue + 1] = result.race >= 0 and result.race or -1
+  queue[#queue + 1] = result.gend >= 0 and result.gend or -1
+  queue[#queue + 1] = result.align >= 0 and result.align or -1
+
+  state.awaiting_input = false
+  state.input_type = nil
+  state.input_info = nil
+
+  -- Provide status 0 (play) to resume from host_plsel_show
+  WasmInterp.provide_input(wasm_instance, 0)
+  run_and_process()
+  update_engine_gui()
+  update_player_position()
+end
+
 ---------------------------------------------------------------------------
 -- Event Handlers
 ---------------------------------------------------------------------------
@@ -455,6 +508,15 @@ local function on_gui_click(event)
   if not player then return end
   local element = event.element
   if not element or not element.valid then return end
+
+  -- Player selection dialog
+  if state.input_type == "plsel" then
+    local result = Gui.handle_plsel_click(player, element.name)
+    if result then
+      advance_turn_plsel(result)
+    end
+    return
+  end
 
   -- Toolbar or action panel button -> key code
   local btn_key = Gui.handle_toolbar_click(element.name)
@@ -564,8 +626,23 @@ script.on_event(defines.events.on_player_created, function(event)
   end
 end)
 
+-- Checkbox state change (for plsel radio-button mutual exclusion)
+local function on_gui_checked_state_changed(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if state.input_type ~= "plsel" then return end
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  local element = event.element
+  if not element or not element.valid then return end
+
+  Gui.handle_plsel_checkbox(player, element.name, element.state)
+end
+
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
+script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
 script.on_event(defines.events.on_tick, on_tick)
 
 -- Register all custom input events
