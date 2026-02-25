@@ -128,8 +128,10 @@ local function update_engine_gui()
   -- Determine engine state and color
   local engine_state, color
   if state.awaiting_input then
-    -- First time reaching input = loading complete
-    if not state.first_input_received then
+    -- First time reaching a non-startup input = loading complete.
+    -- The plsel dialog appears during startup before the first level is
+    -- rendered, so don't count it as "loaded".
+    if not state.first_input_received and state.input_type ~= "plsel" then
       state.first_input_received = true
       Gui.destroy_loading_bar()
     end
