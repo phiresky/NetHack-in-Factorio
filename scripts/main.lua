@@ -501,19 +501,50 @@ local function on_player_changed_position(event)
 end
 
 -- Custom input: non-movement commands
--- Also handles yn prompts (user can press y/n/ESC on keyboard instead of clicking)
+-- Handles getch, yn, menu (ESC + accelerators), and getlin (ESC) states.
 local function on_custom_input(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
   if not state.awaiting_input then return end
-  if state.input_type ~= "getch" and state.input_type ~= "yn" then return end
 
   local key = Input.custom_input_to_key(event.input_name)
   if not key then return end
 
+  local player = game.get_player(event.player_index)
+
+  -- ESC cancels menus and getlin prompts
+  if key == 27 then
+    if state.input_type == "menu" then
+      if player and player.gui.screen.nh_menu_frame then
+        player.gui.screen.nh_menu_frame.destroy()
+      end
+      if storage.nh_gui then storage.nh_gui.pending_menu = nil end
+      advance_turn_menu({cancelled = true, selections = {}})
+      return
+    elseif state.input_type == "getlin" then
+      if player and player.gui.screen.nh_getlin_frame then
+        player.gui.screen.nh_getlin_frame.destroy()
+      end
+      if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
+      advance_turn_string("\027")
+      return
+    end
+  end
+
+  -- Keyboard accelerators for menus (PICK_ONE select, PICK_ANY toggle)
+  if state.input_type == "menu" then
+    local result = Gui.handle_menu_key(player, key)
+    if result then
+      advance_turn_menu(result)
+    end
+    return
+  end
+
+  -- Only getch and yn accept general keyboard input
+  if state.input_type ~= "getch" and state.input_type ~= "yn" then return end
+
   -- For yn prompts, close the GUI before advancing
   if state.input_type == "yn" then
-    local player = game.get_player(event.player_index)
     if player and player.gui.screen.nh_yn_frame then
       player.gui.screen.nh_yn_frame.destroy()
     end
@@ -532,6 +563,19 @@ local function on_gui_click(event)
   if not player then return end
   local element = event.element
   if not element or not element.valid then return end
+
+  -- Text window close: works in any state so it can't block other dialogs
+  if element.name:match("^nh_close_text_") then
+    local winid = tonumber(element.name:match("nh_close_text_(%d+)"))
+    if winid then
+      Gui.destroy_window(winid)
+    end
+    -- If waiting for a simple key press (--More--), advance with space
+    if state.input_type == "getch" then
+      advance_turn(string.byte(" "))
+    end
+    return
+  end
 
   -- Player selection dialog
   if state.input_type == "plsel" then
@@ -607,17 +651,6 @@ local function on_gui_click(event)
     return
   end
 
-  -- Text window close: send space if waiting for getch (--More--)
-  if element.name:match("^nh_close_text_") then
-    local winid = tonumber(element.name:match("nh_close_text_(%d+)"))
-    if winid then
-      Gui.destroy_window(winid)
-    end
-    if state.input_type == "getch" then
-      advance_turn(string.byte(" "))
-    end
-    return
-  end
 end
 
 -- on_tick: continue execution if interpreter is running but not waiting for input
@@ -674,6 +707,28 @@ script.on_event(defines.events.on_player_created, function(event)
   end
 end)
 
+-- Textfield Enter key (for getlin prompt submission)
+local function on_gui_confirmed(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input then return end
+  if state.input_type ~= "getlin" then return end
+
+  local element = event.element
+  if not element or not element.valid then return end
+  if element.name ~= "nh_getlin_textfield" then return end
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+
+  local text = element.text or ""
+  if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
+  if player.gui.screen.nh_getlin_frame then
+    player.gui.screen.nh_getlin_frame.destroy()
+  end
+  advance_turn_string(text)
+end
+
 -- Checkbox state change (for plsel radio-button mutual exclusion)
 local function on_gui_checked_state_changed(event)
   local state = storage.nh_main
@@ -690,6 +745,7 @@ end
 
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
+script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
 script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
 script.on_event(defines.events.on_tick, on_tick)
 

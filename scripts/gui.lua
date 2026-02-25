@@ -1170,6 +1170,52 @@ function Gui.handle_menu_action(player, action)
   end
 end
 
+-- Handle keyboard input for menus (accelerator keys)
+function Gui.handle_menu_key(player, key_code)
+  local gui_data = storage.nh_gui
+  local pending = gui_data.pending_menu
+  if not pending then return nil end
+
+  local win = gui_data.windows[pending.winid]
+  if not win then return nil end
+
+  -- PICK_ONE: accelerator key selects the item immediately
+  if pending.how == 1 then
+    for _, item in ipairs(win.items) do
+      if item.accelerator == key_code and item.identifier ~= 0 then
+        gui_data.pending_menu = nil
+        if player and player.gui.screen.nh_menu_frame then
+          player.gui.screen.nh_menu_frame.destroy()
+        end
+        return {cancelled = false, selections = {{identifier = item.identifier, count = -1}}}
+      end
+    end
+  end
+
+  -- PICK_ANY: accelerator key toggles the item's checkbox
+  if pending.how == 2 then
+    for i, item in ipairs(win.items) do
+      if item.accelerator == key_code and item.identifier ~= 0 then
+        item.selected = not item.selected
+        -- Update checkbox in GUI
+        if player and player.gui.screen.nh_menu_frame then
+          local scroll = player.gui.screen.nh_menu_frame.nh_menu_scroll
+          if scroll then
+            local flow = scroll["nh_menu_flow_" .. i]
+            if flow then
+              local cb = flow["nh_menu_check_" .. i]
+              if cb then cb.state = item.selected end
+            end
+          end
+        end
+        return nil -- don't close menu yet
+      end
+    end
+  end
+
+  return nil
+end
+
 -----------------------------------------------------
 -- yn_function prompt
 -----------------------------------------------------
@@ -1801,7 +1847,7 @@ function Gui.show_plsel_dialog(player)
   name_flow.add{
     type = "textfield",
     name = "nh_plsel_name",
-    text = "Player",
+    text = player.name,
     style = "nh_plsel_name_field",
   }
 
