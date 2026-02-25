@@ -201,8 +201,8 @@ COMPILED_LUA = $(SCRIPTS)/nethack_compiled.lua
 # Build targets
 #
 # Prerequisites: host tools must be built first (generates headers,
-# compiled .lev files, dungeon data). Use build_nethack.sh for the
-# full pipeline, or manually:
+# compiled .lev files, dungeon data). Use ./build.sh (project root)
+# for the full pipeline, or manually:
 #   cd ../NetHack/sys/unix && bash setup.sh hints/linux-minimal
 #   cd ../NetHack && make CC="cc -m32 -std=gnu89" all
 # ================================================================
