@@ -191,6 +191,65 @@ struct window_procs factorio_procs = {
 static int factorio_window_types[MAX_FACTORIO_WINDOWS];
 
 /* ================================================================
+ * Glyph decoding for rich text sprite references
+ * ================================================================ */
+
+/* Decode \G glyph sequences into Factorio rich text sprite references.
+ * Uses glyph2tile[] to convert glyph index to tile index.
+ * Returns buf. */
+static char *
+decode_glyph_to_sprite(buf, str)
+char *buf;
+const char *str;
+{
+    static const char hex[] = "00112233445566778899aAbBcCdDeEfF";
+    char *put = buf;
+
+    if (!str)
+        return strcpy(buf, "");
+
+    while (*str) {
+        if (*str == '\\' && *(str + 1) == 'G') {
+            int rndchk, dcount, gv;
+            const char *dp, *save_str;
+
+            save_str = str;
+            str += 2; /* skip \G */
+
+            /* Parse 4-hex rndencode */
+            rndchk = dcount = 0;
+            for (; *str && dcount < 4; ++str, ++dcount)
+                if ((dp = index(hex, *str)) != 0)
+                    rndchk = (rndchk * 16) + ((int)(dp - hex) / 2);
+
+            if (rndchk == context.rndencode) {
+                /* Parse 4-hex glyph value */
+                gv = dcount = 0;
+                for (; *str && dcount < 4; ++str, ++dcount)
+                    if ((dp = index(hex, *str)) != 0)
+                        gv = (gv * 16) + ((int)(dp - hex) / 2);
+
+                /* Convert glyph to tile index, emit rich text */
+                if (gv >= 0 && gv < MAX_GLYPH) {
+                    int tile = (int) glyph2tile[gv];
+                    put += sprintf(put, "[img=nh-sprite-%d]", tile);
+                } else {
+                    /* Invalid glyph, copy original */
+                    while (save_str < str)
+                        *put++ = *save_str++;
+                }
+                continue;
+            }
+            /* rndencode mismatch - copy original text */
+            str = save_str;
+        }
+        *put++ = *str++;
+    }
+    *put = '\0';
+    return buf;
+}
+
+/* ================================================================
  * Implementation of window port functions
  * ================================================================ */
 
@@ -347,10 +406,11 @@ winid window;
 int attr;
 const char *str;
 {
-    /* putmixed handles encoded glyphs in strings; for our port
-     * we just treat it like putstr since the Lua side handles
-     * display anyway */
-    factorio_putstr(window, attr, str);
+    if (str) {
+        char buf[BUFSZ * 2];
+        decode_glyph_to_sprite(buf, str);
+        host_putstr((int) window, attr, buf, (int) strlen(buf));
+    }
 }
 
 static void
@@ -735,7 +795,14 @@ unsigned long *colormasks UNUSED;
         val = "";
     }
 
-    host_status_update(idx, val, (int) strlen(val), color, percent);
+    if (idx != BL_CONDITION) {
+        /* Decode any \G glyph sequences in the value string */
+        char decoded[BUFSZ * 2];
+        decode_glyph_to_sprite(decoded, val);
+        host_status_update(idx, decoded, (int) strlen(decoded), color, percent);
+    } else {
+        host_status_update(idx, val, (int) strlen(val), color, percent);
+    }
 }
 
 static boolean

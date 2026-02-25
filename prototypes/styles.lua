@@ -58,6 +58,7 @@ default_gui["nh_message_label"] = {
   single_line = false,
   left_padding = 2,
   right_padding = 2,
+  rich_text_setting = "enabled",
 }
 
 default_gui["nh_message_label_bold"] = {
@@ -67,6 +68,7 @@ default_gui["nh_message_label_bold"] = {
   single_line = false,
   left_padding = 2,
   right_padding = 2,
+  rich_text_setting = "enabled",
 }
 
 -----------------------------------------------------
@@ -112,6 +114,7 @@ default_gui["nh_status_label"] = {
   font_color = {r = 1, g = 1, b = 1},
   left_padding = 4,
   right_padding = 4,
+  rich_text_setting = "enabled",
 }
 
 default_gui["nh_status_label_good"] = {
@@ -120,6 +123,7 @@ default_gui["nh_status_label_good"] = {
   font_color = {r = 0.2, g = 1, b = 0.2},
   left_padding = 4,
   right_padding = 4,
+  rich_text_setting = "enabled",
 }
 
 default_gui["nh_status_label_bad"] = {
@@ -128,6 +132,7 @@ default_gui["nh_status_label_bad"] = {
   font_color = {r = 1, g = 0.2, b = 0.2},
   left_padding = 4,
   right_padding = 4,
+  rich_text_setting = "enabled",
 }
 
 default_gui["nh_gold_label"] = {
@@ -136,6 +141,7 @@ default_gui["nh_gold_label"] = {
   font_color = {r = 1, g = 0.85, b = 0},
   left_padding = 4,
   right_padding = 4,
+  rich_text_setting = "enabled",
 }
 
 -----------------------------------------------------
