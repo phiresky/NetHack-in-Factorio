@@ -262,6 +262,7 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
 
   -- Monsters (non-player)
   if is_monster then
+    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
     place_entity(surface, level_name, x, y, ent_name, tint)
     return
   end
@@ -304,6 +305,7 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
 
   -- Items and other visible features (anything above ASCII 32)
   if ch > 32 then
+    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
     place_entity(surface, level_name, x, y, ent_name, tint)
     return
   end

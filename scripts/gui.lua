@@ -440,24 +440,20 @@ function Gui.create_player_gui(player)
     direction = "horizontal",
   }
 
-  -------------------------------------------------
-  -- Engine state widget (bottom-left corner)
-  -------------------------------------------------
-  local engine_frame = screen.add{
-    type = "frame",
-    name = "nh_engine_frame",
-    direction = "horizontal",
-    style = "nh_engine_frame",
+  -- Engine state (right-aligned in menu bar)
+  local engine_spacer = menubar.add{
+    type = "empty-widget",
+    name = "nh_engine_spacer",
+    style = "nh_engine_spacer",
   }
-  engine_frame.location = {x = 10, y = ui_height - 36}
-
-  engine_frame.add{
+  engine_spacer.style.horizontally_stretchable = true
+  menubar.add{
     type = "label",
     name = "nh_engine_state",
     caption = "Initializing",
     style = "nh_engine_state_label",
   }
-  engine_frame.add{
+  menubar.add{
     type = "label",
     name = "nh_engine_count",
     caption = "",
@@ -465,22 +461,30 @@ function Gui.create_player_gui(player)
   }
 
   -------------------------------------------------
-  -- Hover tooltip (bottom-right corner)
+  -- Hover tooltip (screen-based, right side)
   -------------------------------------------------
+  if screen.nh_hover_frame then
+    screen.nh_hover_frame.destroy()
+  end
   local hover_frame = screen.add{
     type = "frame",
     name = "nh_hover_frame",
-    direction = "horizontal",
+    direction = "vertical",
     style = "nh_hover_frame",
   }
-  hover_frame.location = {x = ui_width - 310, y = ui_height - 36}
   hover_frame.visible = false
-
+  hover_frame.location = {x = player.display_resolution.width - 350, y = 50}
   hover_frame.add{
     type = "label",
     name = "nh_hover_label",
     caption = "",
     style = "nh_hover_label",
+  }
+  hover_frame.add{
+    type = "label",
+    name = "nh_hover_long_label",
+    caption = "",
+    style = "nh_hover_long_label",
   }
 
   gui_data.player_frames[player.index] = true
@@ -496,7 +500,6 @@ function Gui.destroy_player_gui(player)
   -- Destroy all our top-level screen elements
   local names = {
     "nh_top_panel", "nh_mb_dropdown",
-    "nh_engine_frame", "nh_hover_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
@@ -506,6 +509,10 @@ function Gui.destroy_player_gui(player)
     if screen[name] then
       screen[name].destroy()
     end
+  end
+
+  if screen.nh_hover_frame then
+    screen.nh_hover_frame.destroy()
   end
 
   gui_data.player_frames[player.index] = nil
@@ -1589,23 +1596,26 @@ end
 -----------------------------------------------------
 
 function Gui.update_engine_state(state_text, instructions, color)
-  local count_text = format_number(instructions) .. " inst"
+  local count_text = format_number(instructions) .. " WASM inst"
 
   for _, player in pairs(game.connected_players) do
     local screen = player.gui.screen
-    local frame = screen.nh_engine_frame
-    if frame then
-      local state_label = frame.nh_engine_state
-      if state_label then
-        state_label.caption = state_text
-        if color then
-          state_label.style = "nh_engine_state_label"
-          state_label.style.font_color = color
+    local top = screen.nh_top_panel
+    if top then
+      local menubar = top.nh_menubar
+      if menubar then
+        local state_label = menubar.nh_engine_state
+        if state_label then
+          state_label.caption = "NH Engine: " .. state_text
+          if color then
+            state_label.style = "nh_engine_state_label"
+            state_label.style.font_color = color
+          end
         end
-      end
-      local count_label = frame.nh_engine_count
-      if count_label then
-        count_label.caption = count_text
+        local count_label = menubar.nh_engine_count
+        if count_label then
+          count_label.caption = count_text
+        end
       end
     end
   end
@@ -1615,19 +1625,28 @@ end
 -- Hover Tooltip
 -----------------------------------------------------
 
-function Gui.update_hover_info(player, text)
-  local screen = player.gui.screen
-  local frame = screen.nh_hover_frame
+function Gui.update_hover_info(player, info)
+  local frame = player.gui.screen.nh_hover_frame
   if not frame then return end
 
-  if not text or text == "" then
+  if not info then
     frame.visible = false
     return
   end
 
   local label = frame.nh_hover_label
+  local long_label = frame.nh_hover_long_label
   if label then
-    label.caption = text
+    label.caption = info.short or ""
+  end
+  if long_label then
+    if info.long and info.long ~= "" then
+      long_label.caption = info.long
+      long_label.visible = true
+    else
+      long_label.caption = ""
+      long_label.visible = false
+    end
   end
   frame.visible = true
 end

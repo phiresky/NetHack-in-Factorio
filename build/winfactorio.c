@@ -857,22 +857,31 @@ factorio_can_suspend()
  * ================================================================ */
 
 extern struct permonst *lookat(int, int, char *, char *);
+extern void checkfile(char *, struct permonst *, BOOLEAN_P, BOOLEAN_P, char *);
 
 __attribute__((export_name("nh_describe_pos")))
 void
-nh_describe_pos(int x, int y)
+nh_describe_pos(int x, int y, int full)
 {
     char buf[BUFSZ];
     char monbuf[BUFSZ];
+    struct permonst *pm = (struct permonst *) 0;
 
     buf[0] = '\0';
     monbuf[0] = '\0';
 
     if (x >= 1 && x < COLNO && y >= 0 && y < ROWNO) {
-        (void) lookat(x, y, buf, monbuf);
+        pm = lookat(x, y, buf, monbuf);
     }
 
     host_describe_result(buf, (int) strlen(buf), monbuf, (int) strlen(monbuf));
+
+    /* Look up extended description from data file.
+     * checkfile() creates a text window and calls putstr/display_nhwindow;
+     * the Lua side intercepts these in "capture mode". */
+    if (full && buf[0]) {
+        checkfile(buf, pm, FALSE, TRUE, (char *) 0);
+    }
 }
 
 /* winfactorio.c */

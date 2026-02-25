@@ -543,6 +543,18 @@ local function on_custom_input(event)
   -- Only getch and yn accept general keyboard input
   if state.input_type ~= "getch" and state.input_type ~= "yn" then return end
 
+  -- Farlook (;) on a hovered NH entity: show full description instead of feeding to NH
+  if event.input_name == "nh-far-look" and player and state.input_type == "getch" then
+    local entity = player.selected
+    if entity and entity.valid and entity.name:find("^nh%-") then
+      local gx = math.floor(entity.position.x)
+      local gy = math.floor(entity.position.y)
+      local info = Bridge.describe_pos(wasm_instance, gx, gy, true)
+      Gui.update_hover_info(player, info)
+      return
+    end
+  end
+
   -- For yn prompts, close the GUI before advancing
   if state.input_type == "yn" then
     if player and player.gui.screen.nh_yn_frame then
@@ -770,7 +782,7 @@ local function on_selected_entity_changed(event)
   local gx = math.floor(entity.position.x)
   local gy = math.floor(entity.position.y)
 
-  local description = Bridge.describe_pos(wasm_instance, gx, gy)
+  local description = Bridge.describe_pos(wasm_instance, gx, gy, false)
   Gui.update_hover_info(player, description)
 end
 

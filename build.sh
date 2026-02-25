@@ -11,7 +11,7 @@
 #   ./build.sh --verify     # check all generated files exist
 #
 # Prerequisites (Arch Linux):
-#   pacman -S clang wasi-libc wasi-compiler-rt binaryen \
+#   pacman -S clang wasi-libc wasi-compiler-rt binaryen oxipng \
 #             lib32-glibc lib32-gcc-libs lib32-ncurses python python-pillow
 
 set -euo pipefail
@@ -98,6 +98,16 @@ do_full_build() {
     cd "$NETHACK_DIR"
     make CC="cc -m32 -std=gnu89" all
 
+    # Step 2b: Patch lookat() and checkfile() to be non-static (for nh_describe_pos export)
+    # Note: -DOVERLAY would do this globally but NetHack 3.6.7 has mismatched
+    # STATIC_DCL/static declarations that cause build errors with modern compilers.
+    sed -i \
+        -e 's/^STATIC_DCL struct permonst \*FDECL(lookat/struct permonst *FDECL(lookat/' \
+        -e 's/^STATIC_OVL struct permonst \*$/struct permonst */' \
+        -e 's/^STATIC_DCL void FDECL(checkfile/void FDECL(checkfile/' \
+        -e '/^STATIC_OVL void$/{N;/\ncheckfile(/s/STATIC_OVL //;}' \
+        "$NETHACK_DIR/src/pager.c"
+
     # Step 3: Build tilemap to generate glyph2tile[]
     step "Building tilemap"
     cd "$NETHACK_DIR"
@@ -113,6 +123,11 @@ do_full_build() {
     # Step 5: Convert tile art to Factorio sprites
     step "Converting tile art to sprites"
     python3 "$BUILD_DIR/convert_tiles.py" "$NETHACK_DIR"
+
+    # Step 6: Optimize PNGs
+    step "Optimizing PNGs with oxipng"
+    find "$ROOT_DIR/graphics/sheets" "$ROOT_DIR/graphics/tiles" -name '*.png' \
+        -print0 | xargs -0 -P"$(nproc)" oxipng --omax -Z
 
     do_verify
 
@@ -155,12 +170,22 @@ case "${1:-}" in
         ;;
     --wasm-only)
         [ -d "$NETHACK_DIR" ] || die "NetHack/ not found. Run ./build.sh first."
+        # Ensure lookat()/checkfile() are non-static (idempotent)
+        sed -i \
+        -e 's/^STATIC_DCL struct permonst \*FDECL(lookat/struct permonst *FDECL(lookat/' \
+        -e 's/^STATIC_OVL struct permonst \*$/struct permonst */' \
+        -e 's/^STATIC_DCL void FDECL(checkfile/void FDECL(checkfile/' \
+        -e '/^STATIC_OVL void$/{N;/\ncheckfile(/s/STATIC_OVL //;}' \
+        "$NETHACK_DIR/src/pager.c"
         make -C "$BUILD_DIR" all -j"$(nproc)"
         do_verify
         ;;
     --sprites)
         [ -d "$NETHACK_DIR" ] || die "NetHack/ not found. Run ./build.sh first."
         python3 "$BUILD_DIR/convert_tiles.py" "$NETHACK_DIR"
+        step "Optimizing PNGs with oxipng"
+        find "$ROOT_DIR/graphics/sheets" "$ROOT_DIR/graphics/tiles" -name '*.png' \
+            -print0 | xargs -0 -P"$(nproc)" oxipng --omax -Z
         do_verify
         ;;
     --help|-h)

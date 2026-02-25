@@ -55,9 +55,11 @@ for _, idx in ipairs(TC.door_open_indices) do door_open_set[idx] = true end
 ---------------------------------------------------------------------------
 
 for i = 0, TC.n_monsters - 1 do
+  local mname = TC.monster_names[i + 1]
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = "nh-mon-" .. TC.monster_names[i + 1],
+    name = "nh-mon-" .. mname,
+    localised_name = mname:gsub("-", " "),
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,
@@ -74,9 +76,11 @@ end
 ---------------------------------------------------------------------------
 
 for i = 0, TC.n_objects - 1 do
+  local oname = TC.object_names[i + 1]
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = "nh-obj-" .. TC.object_names[i + 1],
+    name = "nh-obj-" .. oname,
+    localised_name = oname:gsub("-", " "),
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,
@@ -100,9 +104,11 @@ for i = 0, TC.n_other - 1 do
     layer = "floor"
   end
 
+  local tname = TC.other_names[i + 1]
   entities[#entities + 1] = {
     type = has_collision and "simple-entity-with-force" or "simple-entity",
-    name = "nh-other-" .. TC.other_names[i + 1],
+    name = "nh-other-" .. tname,
+    localised_name = tname:gsub("-", " "),
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,

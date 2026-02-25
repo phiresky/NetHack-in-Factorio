@@ -63,6 +63,12 @@ function Bridge.create_imports(memory_ref, instance_ref)
   imports["env.host_putstr"] = function(win, attr, str_ptr, len)
     local memory = memory_ref()
     local text = Bridge.read_string_len(memory, str_ptr, len)
+    -- In capture mode, redirect text to buffer instead of GUI
+    local capture = storage.nh_bridge and storage.nh_bridge.describe_capture
+    if capture then
+      capture[#capture + 1] = text
+      return
+    end
     Gui.putstr(win, attr, text)
   end
 
@@ -93,6 +99,10 @@ function Bridge.create_imports(memory_ref, instance_ref)
   end
 
   imports["env.host_display_nhwindow"] = function(winid, blocking)
+    -- In capture mode, suppress display entirely
+    if storage.nh_bridge and storage.nh_bridge.describe_capture then
+      return
+    end
     Gui.display_window(winid, blocking ~= 0)
     -- When blocking a message window, show --More-- indicator.
     -- The C code will call host_nhgetch next to actually block.
@@ -309,8 +319,9 @@ end
 
 -- Describe a map position by calling nh_describe_pos in WASM.
 -- Safe to call while paused at nhgetch: saves/restores exec state.
--- Returns description string, or nil on failure.
-function Bridge.describe_pos(instance, x, y)
+-- Returns {short=..., long=...} or nil on failure.
+-- short = lookat() one-liner, long = checkfile() encyclopedia entry (only when full=true).
+function Bridge.describe_pos(instance, x, y, full)
   if not instance or not instance.exec then return nil end
 
   -- Cache the export index
@@ -322,33 +333,50 @@ function Bridge.describe_pos(instance, x, y)
   -- Save current execution state
   local saved_exec = instance.exec
 
-  -- Clear any previous result
-  if storage.nh_bridge then
-    storage.nh_bridge.describe_result = nil
+  -- Clear any previous result; enable capture mode only when fetching full desc
+  if not storage.nh_bridge then storage.nh_bridge = {} end
+  storage.nh_bridge.describe_result = nil
+  if full then
+    storage.nh_bridge.describe_capture = {}
   end
 
-  -- Call nh_describe_pos(x, y) and run to completion
+  -- Call nh_describe_pos(x, y, full) and run to completion.
+  -- checkfile() with without_asking=TRUE is non-blocking, so a single run suffices.
   local ok, err = pcall(function()
-    WasmInterp.call(instance, Bridge._describe_idx, {x, y})
-    WasmInterp.run(instance, 50000)
+    WasmInterp.call(instance, Bridge._describe_idx, {x, y, full and 1 or 0})
+    WasmInterp.run(instance, 500000)
   end)
+
+  -- Read captured checkfile text before cleanup
+  local captured = full and storage.nh_bridge.describe_capture or nil
+  storage.nh_bridge.describe_capture = nil
 
   -- Restore execution state (even on error)
   instance.exec = saved_exec
 
   if not ok then return nil end
 
-  -- Read result
-  local result = storage.nh_bridge and storage.nh_bridge.describe_result
-  if not result then return nil end
+  -- Read lookat result
+  local result = storage.nh_bridge.describe_result
   storage.nh_bridge.describe_result = nil
 
-  -- Combine monbuf (monster info) and buf (feature/object info)
-  local parts = {}
-  if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
-  if result.buf ~= "" then parts[#parts + 1] = result.buf end
-  if #parts == 0 then return nil end
-  return table.concat(parts, "  ")
+  -- Build short description from lookat
+  local short_desc = nil
+  if result then
+    local parts = {}
+    if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
+    if result.buf ~= "" then parts[#parts + 1] = result.buf end
+    if #parts > 0 then short_desc = table.concat(parts, "  ") end
+  end
+
+  -- Build long description from checkfile capture
+  local long_desc = nil
+  if captured and #captured > 0 then
+    long_desc = table.concat(captured, "\n")
+  end
+
+  if not short_desc and not long_desc then return nil end
+  return {short = short_desc, long = long_desc}
 end
 
 return Bridge
