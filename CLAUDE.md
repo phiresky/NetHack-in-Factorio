@@ -16,7 +16,8 @@ inside Factorio's sandbox. Factorio's game world IS the display.
 ```
 Build-time:  NetHack C -> host tools (makedefs/lev_comp/dgn_comp/tilemap, -m32)
              -> generated headers + .lev + dungeon data + tile.c (glyph2tile[])
-             -> clang --target=wasm32-wasi -> nethack.wasm -> embed as Lua data
+             -> clang --target=wasm32-wasi -> nethack.wasm -> wasm-opt -Oz
+             -> embed as Lua data
              -> convert_tiles.py -> sprite sheet PNGs + ground tiles + tile_config.lua
 Runtime:     Player moves tile -> resume state machine -> WASM interpreter executes
              -> imported functions update Factorio world -> pause at nhgetch()
@@ -110,6 +111,7 @@ build/build_nethack.sh      — Full pipeline: clone, host tools, make all
 build/wasm_to_lua.py        — Converts nethack.wasm to Lua string module
 build/embed_data.py         — Packages NetHack/dat/* into nethack_data.lua
 build/test_instantiate.lua  — End-to-end test: parse+instantiate+run NetHack WASM
+build/bench_play.lua        — Precise WASM execution benchmark (startup + play timing)
 build/test_wasm.lua         — Unit test suite
 build/run_spec_tests.lua    — Spec test runner
 build/test_values.lua       — Value conversion helpers for spec tests
@@ -225,18 +227,23 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)
-- **Build toolchain**: Uses `clang --target=wasm32-wasi` with wasi-libc. Requires
-  `wasi-libc` and `wasi-compiler-rt` packages. setjmp/longjmp via WASM EH proposal.
+- **Build toolchain**: Uses `clang --target=wasm32-wasi` with wasi-libc, then
+  `wasm-opt -Oz` (from binaryen). Requires `wasi-libc`, `wasi-compiler-rt`, and
+  `binaryen` packages. setjmp/longjmp via WASM EH proposal.
 - **Compile**: `cd build && bash build_nethack.sh` (clones NetHack, builds host tools,
   cross-compiles to WASM, generates Lua data modules).
 - **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
   and execution state need serialization to `storage` for game save/load to work.
-- **Performance**: NetHack 3.6.7 reaches first input in **1.76M instructions / 4.3s**
-  (vs 3.7's 95.8M / 216s — 54x fewer instructions). Per-instruction cost ~2.4µs.
-  -Os optimization is best for interpreted WASM (smaller code = faster dispatch).
-  WASM binary is 1.85MB (vs 3.7's ~3.6MB with embedded Lua 5.4).
-  Optimized run loop (inlined opcodes, cached locals, byte arrays) gives 314K inst/sec
-  (1.38x over original 228K). Further gains limited by Lua 5.2 VM overhead.
+- **Performance**: NetHack 3.6.7 reaches first input in **1.77M instructions / ~3.7s**
+  (vs 3.7's 95.8M / 216s — 54x fewer instructions). Per-instruction cost ~2.1µs.
+  Optimized run loop (inlined opcodes, cached locals, byte arrays) gives ~475K inst/sec.
+  Further gains limited by Lua 5.2 VM overhead.
+- **Build optimization**: clang `-Os` + `wasm-opt -Oz` produces 1.82MB WASM binary.
+  Benchmarked 9 wasm-opt variants (none, O1-O4, Os, Oz, Os/Oz-converge) over 5 runs:
+  `-Os` is a no-op on clang `-Os` output (identical instruction count). `-Oz` gives
+  smallest binary and ties for fastest. `-O3`/`-O4` are counterproductive (bigger+slower).
+  `--converge` with `-Oz` is destructive (~30% slower). Overall wasm-opt impact is ~1%.
+  See `build/bench_play.lua` for the benchmark tool.
 - **Menu at startup**: First input prompt is a getch (--More-- after intro text).
   The Factorio GUI input handler needs to work correctly.
 - **Tile sprites**: Real NetHack pixel art tiles replace ASCII placeholders. Old
