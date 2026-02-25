@@ -12,6 +12,7 @@ build/nethack.js
 # Generated files
 scripts/nethack_wasm.lua
 scripts/nethack_data.lua
+scripts/nethack_compiled.lua
 scripts/tile_config.lua
 graphics/sheets/
 

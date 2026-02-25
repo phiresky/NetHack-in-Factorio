@@ -137,6 +137,30 @@ package.loaded["scripts.input"] = {
 storage = {}
 log = function(msg) print("[LOG] " .. msg) end
 
+-- Parse flags
+local quiet = false
+for _, a in ipairs(arg or {}) do
+    if a == "--no-compile" then
+        -- handled after require
+    elseif a == "--quiet" or a == "-q" then
+        quiet = true
+    end
+end
+
+-- Suppress verbose output in quiet mode
+if quiet then
+    log = function() end
+    package.loaded["scripts.gui"].putstr = function() end
+    package.loaded["scripts.gui"].add_message = function(msg) messages[#messages + 1] = msg end
+    package.loaded["scripts.gui"].flush_status = function() end
+    package.loaded["scripts.gui"].show_menu = function() end
+end
+
+local function fmt_time(sec)
+    if sec < 0.001 then return string.format("%.1fms", sec * 1000) end
+    return string.format("%.2fs", sec)
+end
+
 print("=== NetHack WASM Play Test ===")
 print("")
 
@@ -145,11 +169,39 @@ local WasmInit = require("scripts.wasm.init")
 local WasmInterp = require("scripts.wasm.interp")
 local Bridge = require("scripts.bridge")
 
+-- Process flags
+local use_aot = false
+for _, a in ipairs(arg or {}) do
+    if a == "--no-compile" then WasmInterp.use_compiler = false end
+    if a == "--aot" then use_aot = true end
+end
+
 print("Loading WASM data...")
+local load_start = os.clock()
 local wasm_data = require("scripts.nethack_wasm")
+local load_elapsed = os.clock() - load_start
+
+-- Load AOT-compiled sources if available and requested
+local aot_elapsed = 0
+if WasmInterp.use_compiler then
+    if use_aot then
+        print("Loading AOT-compiled sources...")
+        local aot_start = os.clock()
+        local ok, aot = pcall(require, "scripts.nethack_compiled")
+        aot_elapsed = os.clock() - aot_start
+        if ok and aot then
+            WasmInterp.compiled_sources = aot
+            print(string.format("  AOT sources loaded in %s", fmt_time(aot_elapsed)))
+        else
+            print("  AOT sources not found, falling back to JIT")
+        end
+    end
+end
 
 print("Parsing WASM module...")
+local parse_start = os.clock()
 local module = WasmInit.parse(wasm_data.data)
+local parse_elapsed = os.clock() - parse_start
 
 -- Set up instance
 local instance_ref = {inst = nil}
@@ -158,8 +210,16 @@ local function memory_ref()
 end
 
 local imports = Bridge.create_imports(memory_ref, instance_ref)
+print("Instantiating...")
+local instantiate_start = os.clock()
 local instance = WasmInterp.instantiate(module, imports)
+local instantiate_elapsed = os.clock() - instantiate_start
 instance_ref.inst = instance
+
+print(string.format("  Load data:    %s", fmt_time(load_elapsed)))
+print(string.format("  Parse:        %s", fmt_time(parse_elapsed)))
+print(string.format("  Instantiate:  %s (compiler=%s)", fmt_time(instantiate_elapsed), tostring(WasmInterp.use_compiler)))
+print("")
 
 -- Start via WASI entry point
 local start_idx = WasmInterp.get_export(instance, "_start")
@@ -174,23 +234,29 @@ WasmInterp.call(instance, start_idx, {})
 local function run_until_input(label, max)
     max = max or 200000000
     local total = 0
+    local instr_before = instance.total_instructions
     local result
     repeat
         result = WasmInterp.run(instance, 1000000)
         total = total + 1000000
     until result.status ~= "running" or total >= max
 
+    local instr_delta = instance.total_instructions - instr_before
+    result.instructions = instr_delta
+
     if result.status == "waiting_input" then
-        print(string.format("[%s] Waiting for input: %s (after %dM instructions)",
-            label, result.input_type or "?", total / 1000000))
+        if not quiet then
+            print(string.format("[%s] Waiting for input: %s (%dK instr)",
+                label, result.input_type or "?", instr_delta / 1000))
+        end
         return result
     elseif result.status == "error" then
         local msg = result.message
         if type(msg) == "table" then msg = msg.msg or tostring(msg) end
-        print(string.format("[%s] ERROR after %dM: %s", label, total / 1000000, tostring(msg)))
+        print(string.format("[%s] ERROR: %s", label, tostring(msg)))
         return result
     elseif result.status == "finished" then
-        print(string.format("[%s] Finished after %dM", label, total / 1000000))
+        print(string.format("[%s] Finished (%dK instr)", label, instr_delta / 1000))
         return result
     else
         print(string.format("[%s] Still running after %dM (hit limit)", label, total / 1000000))
@@ -203,9 +269,13 @@ local function provide_and_run(value, label)
     return run_until_input(label)
 end
 
-print("")
 print("--- Running to first input ---")
+local startup_start = os.clock()
 local result = run_until_input("startup")
+local startup_elapsed = os.clock() - startup_start
+local startup_instrs = instance.total_instructions
+print(string.format("  Startup: %s, %dK instructions, %.0fK inst/sec",
+    fmt_time(startup_elapsed), startup_instrs / 1000, startup_instrs / startup_elapsed / 1000))
 if result.status ~= "waiting_input" then
     print("Game didn't reach input prompt!")
     os.exit(1)
@@ -218,7 +288,7 @@ end
 
 local inputs = {
     -- First prompt is a menu - dismiss it
-    {value=-1, label="dismiss first menu", show_map=true},
+    {value=-1, label="dismiss first menu", show_map=not quiet},
     -- Wait a turn to see status
     {value=46, label="wait (.)"},
     -- Move around
@@ -236,12 +306,83 @@ local inputs = {
     {value=104, label="move west (h)"},
     {value=104, label="move west (h)"},
     -- Look at inventory
-    {value=105, label="inventory (i)", show_map=true},
+    {value=105, label="inventory (i)", show_map=not quiet},
+    -- Dismiss inventory menu
+    {value=-1, label="dismiss inventory"},
+    -- More exploration
+    {value=106, label="move south (j)"},
+    {value=106, label="move south (j)"},
+    {value=106, label="move south (j)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=107, label="move north (k)"},
+    {value=107, label="move north (k)"},
+    {value=104, label="move west (h)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=46, label="wait (.)"},
+    {value=46, label="wait (.)"},
+    -- Move around more
+    {value=106, label="move south (j)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=107, label="move north (k)"},
+    {value=107, label="move north (k)"},
+    {value=107, label="move north (k)"},
+    {value=104, label="move west (h)"},
+    {value=104, label="move west (h)"},
+    {value=104, label="move west (h)"},
+    {value=106, label="move south (j)"},
+    {value=106, label="move south (j)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=46, label="wait (.)"},
+    {value=46, label="wait (.)"},
+    {value=46, label="wait (.)"},
+    -- Check inventory again
+    {value=105, label="inventory (i)"},
+    {value=-1, label="dismiss inventory"},
+    -- More movement
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=106, label="move south (j)"},
+    {value=106, label="move south (j)"},
+    {value=104, label="move west (h)"},
+    {value=104, label="move west (h)"},
+    {value=107, label="move north (k)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=115, label="search (s)"},
+    {value=46, label="wait (.)"},
+    {value=106, label="move south (j)"},
+    {value=106, label="move south (j)"},
+    {value=108, label="move east (l)"},
+    {value=107, label="move north (k)"},
+    {value=107, label="move north (k)"},
+    {value=108, label="move east (l)"},
+    {value=108, label="move east (l)"},
+    {value=106, label="move south (j)"},
+    {value=104, label="move west (h)"},
+    {value=115, label="search (s)"},
+    -- Final inventory check
+    {value=105, label="inventory (i)", show_map=not quiet},
 }
 
+print("")
+print("--- Playing ---")
+local play_start = os.clock()
+local play_instrs_before = instance.total_instructions
+
 for i, input in ipairs(inputs) do
-    print("")
-    print(string.format("--- Input %d: %s ---", i, input.label))
+    if not quiet then
+        print("")
+        print(string.format("--- Input %d: %s ---", i, input.label))
+    end
 
     if result.status ~= "waiting_input" then
         print("Game not waiting for input, stopping")
@@ -255,10 +396,17 @@ for i, input in ipairs(inputs) do
     if input_type == "menu" and value > 0 then
         value = -1  -- force cancel for menus we didn't plan for
     end
+
+    local step_start = os.clock()
     result = provide_and_run(value, input.label)
+    local step_elapsed = os.clock() - step_start
+
+    if not quiet then
+        print(string.format("  -> %s (%dK instr)", fmt_time(step_elapsed), (result.instructions or 0) / 1000))
+    end
 
     -- Show map after certain actions
-    if input.show_map or i == #inputs then
+    if input.show_map or (i == #inputs and not quiet) then
         render_map()
     end
 
@@ -274,5 +422,26 @@ for i, input in ipairs(inputs) do
     end
 end
 
+local play_elapsed = os.clock() - play_start
+local play_instrs = instance.total_instructions - play_instrs_before
+local total_elapsed = load_elapsed + aot_elapsed + parse_elapsed + instantiate_elapsed + startup_elapsed + play_elapsed
+local total_instrs = instance.total_instructions
+
 print("")
-print("=== Play test complete ===")
+print("=== Timing Summary ===")
+print(string.format("  Load data:    %s", fmt_time(load_elapsed)))
+if aot_elapsed > 0 then
+    print(string.format("  Load AOT:     %s", fmt_time(aot_elapsed)))
+end
+print(string.format("  Parse:        %s", fmt_time(parse_elapsed)))
+print(string.format("  Instantiate:  %s", fmt_time(instantiate_elapsed)))
+print(string.format("  Startup:      %s  (%dK instr, %.0fK inst/sec)", fmt_time(startup_elapsed), startup_instrs / 1000, startup_instrs / startup_elapsed / 1000))
+print(string.format("  Play (%d inputs): %s  (%dK instr, %.0fK inst/sec)", #inputs, fmt_time(play_elapsed), play_instrs / 1000, play_instrs / play_elapsed / 1000))
+print(string.format("  ─────────────────────"))
+print(string.format("  Total:        %s  (%dK instr)", fmt_time(total_elapsed), total_instrs / 1000))
+print(string.format("  Overall:      %.0fK inst/sec", total_instrs / (startup_elapsed + play_elapsed) / 1000))
+local mode = "off"
+if WasmInterp.use_compiler then
+    mode = WasmInterp.compiled_sources and "AOT" or "JIT"
+end
+print(string.format("  Compiler:     %s", mode))
