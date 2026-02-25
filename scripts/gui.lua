@@ -46,8 +46,7 @@ local BL_HUNGER  = 17
 local BL_HP      = 18
 local BL_HPMAX   = 19
 local BL_DLEVEL  = 20
-local BL_FLUSH   = 34
-local BL_RESET   = 35
+-- BL_FLUSH=-1 and BL_RESET=-2 in C (botl.h); handled in bridge.lua as unsigned i32
 
 -- Fields where lower is better (for highlight direction)
 local LOW_IS_GOOD = {[BL_AC] = true}
@@ -72,8 +71,23 @@ local VITAL_LABELS = {
   {name = "xp",   prefix = "Xp:", idx = BL_XP},
 }
 
--- Condition field indices (22-32)
-local COND_FIELDS = {22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
+-- BL_CONDITION (idx 22) is a single bitmask, decoded into individual conditions
+local BL_CONDITION = 22
+local CONDITION_BITS = {
+  {mask = 0x00000001, name = "Stone",    dangerous = true},
+  {mask = 0x00000002, name = "Slime",    dangerous = true},
+  {mask = 0x00000004, name = "Strngl",   dangerous = true},
+  {mask = 0x00000008, name = "FoodPois", dangerous = true},
+  {mask = 0x00000010, name = "TermIll",  dangerous = true},
+  {mask = 0x00000020, name = "Blind"},
+  {mask = 0x00000040, name = "Deaf"},
+  {mask = 0x00000080, name = "Stun"},
+  {mask = 0x00000100, name = "Conf"},
+  {mask = 0x00000200, name = "Hallu"},
+  {mask = 0x00000400, name = "Lev"},
+  {mask = 0x00000800, name = "Fly"},
+  {mask = 0x00001000, name = "Ride"},
+}
 
 -- Toolbar buttons (Qt-style horizontal bar)
 local TOOLBAR_BUTTONS = {
@@ -186,10 +200,10 @@ function Gui.create_player_gui(player)
 
   -- Layout constants
   local ACTION_WIDTH = 150
-  local STATUS_WIDTH = 300
+  local STATUS_WIDTH = 320
   local GAP = 4
-  -- Messages: ~35% of screen, capped to reasonable bounds
-  local msg_frame_width = math.min(600, math.max(350, math.floor(ui_width * 0.35)))
+  -- Messages: ~40% of screen, capped to reasonable bounds
+  local msg_frame_width = math.min(650, math.max(450, math.floor(ui_width * 0.40)))
   -- Panels positioned adjacently: [messages][status][action]
   local status_x = msg_frame_width + GAP
   local action_x = status_x + STATUS_WIDTH + GAP
@@ -501,6 +515,7 @@ end
 
 function Gui.update_status(idx, value_str, color)
   local gui_data = storage.nh_gui
+
   local old = gui_data.status_fields[idx]
   local old_val = old and old.value or ""
 
@@ -691,22 +706,22 @@ function Gui.render_status(player)
       end
     end
 
-    -- Dynamic conditions (fly, lev, poly, deaf, blind, stun, conf, hallu, slime, petrify, strangl)
+    -- Dynamic conditions from BL_CONDITION bitmask
     local dyn = cond.nh_st_cond_dynamic
     if dyn then
       dyn.clear()
-      for _, idx in ipairs(COND_FIELDS) do
-        local v = get_val(idx)
-        if v ~= "" then
-          -- Dangerous conditions (slime, petrify, strangl) in red; others in orange
-          local color = (idx >= 30) and {r = 1, g = 0.3, b = 0.3}
-                                     or {r = 1, g = 0.8, b = 0.3}
+      local cond_str = get_val(BL_CONDITION)
+      local cond_mask = tonumber(cond_str) or 0
+      for _, cond_def in ipairs(CONDITION_BITS) do
+        if bit32.band(cond_mask, cond_def.mask) ~= 0 then
+          local clr = cond_def.dangerous and {r = 1, g = 0.3, b = 0.3}
+                                          or {r = 1, g = 0.8, b = 0.3}
           local lbl = dyn.add{
             type = "label",
-            caption = v,
+            caption = cond_def.name,
             style = "nh_status_label",
           }
-          lbl.style.font_color = color
+          lbl.style.font_color = clr
         end
       end
     end

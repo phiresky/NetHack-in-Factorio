@@ -70,15 +70,20 @@ function Bridge.create_imports(memory_ref, instance_ref)
     Gui.add_message(text, 0)
   end
 
+  -- BL_FLUSH=-1 and BL_RESET=-2 in C, arrive as unsigned i32 from WASM
+  local BL_FLUSH_U32 = 0xFFFFFFFF  -- -1 as unsigned i32
+  local BL_RESET_U32 = 0xFFFFFFFE  -- -2 as unsigned i32
+
   imports["env.host_status_update"] = function(idx, val_ptr, len, color, percent)
+    -- BL_FLUSH/BL_RESET are control signals, not field data
+    if idx == BL_FLUSH_U32 or idx == BL_RESET_U32 then
+      Gui.flush_status()
+      return
+    end
+
     local memory = memory_ref()
     local text = Bridge.read_string_len(memory, val_ptr, len)
     Gui.update_status(idx, text, color)
-
-    -- BL_FLUSH (34) triggers rendering
-    if idx == 34 then
-      Gui.flush_status()
-    end
   end
 
   imports["env.host_create_nhwindow"] = function(win_type)

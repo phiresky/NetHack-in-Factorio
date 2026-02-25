@@ -45,19 +45,17 @@ char *argv[];
 
     initoptions();
 
-    /* Set player name directly - no whoami/getlogin needed */
-    if (!*plname)
-        Strcpy(plname, "Player");
-
     u.uhp = 1; /* prevent RIP on early quits */
-
-    plnamesuffix();
 
     dlb_init(); /* must be before newgame() */
 
     vision_init();
 
     display_gamewindows();
+
+    /* Ask the player for their name (uses getlin prompt) */
+    askname();
+    plnamesuffix();
 
     /* getlock() creates the lock file */
     getlock();

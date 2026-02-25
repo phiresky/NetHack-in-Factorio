@@ -205,23 +205,48 @@ char **argv UNUSED;
 static void
 factorio_player_selection()
 {
-    /* Auto-select: random role, race, gender, alignment.
-     * This avoids interactive character creation menus. */
-    if (flags.initrole < 0)
-        flags.initrole = ROLE_RANDOM;
+    /* Let the player choose a role via getlin, or Enter for random.
+     * Matches role abbreviations (Val, Wiz, etc.). */
+    if (flags.initrole < 0) {
+        char buf[BUFSZ];
+        int i;
+
+        factorio_getlin("Choose role (Val,Wiz,etc. or Enter for random): ", buf);
+        if (buf[0] && buf[0] != '\033' && buf[0] != '\n') {
+            for (i = 0; roles[i].name.m; i++) {
+                if (!strncmpi(buf, roles[i].name.m, strlen(buf))) {
+                    flags.initrole = i;
+                    break;
+                }
+            }
+        }
+        if (flags.initrole < 0)
+            flags.initrole = ROLE_RANDOM;
+    }
     if (flags.initrace < 0)
         flags.initrace = ROLE_RANDOM;
     if (flags.initgend < 0)
         flags.initgend = ROLE_RANDOM;
     if (flags.initalign < 0)
         flags.initalign = ROLE_RANDOM;
-    flags.randomall = 1;
 }
 
 static void
 factorio_askname()
 {
-    Strcpy(plname, "Player");
+    int i, ch;
+
+    host_getlin("Who are you? ", 13);
+    for (i = 0; i < PL_NSIZ - 1; i++) {
+        ch = host_nhgetch();
+        if (ch == '\0' || ch == '\n' || ch == '\r' || ch == '\033')
+            break;
+        plname[i] = (char) ch;
+    }
+    plname[i] = '\0';
+
+    if (plname[0] == '\033' || !plname[0])
+        Strcpy(plname, "Player");
 }
 
 static void
@@ -413,16 +438,15 @@ menu_item **menu_list;
     result = host_select_menu((int) window, how);
 
     if (result > 0) {
-        /* The host will have communicated selection(s) through
-         * a separate mechanism. For single-pick menus, we need
-         * to allocate and return the selection.
-         * The host returns the selected identifier via nhgetch. */
-        int sel_id = host_nhgetch();
-
-        *menu_list = (menu_item *) alloc(sizeof(menu_item));
-        (*menu_list)->item.a_int = sel_id;
-        (*menu_list)->count = -1;
-        return 1;
+        /* Read all selections from the host via nhgetch.
+         * For PICK_ANY menus, result may be > 1. */
+        int i;
+        *menu_list = (menu_item *) alloc(result * sizeof(menu_item));
+        for (i = 0; i < result; i++) {
+            (*menu_list)[i].item.a_int = host_nhgetch();
+            (*menu_list)[i].count = -1;
+        }
+        return result;
     }
     return result; /* 0 = nothing selected, -1 = cancelled */
 }
@@ -431,9 +455,11 @@ static char
 factorio_message_menu(let, how, mesg)
 char let UNUSED;
 int how UNUSED;
-const char *mesg UNUSED;
+const char *mesg;
 {
-    return '\033';
+    if (mesg)
+        pline("%s", mesg);
+    return 0;
 }
 
 static void
@@ -529,6 +555,8 @@ factorio_nhbell()
 static int
 factorio_doprev_message()
 {
+    if (WIN_MESSAGE != WIN_ERR)
+        display_nhwindow(WIN_MESSAGE, TRUE);
     return 0;
 }
 
@@ -625,11 +653,11 @@ factorio_end_screen()
 
 static void
 factorio_outrip(tmpwin, how, when)
-winid tmpwin UNUSED;
-int how UNUSED;
-time_t when UNUSED;
+winid tmpwin;
+int how;
+time_t when;
 {
-    /* no-op: tombstone display handled by Lua side if desired */
+    genl_outrip(tmpwin, how, when);
 }
 
 static void
