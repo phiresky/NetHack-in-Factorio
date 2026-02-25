@@ -217,9 +217,16 @@ function Bridge.create_imports(memory_ref, instance_ref)
       -- Inventory-style prompt with no resp restriction (getobj passes resp=NULL).
       -- Auto-feed '?' to trigger NetHack's built-in inventory menu,
       -- which provides a proper item-name selection UI via select_menu.
-      local main_state = storage.nh_main
-      if main_state then
-        main_state.input_queue[#main_state.input_queue + 1] = string.byte("?")
+      -- Only do this ONCE per prompt cycle to prevent infinite loops:
+      -- if display_inventory returns without blocking (empty inventory),
+      -- getobj loops and calls yn_function again — without this guard,
+      -- '?' would be re-queued endlessly, freezing Factorio.
+      if not storage.nh_bridge.auto_fed_inventory then
+        storage.nh_bridge.auto_fed_inventory = true
+        local main_state = storage.nh_main
+        if main_state then
+          main_state.input_queue[#main_state.input_queue + 1] = string.byte("?")
+        end
       end
     end
     -- Otherwise (empty resp, no brackets): no pending_yn set,
@@ -302,6 +309,27 @@ function Bridge.create_imports(memory_ref, instance_ref)
     storage.nh_bridge.describe_result = {buf = buf, monbuf = monbuf}
   end
 
+  -- Click-to-travel: non-blocking imports to read click coordinates.
+  -- Called by nh_poskey in C after host_nhgetch returns 0 (click signal).
+  imports["env.host_poskey_x"] = function()
+    local click = storage.nh_bridge and storage.nh_bridge.pending_click
+    return click and click.x or 0
+  end
+
+  imports["env.host_poskey_y"] = function()
+    local click = storage.nh_bridge and storage.nh_bridge.pending_click
+    return click and click.y or 0
+  end
+
+  imports["env.host_poskey_mod"] = function()
+    local click = storage.nh_bridge and storage.nh_bridge.pending_click
+    -- Clear pending_click after mod is read (last of the three imports)
+    if storage.nh_bridge then
+      storage.nh_bridge.pending_click = nil
+    end
+    return click and click.mod or 0
+  end
+
   -- Add WASI runtime imports (filesystem, clock, environment)
   Wasi.add_imports(imports, memory_ref, instance_ref)
 
@@ -323,18 +351,10 @@ Bridge._pos_cache = {}
 -- Long description cache: keyed by entity name, persists across game session
 Bridge._long_cache = {}
 
--- Clear position cache and abort any in-progress precache (call after each turn advance)
+-- Clear position cache (call after each turn advance).
+-- Precache is NOT aborted — it swaps exec states per-tick so game exec is always current.
 function Bridge.clear_pos_cache(instance)
   Bridge._pos_cache = {}
-  -- Abort in-progress precache and restore game exec state
-  if Bridge._precache_active and instance then
-    instance.exec = Bridge._precache_active.saved_exec
-    Bridge._precache_active = nil
-    if storage.nh_bridge then
-      storage.nh_bridge.describe_capture = nil
-      storage.nh_bridge.describe_result = nil
-    end
-  end
 end
 
 -- Pre-cache queue: list of {x, y, entity_name} to process one per tick
@@ -343,6 +363,8 @@ Bridge._precache_dirty = false
 
 -- Mark that the map may have changed (call after turn advance)
 function Bridge.mark_precache_dirty()
+  log("[precache] mark_dirty, queue=" .. #Bridge._precache_queue
+      .. " active=" .. tostring(Bridge._precache_active ~= nil))
   Bridge._precache_dirty = true
 end
 
@@ -351,18 +373,24 @@ function Bridge.start_precache(surface)
   Bridge._precache_dirty = false
   local seen = {}
   local queue = {}
+  local skipped = 0
   for _, entity in pairs(surface.find_entities_filtered{name = "nh-player-marker", invert = true}) do
     local ename = entity.name
-    if ename:find("^nh%-") and not seen[ename] and not Bridge._long_cache[ename] then
+    if ename:find("^nh%-") and not seen[ename] then
       seen[ename] = true
-      queue[#queue + 1] = {
-        x = math.floor(entity.position.x),
-        y = math.floor(entity.position.y),
-        entity_name = ename,
-      }
+      if Bridge._long_cache[ename] ~= nil then
+        skipped = skipped + 1
+      else
+        queue[#queue + 1] = {
+          x = math.floor(entity.position.x),
+          y = math.floor(entity.position.y),
+          entity_name = ename,
+        }
+      end
     end
   end
   Bridge._precache_queue = queue
+  log("[precache] start_precache: queued=" .. #queue .. " already_cached=" .. skipped)
 end
 
 -- Active precache state: saved game exec + in-progress describe exec
@@ -370,6 +398,8 @@ Bridge._precache_active = nil  -- {saved_exec, entity_name}
 
 -- Process one queued pre-cache entry across multiple ticks.
 -- Runs up to `budget` WASM instructions per call. Returns true if more work remains.
+-- IMPORTANT: instance.exec always holds the GAME state between ticks.
+-- The describe call's exec is stored in _precache_active.describe_exec.
 function Bridge.tick_precache(instance, budget)
   budget = budget or 1000
   if not instance or not instance.exec then return false end
@@ -377,7 +407,10 @@ function Bridge.tick_precache(instance, budget)
   -- Resume an in-progress precache lookup
   if Bridge._precache_active then
     local active = Bridge._precache_active
-    -- The instance.exec is still the describe call's state from last tick
+    -- Refresh saved game exec (it may have changed if player moved between ticks)
+    active.saved_exec = instance.exec
+    -- Swap in the describe exec state
+    instance.exec = active.describe_exec
     local ok, err = pcall(function()
       WasmInterp.run(instance, budget)
     end)
@@ -390,23 +423,34 @@ function Bridge.tick_precache(instance, budget)
 
       local result = storage.nh_bridge and storage.nh_bridge.describe_result
       if storage.nh_bridge then storage.nh_bridge.describe_result = nil end
+      local short = nil
       if result then
         local parts = {}
         if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
         if result.buf ~= "" then parts[#parts + 1] = result.buf end
         if #parts > 0 then
-          local short = table.concat(parts, "  ")
+          short = table.concat(parts, "  ")
           Bridge._pos_cache[active.x .. "," .. active.y] = short
         end
       end
+      local long_text = nil
       if captured and #captured > 0 then
-        Bridge._long_cache[active.entity_name] = table.concat(captured, "\n")
+        long_text = table.concat(captured, "\n")
+        Bridge._long_cache[active.entity_name] = long_text
       else
         Bridge._long_cache[active.entity_name] = false
       end
+      log("[precache] DONE " .. active.entity_name
+          .. " ok=" .. tostring(ok) .. " err=" .. tostring(err)
+          .. " short=" .. tostring(short ~= nil)
+          .. " long=" .. tostring(long_text ~= nil)
+          .. " queue=" .. #Bridge._precache_queue)
       Bridge._precache_active = nil
+    else
+      -- Not done yet — save describe exec, restore game exec
+      active.describe_exec = instance.exec
+      instance.exec = active.saved_exec
     end
-    -- Still working (hit budget but exec is still running)
     return true
   end
 
@@ -420,28 +464,36 @@ function Bridge.tick_precache(instance, budget)
   local queue = Bridge._precache_queue
   while #queue > 0 do
     local entry = table.remove(queue)
-    if not Bridge._long_cache[entry.entity_name] then
+    if Bridge._long_cache[entry.entity_name] == nil then
       -- Start a new describe call
       if not storage.nh_bridge then storage.nh_bridge = {} end
       storage.nh_bridge.describe_result = nil
       storage.nh_bridge.describe_capture = {}
 
       local saved_exec = instance.exec
-      local ok = pcall(function()
+      local ok, err = pcall(function()
         WasmInterp.call(instance, Bridge._describe_idx, {entry.x, entry.y, 1})
         WasmInterp.run(instance, budget)
       end)
       if not ok then
+        log("[precache] START ERROR " .. entry.entity_name .. " err=" .. tostring(err))
         instance.exec = saved_exec
         storage.nh_bridge.describe_capture = nil
       else
+        log("[precache] START " .. entry.entity_name .. " at " .. entry.x .. "," .. entry.y
+            .. " queue=" .. #queue)
+        -- Save describe exec, restore game exec between ticks
         Bridge._precache_active = {
           saved_exec = saved_exec,
+          describe_exec = instance.exec,
           entity_name = entry.entity_name,
           x = entry.x, y = entry.y,
         }
+        instance.exec = saved_exec
       end
       return true
+    else
+      log("[precache] SKIP " .. entry.entity_name .. " (already cached)")
     end
   end
   return false
@@ -455,19 +507,9 @@ end
 function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
   if not instance or not instance.exec then return nil end
 
-  -- Abort any in-progress precache (it holds a different exec state)
-  if Bridge._precache_active then
-    instance.exec = Bridge._precache_active.saved_exec
-    Bridge._precache_active = nil
-    if storage.nh_bridge then
-      storage.nh_bridge.describe_capture = nil
-      storage.nh_bridge.describe_result = nil
-    end
-  end
-
   local pos_key = x .. "," .. y
 
-  -- Check position cache for short description
+  -- Check caches FIRST (before aborting any in-progress precache)
   local cached_short = Bridge._pos_cache[pos_key]
   if not full then
     if cached_short ~= nil then
@@ -488,6 +530,22 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
       else
         return {short = short, long = cached_long or nil}
       end
+    end
+  end
+
+  -- Cache miss — need a WASM call. Abort any in-progress precache first.
+  if Bridge._precache_active then
+    local aborted = Bridge._precache_active
+    log("[precache] ABORT by describe_pos, was=" .. aborted.entity_name
+        .. " queue=" .. #Bridge._precache_queue)
+    -- Push aborted entry back to queue so it's not lost
+    Bridge._precache_queue[#Bridge._precache_queue + 1] = {
+      x = aborted.x, y = aborted.y, entity_name = aborted.entity_name,
+    }
+    Bridge._precache_active = nil
+    if storage.nh_bridge then
+      storage.nh_bridge.describe_capture = nil
+      storage.nh_bridge.describe_result = nil
     end
   end
 

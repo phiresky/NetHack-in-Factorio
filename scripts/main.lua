@@ -35,6 +35,7 @@ local function init_modules()
   Input.init()
   Gui.init()
   Bridge.init()
+  Display.on_new_entity_type = function() Bridge.mark_precache_dirty() end
 
   if not storage.nh_main then
     storage.nh_main = {
@@ -90,12 +91,19 @@ local wasm_instance = nil
 ---------------------------------------------------------------------------
 
 -- Correct Factorio player position if it doesn't match NetHack's @ position.
--- Only runs when NetHack is done processing (awaiting input), to avoid snapping
--- mid-computation. Teleports to the nearest edge of the target tile so the
--- player stays as close as possible to their previous position.
+-- During travel (state.travel_active), snaps to tile center every tick.
+-- During normal play (awaiting input), clamps to nearest tile edge.
 local function update_player_position()
   local state = storage.nh_main
-  if not state or not state.awaiting_input then return end
+  if not state then return end
+
+  local is_travel = state.travel_active
+  if not state.awaiting_input and not is_travel then return end
+
+  -- Travel finished — clear flag but still center-snap this final frame
+  if is_travel and state.awaiting_input then
+    state.travel_active = false
+  end
 
   local player = game.connected_players[1]
   if not player then return end
@@ -110,10 +118,17 @@ local function update_player_position()
     return  -- already in the right tile
   end
 
-  -- Clamp player position into the target tile [pos.x, pos.x+1) x [pos.y, pos.y+1)
-  local eps = 0.05
-  local tx = math.max(pos.x + eps, math.min(pos.x + 1 - eps, player.position.x))
-  local ty = math.max(pos.y + eps, math.min(pos.y + 1 - eps, player.position.y))
+  local tx, ty
+  if is_travel then
+    -- Center on tile during travel animation
+    tx = pos.x + 0.5
+    ty = pos.y + 0.5
+  else
+    -- Clamp to nearest edge for walking (feels natural)
+    local eps = 0.05
+    tx = math.max(pos.x + eps, math.min(pos.x + 1 - eps, player.position.x))
+    ty = math.max(pos.y + eps, math.min(pos.y + 1 - eps, player.position.y))
+  end
   player.teleport({x = tx, y = ty}, surface)
 end
 
@@ -184,12 +199,20 @@ local function run_and_process(max_instructions)
   local state = storage.nh_main
   if not wasm_instance or not state.running then return end
 
+  local auto_feed_count = 0
   while true do
     local result = WasmInterp.run(wasm_instance, max_instructions or MAX_INSTRUCTIONS_PER_RUN)
 
     if result.status == "waiting_input" then
       -- Auto-feed from input queue if available
       if #state.input_queue > 0 then
+        auto_feed_count = auto_feed_count + 1
+        if auto_feed_count > 200 then
+          -- Safety: too many consecutive auto-feeds, likely an infinite loop.
+          -- Break and let on_tick resume later.
+          state.awaiting_input = false
+          break
+        end
         local value = table.remove(state.input_queue, 1)
         WasmInterp.provide_input(wasm_instance, value)
         max_instructions = MAX_INSTRUCTIONS_PER_RUN
@@ -359,6 +382,7 @@ local function advance_turn(key_code)
   if storage.nh_bridge then
     storage.nh_bridge.pending_yn = nil
     storage.nh_bridge.pending_getlin = nil
+    storage.nh_bridge.auto_fed_inventory = nil
   end
   if storage.nh_gui then
     storage.nh_gui.pending_yn = nil
@@ -723,6 +747,7 @@ local function on_tick(event)
   if state.awaiting_input and wasm_instance then
     local did_work = Bridge.tick_precache(wasm_instance)
     if not did_work and Bridge._precache_dirty then
+      log("[precache] on_tick rescan triggered (dirty=true, did_work=false)")
       local disp = storage.nh_display
       if disp and disp.current_level then
         local level = disp.levels[disp.current_level]
@@ -805,6 +830,72 @@ local function on_gui_checked_state_changed(event)
   Gui.handle_plsel_checkbox(player, element.name, element.state)
 end
 
+-- Click-to-travel: left click on a distant tile triggers NetHack's travel command.
+-- Uses player.selected to get the world position of the clicked entity.
+-- Does NOT call advance_turn (which runs 50K instructions synchronously).
+-- Instead, provides input and lets on_tick animate travel step-by-step.
+local function on_click_move(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input then return end
+  if state.input_type ~= "getch" then return end
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+
+  local entity = player.selected
+  if not entity or not entity.valid then return end
+
+  -- Only handle NetHack entities
+  local name = entity.name
+  if not name:find("^nh%-") then return end
+
+  -- Convert entity position to NetHack grid coordinates
+  local gx = math.floor(entity.position.x)
+  local gy = math.floor(entity.position.y)
+
+  -- Check distance from current @ position
+  local nh_pos = Display.get_player_pos()
+  if not nh_pos then return end
+
+  local dx = math.abs(gx - nh_pos.x)
+  local dy = math.abs(gy - nh_pos.y)
+
+  -- Only handle distant clicks (> 1 tile); adjacent movement uses walking
+  if dx <= 1 and dy <= 1 then return end
+
+  -- Store click data for the C-side nh_poskey to read
+  if not storage.nh_bridge then storage.nh_bridge = {} end
+  storage.nh_bridge.pending_click = {x = gx, y = gy, mod = 1}  -- CLICK_1 = 1
+
+  -- Flag travel mode so update_player_position snaps to center each tick
+  state.travel_active = true
+
+  -- Clear state like advance_turn does, but don't execute yet
+  Bridge.clear_pos_cache(wasm_instance)
+  Bridge.mark_precache_dirty()
+  state.awaiting_input = false
+  state.input_type = nil
+  state.input_info = nil
+  if storage.nh_bridge then
+    storage.nh_bridge.pending_yn = nil
+    storage.nh_bridge.pending_getlin = nil
+  end
+  if storage.nh_gui then
+    storage.nh_gui.pending_yn = nil
+  end
+
+  -- Provide input 0 (click signal) — on_tick will run the interpreter
+  WasmInterp.provide_input(wasm_instance, 0)
+  update_engine_gui()
+
+  -- Cancel Factorio walking to prevent the position-change handler
+  -- from sending unwanted direction keys after travel completes
+  if player.character then
+    player.walking_state = {walking = false, direction = defines.direction.north}
+  end
+end
+
 -- Hover tooltip: describe tile under cursor using NetHack's lookat()
 local function on_selected_entity_changed(event)
   local state = storage.nh_main
@@ -842,6 +933,7 @@ script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
 script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
 script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
 script.on_event(defines.events.on_tick, on_tick)
+script.on_event("nh-click-move", on_click_move)
 
 -- Register all custom input events
 for _, input_name in ipairs(Input.get_custom_input_names()) do
