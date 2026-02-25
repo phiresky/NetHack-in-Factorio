@@ -273,12 +273,60 @@ end
 print("--- Running to first input ---")
 local startup_start = os.clock()
 local result = run_until_input("startup")
+if result.status ~= "waiting_input" then
+    print("Game didn't reach input prompt!")
+    os.exit(1)
+end
+
+-- Handle all startup prompts (player selection, getlins, menus) in a loop.
+-- The WASM binary may use host_plsel_show (blocking) for role/race/etc selection,
+-- then host_getlin + host_nhgetch or bare host_nhgetch for player name,
+-- then --More-- getch prompts. We auto-answer everything until we reach a
+-- regular gameplay getch (detected by significant instruction count).
+local handling_startup = true
+while handling_startup and result.status == "waiting_input" do
+    if result.input_type == "plsel" then
+        -- Player selection dialog -> accept defaults
+        if not quiet then
+            print("  [plsel] Player selection dialog -> sending defaults")
+        end
+        result = provide_and_run(0, "plsel")
+    elseif result.input_type == "getch" then
+        local pending = storage.nh_bridge and storage.nh_bridge.pending_getlin
+        if pending then
+            -- Inside a getlin loop -> send newline to accept empty/default
+            if not quiet then
+                print(string.format("  [getlin] \"%s\" -> sending newline", pending.prompt or "?"))
+            end
+            storage.nh_bridge.pending_getlin = nil
+            result = provide_and_run(10, "getlin: " .. (pending.prompt or "?"))
+        elseif (result.instructions or 0) < 1000 then
+            -- Bare getch with very few instructions -> likely startup prompt
+            -- (e.g., askname reading chars without host_getlin prefix).
+            -- Send newline to terminate the input loop.
+            if not quiet then
+                print(string.format("  [bare getch] %d instr -> sending newline",
+                    result.instructions or 0))
+            end
+            result = provide_and_run(10, "startup getch")
+        else
+            handling_startup = false  -- significant work = gameplay ready
+        end
+    elseif result.input_type == "menu" then
+        -- Dismiss any startup menus
+        if not quiet then print("  [menu] Dismissing startup menu") end
+        result = provide_and_run(-1, "startup menu")
+    else
+        handling_startup = false
+    end
+end
+
 local startup_elapsed = os.clock() - startup_start
 local startup_instrs = instance.total_instructions
 print(string.format("  Startup: %s, %dK instructions, %.0fK inst/sec",
     fmt_time(startup_elapsed), startup_instrs / 1000, startup_instrs / startup_elapsed / 1000))
 if result.status ~= "waiting_input" then
-    print("Game didn't reach input prompt!")
+    print("Game didn't reach gameplay input!")
     os.exit(1)
 end
 
