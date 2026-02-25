@@ -64,14 +64,14 @@ local MG_BW_LAVA  = 0x0040
 local MG_BW_ICE   = 0x0080
 local MG_BW_WATER = 0x0100
 
--- Map tile_idx to entity name using the tile category boundaries
+-- Map tile_idx to entity name using the tile category boundaries and name arrays
 local function tile_entity_name(tile_idx)
   if tile_idx < TC.n_monsters then
-    return "nh-mon-" .. tile_idx
+    return "nh-mon-" .. TC.monster_names[tile_idx + 1]
   elseif tile_idx < TC.n_monsters + TC.n_objects then
-    return "nh-obj-" .. (tile_idx - TC.n_monsters)
+    return "nh-obj-" .. TC.object_names[tile_idx - TC.n_monsters + 1]
   else
-    return "nh-other-" .. (tile_idx - TC.n_monsters - TC.n_objects)
+    return "nh-other-" .. TC.other_names[tile_idx - TC.n_monsters - TC.n_objects + 1]
   end
 end
 
