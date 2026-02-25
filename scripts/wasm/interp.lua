@@ -32,7 +32,7 @@ local Interp = {}
 
 -- Set to false to disable inlined opcodes and use dispatch table for everything.
 -- Useful for benchmarking the effect of opcode inlining.
-Interp.inline_opcodes = false
+Interp.inline_opcodes = true
 
 ---------------------------------------------------------------------------
 -- Helpers
