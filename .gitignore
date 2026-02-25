@@ -15,6 +15,7 @@ scripts/nethack_data.lua
 scripts/nethack_compiled.lua
 scripts/tile_config.lua
 graphics/sheets/
+graphics/tiles/
 
 # Lua artifacts
 *.luac

@@ -7,7 +7,7 @@ local TC = require("scripts.tile_config")
 local entities = {}
 
 -- Shared icon for all script-placed entities (never shown in GUI)
-local shared_icon = "__nethack-factorio__/graphics/entities/nh-player-marker.png"
+local shared_icon = "__nethack-factorio__/graphics/icons/nh-dummy.png"
 
 -- Helper: common flags for NetHack entities placed by script
 local nh_flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable"}
@@ -123,14 +123,14 @@ end
 entities[#entities + 1] = {
   type = "simple-entity",
   name = "nh-player-marker",
-  icon = "__nethack-factorio__/graphics/entities/nh-player-marker.png",
+  icon = "__nethack-factorio__/graphics/icons/nh-dummy.png",
   icon_size = 32,
   flags = {"placeable-neutral", "placeable-off-grid", "not-on-map", "not-blueprintable", "not-deconstructable", "not-flammable", "not-selectable-in-game"},
   collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
   collision_mask = no_collision,
   pictures = {
     {
-      filename = "__nethack-factorio__/graphics/entities/nh-player-marker.png",
+      filename = "__nethack-factorio__/graphics/icons/nh-dummy.png",
       width = 32,
       height = 32,
       scale = 0.5,
