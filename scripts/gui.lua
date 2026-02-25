@@ -436,7 +436,7 @@ function Gui.destroy_player_gui(player)
     "nh_msg_frame", "nh_status_frame", "nh_action_panel",
     "nh_engine_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
-    "nh_loading_frame",
+    "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
     "nh_top_frame",
   }
@@ -1391,6 +1391,594 @@ function Gui.update_engine_state(state_text, instructions, color)
         count_label.caption = count_text
       end
     end
+  end
+end
+
+-----------------------------------------------------
+-- Player Selection Dialog
+-----------------------------------------------------
+
+-- NetHack role/race/gender/alignment bitmask fields
+local ROLE_RACEMASK  = 0x0FF8
+local ROLE_GENDMASK  = 0xF000
+local ROLE_ALIGNMASK = 0x0007
+
+local function validrace(role_allow, race_allow)
+  return bit32.band(role_allow, race_allow, ROLE_RACEMASK) ~= 0
+end
+
+local function validgend(role_allow, race_allow, gend_allow)
+  return bit32.band(role_allow, race_allow, gend_allow, ROLE_GENDMASK) ~= 0
+end
+
+local function validalign(role_allow, race_allow, align_allow)
+  return bit32.band(role_allow, race_allow, align_allow, ROLE_ALIGNMASK) ~= 0
+end
+
+-- Get the plsel data from bridge storage
+local function get_plsel_data()
+  local bridge = storage.nh_bridge
+  return bridge and bridge.plsel
+end
+
+-- Get current plsel UI state, initializing if needed
+local function get_plsel_state()
+  if not storage.nh_gui.plsel then
+    storage.nh_gui.plsel = {
+      selected_role = -1,
+      selected_race = -1,
+      selected_gend = -1,
+      selected_align = -1,
+    }
+  end
+  return storage.nh_gui.plsel
+end
+
+-- BFS search for a named GUI element within a frame tree
+local function plsel_find_in_frame(frame, target_name)
+  local queue = {frame}
+  for depth = 1, 5 do
+    local next_queue = {}
+    for _, elem in ipairs(queue) do
+      if elem.name == target_name then return elem end
+      local ok, children = pcall(function() return elem.children end)
+      if ok and children then
+        for _, child in ipairs(children) do
+          if child.name == target_name then return child end
+          next_queue[#next_queue + 1] = child
+        end
+      end
+    end
+    queue = next_queue
+    if #queue == 0 then break end
+  end
+  return nil
+end
+
+-- Update enabled/disabled states and auto-fix invalid selections.
+-- Uses BFS to find nested scroll panes since Factorio GUI elements
+-- are only accessible by name on their direct parent.
+local function plsel_update_validity(player)
+  local plsel = get_plsel_data()
+  local sel = get_plsel_state()
+  if not plsel then return end
+
+  local screen = player.gui.screen
+  local frame = screen.nh_plsel_frame
+  if not frame then return end
+
+  local role_allow = 0xFFFF
+  if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
+    role_allow = plsel.roles[sel.selected_role].allow
+  end
+
+  local race_allow = 0xFFFF
+  if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
+    race_allow = plsel.races[sel.selected_race].allow
+  end
+
+  local race_scroll = plsel_find_in_frame(frame, "nh_plsel_race_scroll")
+  if race_scroll then
+    local first_valid_race = nil
+    local current_race_valid = false
+    local race_indices = {}
+    for idx, _ in pairs(plsel.races) do race_indices[#race_indices + 1] = idx end
+    table.sort(race_indices)
+
+    for _, idx in ipairs(race_indices) do
+      local race = plsel.races[idx]
+      local btn = race_scroll["nh_plsel_race_" .. idx]
+      if btn then
+        local valid = validrace(role_allow, race.allow)
+        btn.enabled = valid
+        if valid and not first_valid_race then first_valid_race = idx end
+        if idx == sel.selected_race and valid then current_race_valid = true end
+        btn.style = (idx == sel.selected_race and valid) and "nh_plsel_list_button_selected"
+                                                          or "nh_plsel_list_button"
+      end
+    end
+    if not current_race_valid and first_valid_race then
+      sel.selected_race = first_valid_race
+      race_allow = plsel.races[first_valid_race].allow
+      for _, idx in ipairs(race_indices) do
+        local btn = race_scroll["nh_plsel_race_" .. idx]
+        if btn then
+          btn.style = (idx == sel.selected_race) and "nh_plsel_list_button_selected"
+                                                   or "nh_plsel_list_button"
+        end
+      end
+    end
+  end
+
+  -- Re-read race_allow after potential auto-fix
+  if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
+    race_allow = plsel.races[sel.selected_race].allow
+  end
+
+  local role_scroll = plsel_find_in_frame(frame, "nh_plsel_role_scroll")
+  if role_scroll then
+    local first_valid_role = nil
+    local current_role_valid = false
+    local role_indices = {}
+    for idx, _ in pairs(plsel.roles) do role_indices[#role_indices + 1] = idx end
+    table.sort(role_indices)
+
+    for _, idx in ipairs(role_indices) do
+      local role = plsel.roles[idx]
+      local btn = role_scroll["nh_plsel_role_" .. idx]
+      if btn then
+        local valid = validrace(role.allow, race_allow)
+        btn.enabled = valid
+        if valid and not first_valid_role then first_valid_role = idx end
+        if idx == sel.selected_role and valid then current_role_valid = true end
+        btn.style = (idx == sel.selected_role and valid) and "nh_plsel_list_button_selected"
+                                                          or "nh_plsel_list_button"
+      end
+    end
+    if not current_role_valid and first_valid_role then
+      sel.selected_role = first_valid_role
+      role_allow = plsel.roles[first_valid_role].allow
+      for _, idx in ipairs(role_indices) do
+        local btn = role_scroll["nh_plsel_role_" .. idx]
+        if btn then
+          btn.style = (idx == sel.selected_role) and "nh_plsel_list_button_selected"
+                                                   or "nh_plsel_list_button"
+        end
+      end
+    end
+  end
+
+  -- Re-read role_allow after potential auto-fix
+  if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
+    role_allow = plsel.roles[sel.selected_role].allow
+  end
+
+  local gend_flow = plsel_find_in_frame(frame, "nh_plsel_gend_flow")
+  if gend_flow then
+    local first_valid_gend = nil
+    local current_gend_valid = false
+    local gend_indices = {}
+    for idx, _ in pairs(plsel.genders) do gend_indices[#gend_indices + 1] = idx end
+    table.sort(gend_indices)
+
+    for _, idx in ipairs(gend_indices) do
+      local gend = plsel.genders[idx]
+      local cb = gend_flow["nh_plsel_gend_" .. idx]
+      if cb then
+        local valid = validgend(role_allow, race_allow, gend.allow)
+        cb.enabled = valid
+        if valid and not first_valid_gend then first_valid_gend = idx end
+        if idx == sel.selected_gend and valid then current_gend_valid = true end
+        cb.state = (idx == sel.selected_gend)
+      end
+    end
+    if not current_gend_valid and first_valid_gend then
+      sel.selected_gend = first_valid_gend
+      for _, idx in ipairs(gend_indices) do
+        local cb = gend_flow["nh_plsel_gend_" .. idx]
+        if cb then cb.state = (idx == sel.selected_gend) end
+      end
+    end
+  end
+
+  local align_flow = plsel_find_in_frame(frame, "nh_plsel_align_flow")
+  if align_flow then
+    local first_valid_align = nil
+    local current_align_valid = false
+    local align_indices = {}
+    for idx, _ in pairs(plsel.aligns) do align_indices[#align_indices + 1] = idx end
+    table.sort(align_indices)
+
+    for _, idx in ipairs(align_indices) do
+      local al = plsel.aligns[idx]
+      local cb = align_flow["nh_plsel_align_" .. idx]
+      if cb then
+        local valid = validalign(role_allow, race_allow, al.allow)
+        cb.enabled = valid
+        if valid and not first_valid_align then first_valid_align = idx end
+        if idx == sel.selected_align and valid then current_align_valid = true end
+        cb.state = (idx == sel.selected_align)
+      end
+    end
+    if not current_align_valid and first_valid_align then
+      sel.selected_align = first_valid_align
+      for _, idx in ipairs(align_indices) do
+        local cb = align_flow["nh_plsel_align_" .. idx]
+        if cb then cb.state = (idx == sel.selected_align) end
+      end
+    end
+  end
+end
+
+function Gui.show_plsel_dialog(player)
+  local plsel = get_plsel_data()
+  if not plsel then return end
+
+  local sel = get_plsel_state()
+  local screen = player.gui.screen
+
+  if screen.nh_plsel_frame then
+    screen.nh_plsel_frame.destroy()
+  end
+
+  local ui_width = player.display_resolution.width / player.display_scale
+  local ui_height = player.display_resolution.height / player.display_scale
+
+  local frame = screen.add{
+    type = "frame",
+    name = "nh_plsel_frame",
+    direction = "vertical",
+    caption = "NetHack - Choose Your Character",
+    style = "nh_plsel_frame",
+  }
+  frame.location = {
+    x = math.floor((ui_width - 560) / 2),
+    y = math.floor((ui_height - 420) / 2),
+  }
+
+  -- Name field
+  local name_flow = frame.add{
+    type = "flow",
+    direction = "horizontal",
+  }
+  name_flow.add{
+    type = "label",
+    caption = "Name: ",
+    style = "caption_label",
+  }
+  name_flow.add{
+    type = "textfield",
+    name = "nh_plsel_name",
+    text = "Player",
+    style = "nh_plsel_name_field",
+  }
+
+  -- Main columns: Race | Role | Gender+Align+buttons
+  local columns = frame.add{
+    type = "flow",
+    name = "nh_plsel_columns",
+    direction = "horizontal",
+    style = "nh_plsel_columns_flow",
+  }
+
+  -- Race column
+  local race_col = columns.add{
+    type = "frame",
+    caption = "Race",
+    direction = "vertical",
+    style = "nh_plsel_list_frame",
+  }
+  local race_scroll = race_col.add{
+    type = "scroll-pane",
+    name = "nh_plsel_race_scroll",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto-and-reserve-space",
+    style = "nh_plsel_list_scroll",
+  }
+  -- Sort race indices
+  local race_indices = {}
+  for idx, _ in pairs(plsel.races) do
+    race_indices[#race_indices + 1] = idx
+  end
+  table.sort(race_indices)
+
+  for _, idx in ipairs(race_indices) do
+    local race = plsel.races[idx]
+    race_scroll.add{
+      type = "button",
+      name = "nh_plsel_race_" .. idx,
+      caption = race.name,
+      style = "nh_plsel_list_button",
+    }
+  end
+
+  -- Role column
+  local role_col = columns.add{
+    type = "frame",
+    caption = "Role",
+    direction = "vertical",
+    style = "nh_plsel_list_frame",
+  }
+  local role_scroll = role_col.add{
+    type = "scroll-pane",
+    name = "nh_plsel_role_scroll",
+    horizontal_scroll_policy = "never",
+    vertical_scroll_policy = "auto-and-reserve-space",
+    style = "nh_plsel_list_scroll",
+  }
+
+  local role_indices = {}
+  for idx, _ in pairs(plsel.roles) do
+    role_indices[#role_indices + 1] = idx
+  end
+  table.sort(role_indices)
+
+  for _, idx in ipairs(role_indices) do
+    local role = plsel.roles[idx]
+    role_scroll.add{
+      type = "button",
+      name = "nh_plsel_role_" .. idx,
+      caption = role.name,
+      style = "nh_plsel_list_button",
+    }
+  end
+
+  -- Right column: Gender + Alignment + info + buttons
+  local right_col = columns.add{
+    type = "flow",
+    direction = "vertical",
+  }
+
+  -- Gender group
+  local gend_group = right_col.add{
+    type = "frame",
+    caption = "Gender",
+    direction = "vertical",
+    style = "nh_plsel_group_frame",
+  }
+  local gend_flow = gend_group.add{
+    type = "flow",
+    name = "nh_plsel_gend_flow",
+    direction = "vertical",
+    style = "nh_plsel_radio_flow",
+  }
+
+  local gend_indices = {}
+  for idx, _ in pairs(plsel.genders) do
+    gend_indices[#gend_indices + 1] = idx
+  end
+  table.sort(gend_indices)
+
+  for _, idx in ipairs(gend_indices) do
+    local gend = plsel.genders[idx]
+    gend_flow.add{
+      type = "checkbox",
+      name = "nh_plsel_gend_" .. idx,
+      caption = gend.name,
+      state = false,
+    }
+  end
+
+  -- Alignment group
+  local align_group = right_col.add{
+    type = "frame",
+    caption = "Alignment",
+    direction = "vertical",
+    style = "nh_plsel_group_frame",
+  }
+  local align_flow = align_group.add{
+    type = "flow",
+    name = "nh_plsel_align_flow",
+    direction = "vertical",
+    style = "nh_plsel_radio_flow",
+  }
+
+  local align_indices = {}
+  for idx, _ in pairs(plsel.aligns) do
+    align_indices[#align_indices + 1] = idx
+  end
+  table.sort(align_indices)
+
+  for _, idx in ipairs(align_indices) do
+    local al = plsel.aligns[idx]
+    align_flow.add{
+      type = "checkbox",
+      name = "nh_plsel_align_" .. idx,
+      caption = al.name,
+      state = false,
+    }
+  end
+
+  -- Info text
+  right_col.add{
+    type = "label",
+    caption = "NetHack 3.6.7",
+    style = "nh_plsel_info_label",
+  }
+
+  -- Buttons
+  local btn_flow = right_col.add{
+    type = "flow",
+    direction = "vertical",
+  }
+  btn_flow.add{
+    type = "button",
+    name = "nh_plsel_random",
+    caption = "Random",
+    style = "nh_plsel_button",
+  }
+  btn_flow.add{
+    type = "button",
+    name = "nh_plsel_play",
+    caption = "Play",
+    style = "nh_plsel_play_button",
+  }
+  btn_flow.add{
+    type = "button",
+    name = "nh_plsel_quit",
+    caption = "Quit",
+    style = "nh_plsel_button",
+  }
+
+  -- Set initial valid state
+  plsel_update_validity(player)
+end
+
+function Gui.handle_plsel_click(player, element_name)
+  local plsel = get_plsel_data()
+  local sel = get_plsel_state()
+  if not plsel then return nil end
+
+  -- Role button
+  local role_match = element_name:match("^nh_plsel_role_(%d+)$")
+  if role_match then
+    sel.selected_role = tonumber(role_match)
+    plsel_update_validity(player)
+    return nil
+  end
+
+  -- Race button
+  local race_match = element_name:match("^nh_plsel_race_(%d+)$")
+  if race_match then
+    sel.selected_race = tonumber(race_match)
+    plsel_update_validity(player)
+    return nil
+  end
+
+  -- Gender checkbox (mutual exclusion)
+  local gend_match = element_name:match("^nh_plsel_gend_(%d+)$")
+  if gend_match then
+    sel.selected_gend = tonumber(gend_match)
+    plsel_update_validity(player)
+    return nil
+  end
+
+  -- Alignment checkbox (mutual exclusion)
+  local align_match = element_name:match("^nh_plsel_align_(%d+)$")
+  if align_match then
+    sel.selected_align = tonumber(align_match)
+    plsel_update_validity(player)
+    return nil
+  end
+
+  -- Random button
+  if element_name == "nh_plsel_random" then
+    -- Pick random valid combo
+    local valid_roles = {}
+    for idx, _ in pairs(plsel.roles) do valid_roles[#valid_roles + 1] = idx end
+    if #valid_roles > 0 then
+      sel.selected_role = valid_roles[math.random(#valid_roles)]
+    end
+
+    local role_allow = 0xFFFF
+    if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
+      role_allow = plsel.roles[sel.selected_role].allow
+    end
+
+    local valid_races = {}
+    for idx, race in pairs(plsel.races) do
+      if validrace(role_allow, race.allow) then
+        valid_races[#valid_races + 1] = idx
+      end
+    end
+    if #valid_races > 0 then
+      sel.selected_race = valid_races[math.random(#valid_races)]
+    end
+
+    local race_allow = 0xFFFF
+    if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
+      race_allow = plsel.races[sel.selected_race].allow
+    end
+
+    local valid_gends = {}
+    for idx, gend in pairs(plsel.genders) do
+      if validgend(role_allow, race_allow, gend.allow) then
+        valid_gends[#valid_gends + 1] = idx
+      end
+    end
+    if #valid_gends > 0 then
+      sel.selected_gend = valid_gends[math.random(#valid_gends)]
+    end
+
+    local valid_aligns = {}
+    for idx, al in pairs(plsel.aligns) do
+      if validalign(role_allow, race_allow, al.allow) then
+        valid_aligns[#valid_aligns + 1] = idx
+      end
+    end
+    if #valid_aligns > 0 then
+      sel.selected_align = valid_aligns[math.random(#valid_aligns)]
+    end
+
+    plsel_update_validity(player)
+    return nil
+  end
+
+  -- Play button
+  if element_name == "nh_plsel_play" then
+    -- Read the name from the textfield
+    local screen = player.gui.screen
+    local frame = screen.nh_plsel_frame
+    local name = "Player"
+    if frame then
+      local name_field = plsel_find_in_frame(frame, "nh_plsel_name")
+      if name_field then
+        name = name_field.text or ""
+        if name == "" then name = "Player" end
+      end
+      frame.destroy()
+    end
+    return {
+      action = "play",
+      name = name,
+      role = sel.selected_role,
+      race = sel.selected_race,
+      gend = sel.selected_gend,
+      align = sel.selected_align,
+    }
+  end
+
+  -- Quit button
+  if element_name == "nh_plsel_quit" then
+    local screen = player.gui.screen
+    if screen.nh_plsel_frame then
+      screen.nh_plsel_frame.destroy()
+    end
+    return {action = "quit"}
+  end
+
+  return nil
+end
+
+-- Handle checkbox state change for plsel (mutual exclusion for radio-button behavior)
+function Gui.handle_plsel_checkbox(player, element_name, new_state)
+  local sel = get_plsel_state()
+  local plsel = get_plsel_data()
+  if not plsel then return end
+
+  local gend_match = element_name:match("^nh_plsel_gend_(%d+)$")
+  if gend_match then
+    local idx = tonumber(gend_match)
+    if new_state then
+      sel.selected_gend = idx
+    else
+      -- Don't allow unchecking - re-check it
+      sel.selected_gend = idx
+    end
+    plsel_update_validity(player)
+    return
+  end
+
+  local align_match = element_name:match("^nh_plsel_align_(%d+)$")
+  if align_match then
+    local idx = tonumber(align_match)
+    if new_state then
+      sel.selected_align = idx
+    else
+      sel.selected_align = idx
+    end
+    plsel_update_validity(player)
+    return
   end
 end
 

@@ -231,6 +231,56 @@ function Bridge.create_imports(memory_ref, instance_ref)
     end,
   }
 
+  -- Player selection dialog imports (non-blocking setup + blocking show)
+
+  imports["env.host_plsel_setup_role"] = function(idx, name_ptr, len, allow)
+    local memory = memory_ref()
+    local name = Bridge.read_string_len(memory, name_ptr, len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    if not storage.nh_bridge.plsel then
+      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+    end
+    storage.nh_bridge.plsel.roles[idx] = {name = name, allow = allow}
+  end
+
+  imports["env.host_plsel_setup_race"] = function(idx, noun_ptr, len, allow)
+    local memory = memory_ref()
+    local noun = Bridge.read_string_len(memory, noun_ptr, len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    if not storage.nh_bridge.plsel then
+      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+    end
+    storage.nh_bridge.plsel.races[idx] = {name = noun, allow = allow}
+  end
+
+  imports["env.host_plsel_setup_gend"] = function(idx, adj_ptr, len, allow)
+    local memory = memory_ref()
+    local adj = Bridge.read_string_len(memory, adj_ptr, len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    if not storage.nh_bridge.plsel then
+      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+    end
+    storage.nh_bridge.plsel.genders[idx] = {name = adj, allow = allow}
+  end
+
+  imports["env.host_plsel_setup_align"] = function(idx, adj_ptr, len, allow)
+    local memory = memory_ref()
+    local adj = Bridge.read_string_len(memory, adj_ptr, len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    if not storage.nh_bridge.plsel then
+      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+    end
+    storage.nh_bridge.plsel.aligns[idx] = {name = adj, allow = allow}
+  end
+
+  -- BLOCKING: show the player selection dialog
+  imports["env.host_plsel_show"] = {
+    blocking = true,
+    handler = function()
+      return {input_type = "plsel"}
+    end,
+  }
+
   -- Add WASI runtime imports (filesystem, clock, environment)
   Wasi.add_imports(imports, memory_ref, instance_ref)
 

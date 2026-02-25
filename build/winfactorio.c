@@ -49,6 +49,13 @@ extern void host_delay_output(void);
 extern void host_update_inventory(void);
 extern void host_mark_synch(void);
 
+/* Player selection dialog imports */
+extern void host_plsel_setup_role(int idx, const char *name, int len, int allow);
+extern void host_plsel_setup_race(int idx, const char *noun, int len, int allow);
+extern void host_plsel_setup_gend(int idx, const char *adj, int len, int allow);
+extern void host_plsel_setup_align(int idx, const char *adj, int len, int allow);
+extern int host_plsel_show(void);  /* BLOCKING - shows dialog, returns status */
+
 /* ================================================================
  * Forward declarations for all window port functions
  * ================================================================ */
@@ -190,6 +197,9 @@ struct window_procs factorio_procs = {
 #define MAX_FACTORIO_WINDOWS 32
 static int factorio_window_types[MAX_FACTORIO_WINDOWS];
 
+/* Player selection dialog results (set by askname, read by player_selection) */
+static int plsel_role = -1, plsel_race = -1, plsel_gend = -1, plsel_align = -1;
+
 /* ================================================================
  * Glyph decoding for rich text sprite references
  * ================================================================ */
@@ -264,38 +274,56 @@ char **argv UNUSED;
 static void
 factorio_player_selection()
 {
-    /* Let the player choose a role via getlin, or Enter for random.
-     * Matches role abbreviations (Val, Wiz, etc.). */
-    if (flags.initrole < 0) {
-        char buf[BUFSZ];
-        int i;
-
-        factorio_getlin("Choose role (Val,Wiz,etc. or Enter for random): ", buf);
-        if (buf[0] && buf[0] != '\033' && buf[0] != '\n') {
-            for (i = 0; roles[i].name.m; i++) {
-                if (!strncmpi(buf, roles[i].name.m, strlen(buf))) {
-                    flags.initrole = i;
-                    break;
-                }
-            }
-        }
-        if (flags.initrole < 0)
-            flags.initrole = ROLE_RANDOM;
-    }
+    /* Use selections from the combined dialog (set in askname) */
+    if (flags.initrole < 0)
+        flags.initrole = (plsel_role >= 0) ? plsel_role : ROLE_RANDOM;
     if (flags.initrace < 0)
-        flags.initrace = ROLE_RANDOM;
+        flags.initrace = (plsel_race >= 0) ? plsel_race : ROLE_RANDOM;
     if (flags.initgend < 0)
-        flags.initgend = ROLE_RANDOM;
+        flags.initgend = (plsel_gend >= 0) ? plsel_gend : ROLE_RANDOM;
     if (flags.initalign < 0)
-        flags.initalign = ROLE_RANDOM;
+        flags.initalign = (plsel_align >= 0) ? plsel_align : ROLE_RANDOM;
 }
 
 static void
 factorio_askname()
 {
-    int i, ch;
+    int i, ch, status;
 
-    host_getlin("Who are you? ", 13);
+    /* Send all role/race/gender/alignment data to Lua for the selection dialog */
+    for (i = 0; roles[i].name.m; i++) {
+        const char *name = roles[i].name.m;
+        host_plsel_setup_role(i, name, (int) strlen(name),
+                              roles[i].allow & 0xFFFF);
+    }
+    for (i = 0; races[i].noun; i++) {
+        const char *noun = races[i].noun;
+        host_plsel_setup_race(i, noun, (int) strlen(noun),
+                              races[i].allow & 0xFFFF);
+    }
+    /* ROLE_GENDERS = 2 (male, female) */
+    for (i = 0; i < ROLE_GENDERS; i++) {
+        const char *adj = genders[i].adj;
+        host_plsel_setup_gend(i, adj, (int) strlen(adj),
+                              genders[i].allow & 0xFFFF);
+    }
+    /* ROLE_ALIGNS = 3 (lawful, neutral, chaotic) */
+    for (i = 0; i < ROLE_ALIGNS; i++) {
+        const char *adj = aligns[i].adj;
+        host_plsel_setup_align(i, adj, (int) strlen(adj),
+                               aligns[i].allow & 0xFFFF);
+    }
+
+    /* Show the combined dialog (BLOCKING) */
+    status = host_plsel_show();
+
+    if (status < 0) {
+        /* Quit requested */
+        clearlocks();
+        nethack_exit(EXIT_SUCCESS);
+    }
+
+    /* Read player name (null-terminated chars queued by Lua) */
     for (i = 0; i < PL_NSIZ - 1; i++) {
         ch = host_nhgetch();
         if (ch == '\0' || ch == '\n' || ch == '\r' || ch == '\033')
@@ -306,6 +334,12 @@ factorio_askname()
 
     if (plname[0] == '\033' || !plname[0])
         Strcpy(plname, "Player");
+
+    /* Read selection indices (queued by Lua after name chars) */
+    plsel_role  = host_nhgetch();
+    plsel_race  = host_nhgetch();
+    plsel_gend  = host_nhgetch();
+    plsel_align = host_nhgetch();
 }
 
 static void
