@@ -777,7 +777,9 @@ function Gui.display_window(winid, blocking)
 
   win.visible = true
 
-  if win.type == NHW_TEXT then
+  -- Show text windows and menu windows used for text (e.g. quest intro text
+  -- delivered via NHW_MENU by com_pager msgnum==1 in questpgr.c)
+  if win.type == NHW_TEXT or (win.type == NHW_MENU and #win.items > 0) then
     for _, player in pairs(game.connected_players) do
       Gui.show_text_window(player, winid, win)
     end
@@ -1789,10 +1791,15 @@ function Gui.show_plsel_dialog(player)
     }
   end
 
-  -- Info text
+  -- Attribution (matches Qt port's nh_attribution)
   right_col.add{
     type = "label",
     caption = "NetHack 3.6.7",
+    style = "nh_plsel_info_label",
+  }
+  right_col.add{
+    type = "label",
+    caption = "by the NetHack DevTeam",
     style = "nh_plsel_info_label",
   }
 
