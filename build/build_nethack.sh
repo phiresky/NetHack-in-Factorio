@@ -68,7 +68,7 @@ cd "$NETHACK_DIR"
 echo "=== Cross-compiling to WASM and generating Lua modules ==="
 
 cd "$SCRIPT_DIR"
-make all
+make all -j$(nproc)
 
 # ================================================================
 # Step 5: Convert NetHack tile art to Factorio sprites

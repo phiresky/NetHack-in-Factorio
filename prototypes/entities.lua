@@ -51,13 +51,13 @@ local door_open_set = {}
 for _, idx in ipairs(TC.door_open_indices) do door_open_set[idx] = true end
 
 ---------------------------------------------------------------------------
--- Monster entities (nh-mon-0 through nh-mon-{n_monsters-1})
+-- Monster entities (nh-mon-giant-ant, nh-mon-killer-bee, etc.)
 ---------------------------------------------------------------------------
 
 for i = 0, TC.n_monsters - 1 do
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = "nh-mon-" .. i,
+    name = "nh-mon-" .. TC.monster_names[i + 1],
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,
@@ -70,13 +70,13 @@ for i = 0, TC.n_monsters - 1 do
 end
 
 ---------------------------------------------------------------------------
--- Object entities (nh-obj-0 through nh-obj-{n_objects-1})
+-- Object entities (nh-obj-arrow, nh-obj-long-sword, etc.)
 ---------------------------------------------------------------------------
 
 for i = 0, TC.n_objects - 1 do
   entities[#entities + 1] = {
     type = "simple-entity",
-    name = "nh-obj-" .. i,
+    name = "nh-obj-" .. TC.object_names[i + 1],
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,
@@ -89,7 +89,7 @@ for i = 0, TC.n_objects - 1 do
 end
 
 ---------------------------------------------------------------------------
--- Dungeon feature entities (nh-other-0 through nh-other-{n_other-1})
+-- Dungeon feature entities (nh-other-vertical-wall, nh-other-floor-of-a-room, etc.)
 -- Walls get collision; closed doors get collision; everything else doesn't.
 ---------------------------------------------------------------------------
 
@@ -102,7 +102,7 @@ for i = 0, TC.n_other - 1 do
 
   entities[#entities + 1] = {
     type = has_collision and "simple-entity-with-force" or "simple-entity",
-    name = "nh-other-" .. i,
+    name = "nh-other-" .. TC.other_names[i + 1],
     icon = shared_icon,
     icon_size = 32,
     flags = nh_flags,

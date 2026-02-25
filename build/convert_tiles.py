@@ -24,6 +24,34 @@ TILE_DST = 32         # output tile size (2x upscale)
 GROUND_SIZE = 512     # ground tile PNG size (Factorio material_background)
 
 
+def sanitize_tile_name(name):
+    """Convert a NetHack tile name to a valid Factorio entity ID fragment.
+
+    e.g. "giant ant" -> "giant-ant", "runed arrow / elven arrow" -> "runed-arrow-elven-arrow"
+    """
+    s = name.lower()
+    # Replace slashes, spaces, and other non-alphanumeric with hyphens
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    # Collapse multiple hyphens and strip leading/trailing
+    s = re.sub(r'-+', '-', s).strip('-')
+    return s
+
+
+def make_unique_names(tiles):
+    """Generate unique sanitized names for a list of tiles, suffixing duplicates."""
+    seen = {}
+    names = []
+    for tile in tiles:
+        base = sanitize_tile_name(tile["name"])
+        if base in seen:
+            seen[base] += 1
+            names.append(f"{base}-{seen[base]}")
+        else:
+            seen[base] = 1
+            names.append(base)
+    return names
+
+
 # ================================================================
 # PNG writer (same approach as gen_sprites.py)
 # ================================================================
@@ -254,6 +282,11 @@ def main():
 
     print(f"  Parsed: {len(mon_tiles)} monsters, {len(obj_tiles)} objects, {len(oth_tiles)} other")
 
+    # Generate unique sanitized names for each tile category
+    mon_names = make_unique_names(mon_tiles)
+    obj_names = make_unique_names(obj_tiles)
+    oth_names = make_unique_names(oth_tiles)
+
     # Generate sprite sheets
     n_mon = generate_sprite_sheet(mon_palette, mon_tiles,
                                   os.path.join(sheets_dir, "nh-monsters.png"))
@@ -315,6 +348,18 @@ def main():
         f.write(f"  wall_indices = {{{', '.join(str(i) for i in wall_indices)}}},\n")
         f.write(f"  door_closed_indices = {{{', '.join(str(i) for i in door_closed_indices)}}},\n")
         f.write(f"  door_open_indices = {{{', '.join(str(i) for i in door_open_indices)}}},\n")
+
+        # Emit name arrays (Lua 1-indexed)
+        def write_name_array(varname, names):
+            f.write(f"  {varname} = {{\n")
+            for name in names:
+                f.write(f'    "{name}",\n')
+            f.write("  },\n")
+
+        write_name_array("monster_names", mon_names)
+        write_name_array("object_names", obj_names)
+        write_name_array("other_names", oth_names)
+
         f.write("}\n")
     print(f"  config: {config_path}")
 
