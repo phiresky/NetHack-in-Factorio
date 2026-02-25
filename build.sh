@@ -27,6 +27,7 @@ GENERATED_FILES=(
     build/nethack.wasm
     scripts/nethack_wasm.lua
     scripts/nethack_data.lua
+    scripts/nethack_compiled.lua
     scripts/tile_config.lua
 )
 GENERATED_DIRS=(

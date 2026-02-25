@@ -220,7 +220,7 @@ $(WASM_LUA): nethack.wasm
 	python3 wasm_to_lua.py nethack.wasm $@
 
 $(COMPILED_LUA): $(WASM_LUA) $(wildcard $(SCRIPTS)/wasm/compiler.lua $(SCRIPTS)/wasm/init.lua)
-	cd .. && lua5.2 build/compile_wasm.lua $(WASM_LUA) $@
+	cd .. && lua5.2 build/compile_wasm.lua scripts/nethack_wasm.lua scripts/nethack_compiled.lua
 
 $(DATA_LUA): $(wildcard $(NETHACK)/dat/*)
 	python3 embed_data.py $@ $(NETHACK)/dat

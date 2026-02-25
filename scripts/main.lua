@@ -16,6 +16,7 @@ local Bridge = require("scripts.bridge")
 local WasmInit = require("scripts.wasm.init")
 local WasmInterp = require("scripts.wasm.interp")
 local wasm_data_module = require("scripts.nethack_wasm")
+local compiled_sources = require("scripts.nethack_compiled")
 
 local M = {}
 
@@ -23,7 +24,7 @@ local M = {}
 local MAX_INSTRUCTIONS_PER_RUN = 50000
 
 -- Maximum instructions per tick (for background processing like level gen)
-local MAX_INSTRUCTIONS_PER_TICK = 100000
+local MAX_INSTRUCTIONS_PER_TICK = 10000
 
 ---------------------------------------------------------------------------
 -- Initialization
@@ -46,10 +47,15 @@ local function init_modules()
       current_level = "level_1",
       level_counter = 1,
       pending_start = nil,      -- player_index to start game for
+      first_input_received = false, -- true once startup loading completes
     }
   end
   if not storage.nh_main.input_queue then
     storage.nh_main.input_queue = {}
+  end
+  -- Migration: existing saves without first_input_received
+  if storage.nh_main.first_input_received == nil then
+    storage.nh_main.first_input_received = storage.nh_main.game_started or false
   end
 end
 
@@ -68,7 +74,7 @@ local function load_wasm_nethack()
   local imports = Bridge.create_imports(memory_ref, instance_ref)
 
   -- Instantiate the WASM module
-  local instance = WasmInterp.instantiate(module, imports)
+  local instance = WasmInterp.instantiate(module, imports, compiled_sources)
   instance_ref.inst = instance
 
   -- Store instance in a non-serialized location (rebuilt on load)
@@ -109,6 +115,46 @@ local function update_player_position()
   local tx = math.max(pos.x + eps, math.min(pos.x + 1 - eps, player.position.x))
   local ty = math.max(pos.y + eps, math.min(pos.y + 1 - eps, player.position.y))
   player.teleport({x = tx, y = ty}, surface)
+end
+
+-- Update the engine state GUI (loading bar + corner widget).
+-- Called after every run_and_process to reflect current state.
+local function update_engine_gui()
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+
+  local instructions = wasm_instance and wasm_instance.total_instructions or 0
+
+  -- Determine engine state and color
+  local engine_state, color
+  if state.awaiting_input then
+    -- First time reaching input = loading complete
+    if not state.first_input_received then
+      state.first_input_received = true
+      Gui.destroy_loading_bar()
+    end
+    local sub = state.input_type
+    if sub == "getch" then engine_state = "Waiting for command"
+    elseif sub == "yn" then engine_state = "Waiting for Y/N"
+    elseif sub == "getlin" then engine_state = "Waiting for text"
+    elseif sub == "menu" then engine_state = "Waiting for selection"
+    else engine_state = "Waiting for input" end
+    color = {r = 0.3, g = 0.9, b = 0.3}
+  elseif state.running then
+    if state.first_input_received then
+      engine_state = "Executing"
+      color = {r = 1, g = 0.6, b = 0.2}
+    else
+      engine_state = "Loading"
+      color = {r = 1, g = 0.9, b = 0.3}
+      Gui.update_loading_progress(instructions)
+    end
+  else
+    engine_state = "Stopped"
+    color = {r = 0.6, g = 0.6, b = 0.6}
+  end
+
+  Gui.update_engine_state(engine_state, instructions, color)
 end
 
 -- Run the interpreter, automatically draining the input queue.
@@ -192,7 +238,9 @@ local function run_and_process(max_instructions)
     elseif result.status == "error" then
       state.running = false
       state.awaiting_input = false
-      Gui.add_message("NetHack error: " .. (result.message or "unknown"), 0)
+      local msg = result.message
+      if type(msg) == "table" then msg = msg.msg or serpent.line(msg) end
+      Gui.add_message("NetHack error: " .. (msg or "unknown"), 0)
       break
     end
   end
@@ -214,6 +262,12 @@ local function start_nethack(player)
 
   -- Create GUI for the player
   Gui.create_player_gui(player)
+  Gui.create_loading_bar(player)
+
+  -- Slow the player down so tile-based movement feels right
+  if player.character then
+    player.character.character_running_speed_modifier = -0.6
+  end
 
   -- Start NetHack by calling _start (WASI entry point)
   local start_idx = WasmInterp.get_export(wasm_instance, "_start")
@@ -230,6 +284,7 @@ local function start_nethack(player)
 
   -- Run until we hit nhgetch (waiting for first input)
   run_and_process()
+  update_engine_gui()
   update_player_position()
 end
 
@@ -258,6 +313,7 @@ local function advance_turn(key_code)
 
   WasmInterp.provide_input(wasm_instance, key_code)
   run_and_process()
+  update_engine_gui()
   update_player_position()
 end
 
@@ -294,6 +350,7 @@ local function advance_turn_string(text)
   local first = table.remove(state.input_queue, 1)
   WasmInterp.provide_input(wasm_instance, first)
   run_and_process()
+  update_engine_gui()
   update_player_position()
 end
 
@@ -324,6 +381,7 @@ local function advance_turn_menu(result)
   -- Provide count to resume from select_menu; run_and_process feeds IDs via queue
   WasmInterp.provide_input(wasm_instance, count)
   run_and_process()
+  update_engine_gui()
   update_player_position()
 end
 
@@ -470,6 +528,7 @@ local function on_tick(event)
   -- Continue running if not waiting for input (e.g., level generation)
   if state.running and not state.awaiting_input then
     run_and_process(MAX_INSTRUCTIONS_PER_TICK)
+    update_engine_gui()
     update_player_position()
   end
 end
@@ -479,6 +538,11 @@ end
 ---------------------------------------------------------------------------
 
 script.on_init(function()
+  local freeplay = remote.interfaces["freeplay"]
+  if freeplay then
+    if freeplay["set_skip_intro"] then remote.call("freeplay", "set_skip_intro", true) end
+    if freeplay["set_disable_crashsite"] then remote.call("freeplay", "set_disable_crashsite", true) end
+  end
   init_modules()
 end)
 

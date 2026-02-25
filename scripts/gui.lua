@@ -11,6 +11,19 @@ local NHW_TEXT    = 5
 
 local MAX_MESSAGES = 50
 
+-- Estimated instructions for NetHack startup (first input prompt)
+local ESTIMATED_STARTUP_INSTRUCTIONS = 1770000
+
+-- Format a number with commas: 1234567 -> "1,234,567"
+local function format_number(n)
+  local s = tostring(math.floor(n))
+  local formatted = s:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+  if formatted:sub(1, 1) == "," then
+    formatted = formatted:sub(2)
+  end
+  return formatted
+end
+
 -- BL_ field indices (from NetHack botl.h)
 local BL_TITLE   = 0
 local BL_STR     = 1
@@ -169,34 +182,37 @@ function Gui.create_player_gui(player)
 
   local screen = player.gui.screen
   local ui_width = player.display_resolution.width / player.display_scale
+  local ui_height = player.display_resolution.height / player.display_scale
 
-  -- Top panel frame (vertical: content row + toolbar row)
-  local top_frame = screen.add{
+  -- Layout constants
+  local ACTION_WIDTH = 150
+  local STATUS_WIDTH = 300
+  local GAP = 4
+  -- Messages: ~35% of screen, capped to reasonable bounds
+  local msg_frame_width = math.min(600, math.max(350, math.floor(ui_width * 0.35)))
+  -- Panels positioned adjacently: [messages][status][action]
+  local status_x = msg_frame_width + GAP
+  local action_x = status_x + STATUS_WIDTH + GAP
+
+  -------------------------------------------------
+  -- Message frame (top-left)
+  -------------------------------------------------
+  local msg_frame = screen.add{
     type = "frame",
-    name = "nh_top_frame",
+    name = "nh_msg_frame",
     direction = "vertical",
     style = "nh_top_frame",
   }
-  top_frame.location = {x = 0, y = 0}
-  top_frame.style.width = ui_width - 150  -- leave room for action panel
+  msg_frame.location = {x = 0, y = 0}
+  msg_frame.style.width = msg_frame_width
 
-  -- Content row (horizontal: messages | separator | status)
-  local content_flow = top_frame.add{
-    type = "flow",
-    name = "nh_content_flow",
-    direction = "horizontal",
-  }
-
-  -- Message scroll pane (left side, ~45% of panel width)
-  local msg_width = math.max(300, math.floor((ui_width - 150) * 0.45))
-  local msg_scroll = content_flow.add{
+  local msg_scroll = msg_frame.add{
     type = "scroll-pane",
     name = "nh_msg_scroll",
     horizontal_scroll_policy = "never",
     vertical_scroll_policy = "auto-and-reserve-space",
     style = "nh_msg_scroll",
   }
-  msg_scroll.style.width = msg_width
 
   -- Populate with existing messages
   for _, msg in ipairs(gui_data.messages) do
@@ -211,11 +227,38 @@ function Gui.create_player_gui(player)
     msg_scroll.scroll_to_bottom()
   end
 
-  -- Vertical separator
-  content_flow.add{type = "line", direction = "vertical"}
+  -- Horizontal separator before toolbar
+  msg_frame.add{type = "line", direction = "horizontal"}
 
-  -- Status panel (right side)
-  local status_flow = content_flow.add{
+  -- Toolbar row
+  local toolbar = msg_frame.add{
+    type = "flow",
+    name = "nh_toolbar",
+    direction = "horizontal",
+    style = "nh_toolbar_flow",
+  }
+  for _, btn in ipairs(TOOLBAR_BUTTONS) do
+    toolbar.add{
+      type = "button",
+      name = "nh_tb_" .. btn.key,
+      caption = btn.label,
+      style = "nh_toolbar_button",
+    }
+  end
+
+  -------------------------------------------------
+  -- Status frame (top-right, next to messages)
+  -------------------------------------------------
+  local status_frame = screen.add{
+    type = "frame",
+    name = "nh_status_frame",
+    direction = "vertical",
+    style = "nh_top_frame",
+  }
+  status_frame.location = {x = status_x, y = 0}
+  status_frame.style.width = STATUS_WIDTH
+
+  local status_flow = status_frame.add{
     type = "flow",
     name = "nh_status_flow",
     direction = "vertical",
@@ -304,33 +347,16 @@ function Gui.create_player_gui(player)
     direction = "horizontal",
   }
 
-  -- Horizontal separator before toolbar
-  top_frame.add{type = "line", direction = "horizontal"}
-
-  -- Toolbar row
-  local toolbar = top_frame.add{
-    type = "flow",
-    name = "nh_toolbar",
-    direction = "horizontal",
-    style = "nh_toolbar_flow",
-  }
-  for _, btn in ipairs(TOOLBAR_BUTTONS) do
-    toolbar.add{
-      type = "button",
-      name = "nh_tb_" .. btn.key,
-      caption = btn.label,
-      style = "nh_toolbar_button",
-    }
-  end
-
+  -------------------------------------------------
   -- Action panel (right side of screen)
+  -------------------------------------------------
   local action_frame = screen.add{
     type = "frame",
     name = "nh_action_panel",
     direction = "vertical",
     style = "nh_action_panel_frame",
   }
-  action_frame.location = {x = ui_width - 140, y = 10}
+  action_frame.location = {x = action_x, y = 0}
 
   local action_scroll = action_frame.add{
     type = "scroll-pane",
@@ -357,6 +383,30 @@ function Gui.create_player_gui(player)
     end
   end
 
+  -------------------------------------------------
+  -- Engine state widget (bottom-left corner)
+  -------------------------------------------------
+  local engine_frame = screen.add{
+    type = "frame",
+    name = "nh_engine_frame",
+    direction = "horizontal",
+    style = "nh_engine_frame",
+  }
+  engine_frame.location = {x = 10, y = ui_height - 36}
+
+  engine_frame.add{
+    type = "label",
+    name = "nh_engine_state",
+    caption = "Initializing",
+    style = "nh_engine_state_label",
+  }
+  engine_frame.add{
+    type = "label",
+    name = "nh_engine_count",
+    caption = "",
+    style = "nh_engine_count_label",
+  }
+
   gui_data.player_frames[player.index] = true
 
   -- Render current status if available
@@ -369,10 +419,12 @@ function Gui.destroy_player_gui(player)
 
   -- Destroy all our top-level screen elements
   local names = {
-    "nh_top_frame", "nh_action_panel",
+    "nh_msg_frame", "nh_status_frame", "nh_action_panel",
+    "nh_engine_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
-    -- Old GUI element names (for upgrades)
-    "nh_status_frame", "nh_msg_frame",
+    "nh_loading_frame",
+    -- Old layout (migration cleanup)
+    "nh_top_frame",
   }
   for _, name in ipairs(names) do
     if screen[name] then
@@ -409,11 +461,9 @@ end
 -- Add a single message label to the scroll pane (incremental update)
 function Gui.append_message_label(player, text, attr)
   local screen = player.gui.screen
-  local top = screen.nh_top_frame
-  if not top then return end
-  local content = top.nh_content_flow
-  if not content then return end
-  local scroll = content.nh_msg_scroll
+  local msg_frame = screen.nh_msg_frame
+  if not msg_frame then return end
+  local scroll = msg_frame.nh_msg_scroll
   if not scroll then return end
 
   local style = (attr and attr == 1) and "nh_message_label_bold" or "nh_message_label"
@@ -495,11 +545,9 @@ end
 function Gui.render_status(player)
   local gui_data = storage.nh_gui
   local screen = player.gui.screen
-  local top = screen.nh_top_frame
-  if not top then return end
-  local content = top.nh_content_flow
-  if not content then return end
-  local sf = content.nh_status_flow
+  local status_frame = screen.nh_status_frame
+  if not status_frame then return end
+  local sf = status_frame.nh_status_flow
   if not sf then return end
 
   local fields = gui_data.status_fields
@@ -1188,9 +1236,10 @@ end
 
 function Gui.putstr(winid, attr, text)
   local gui_data = storage.nh_gui
+  local win = gui_data.windows[winid]
 
-  -- Built-in message window
-  if winid == NHW_MESSAGE or winid == 1 then
+  -- Message-type window: built-in winid 1 or any created message window
+  if winid == NHW_MESSAGE or (win and win.type == NHW_MESSAGE) then
     Gui.add_message(text, attr)
     for _, player in pairs(game.connected_players) do
       Gui.show_flying_text(player, text)
@@ -1199,7 +1248,6 @@ function Gui.putstr(winid, attr, text)
   end
 
   -- Other windows: accumulate text
-  local win = gui_data.windows[winid]
   if win then
     win.items[#win.items + 1] = {
       text = text,
@@ -1229,6 +1277,106 @@ function Gui.handle_action_click(element_name)
     return tonumber(key_str)
   end
   return nil
+end
+
+-----------------------------------------------------
+-- Loading Progress Bar
+-----------------------------------------------------
+
+function Gui.create_loading_bar(player)
+  local screen = player.gui.screen
+  if screen.nh_loading_frame then return end
+
+  local ui_width = player.display_resolution.width / player.display_scale
+  local ui_height = player.display_resolution.height / player.display_scale
+
+  local frame = screen.add{
+    type = "frame",
+    name = "nh_loading_frame",
+    direction = "vertical",
+    caption = "NetHack",
+    style = "nh_loading_frame",
+  }
+  frame.location = {
+    x = math.floor((ui_width - 350) / 2),
+    y = math.floor((ui_height - 120) / 2),
+  }
+
+  frame.add{
+    type = "label",
+    name = "nh_loading_label",
+    caption = "Loading...",
+    style = "nh_loading_label",
+  }
+
+  frame.add{
+    type = "progressbar",
+    name = "nh_loading_bar",
+    value = 0,
+    style = "nh_loading_progressbar",
+  }
+
+  frame.add{
+    type = "label",
+    name = "nh_loading_count",
+    caption = "0 / " .. format_number(ESTIMATED_STARTUP_INSTRUCTIONS) .. " instructions",
+    style = "nh_loading_count_label",
+  }
+end
+
+function Gui.update_loading_progress(instructions)
+  local progress = math.min(1, instructions / ESTIMATED_STARTUP_INSTRUCTIONS)
+  local pct = math.floor(progress * 100)
+  local count_text = format_number(instructions) .. " / " .. format_number(ESTIMATED_STARTUP_INSTRUCTIONS) .. " instructions"
+
+  for _, player in pairs(game.connected_players) do
+    local screen = player.gui.screen
+    local frame = screen.nh_loading_frame
+    if frame then
+      local bar = frame.nh_loading_bar
+      if bar then bar.value = progress end
+      local label = frame.nh_loading_label
+      if label then label.caption = "Loading... " .. pct .. "%" end
+      local count = frame.nh_loading_count
+      if count then count.caption = count_text end
+    end
+  end
+end
+
+function Gui.destroy_loading_bar()
+  for _, player in pairs(game.connected_players) do
+    local screen = player.gui.screen
+    if screen.nh_loading_frame then
+      screen.nh_loading_frame.destroy()
+    end
+  end
+end
+
+-----------------------------------------------------
+-- Engine State Display
+-----------------------------------------------------
+
+function Gui.update_engine_state(state_text, instructions, color)
+  local count_text = format_number(instructions) .. " inst"
+
+  for _, player in pairs(game.connected_players) do
+    local screen = player.gui.screen
+    local frame = screen.nh_engine_frame
+    if frame then
+      local state_label = frame.nh_engine_state
+      if state_label then
+        state_label.caption = state_text
+        if color then
+          state_label.style = "nh_engine_state_label"
+          state_label.style.font_color = color
+        end
+      end
+      local count_label = frame.nh_engine_count
+      if count_label then
+        count_label.caption = count_text
+      end
+    end
+  end
 end
 
 return Gui

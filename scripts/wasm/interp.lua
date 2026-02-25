@@ -42,9 +42,6 @@ Interp.inline_opcodes = true
 -- Set to true to use compiled functions instead of interpreting bytecode.
 Interp.use_compiler = true
 
--- Pre-compiled source strings from AOT build step (set before instantiate).
--- Table of {[func_idx] = "lua source string", ...} or nil for JIT mode.
-Interp.compiled_sources = nil
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -857,7 +854,7 @@ end
 -- Instantiation
 ---------------------------------------------------------------------------
 
-function Interp.instantiate(module, imports)
+function Interp.instantiate(module, imports, compiled_sources)
     imports = imports or {}
 
     local instance = {
@@ -1023,7 +1020,7 @@ function Interp.instantiate(module, imports)
         local count = 0
 
         -- Try AOT-compiled sources first (from build step)
-        local aot_sources = Interp.compiled_sources
+        local aot_sources = compiled_sources
         if aot_sources then
             for idx, source in pairs(aot_sources) do
                 local fn = Compiler.load_source(source, idx)
@@ -1286,8 +1283,10 @@ function Interp.run(instance, max_instructions)
 
         while true do
             -- Check if current function has a compiled version
+            -- Skip compiled path if mid-interpretation (pc > 1 with no compiled resume)
+            -- to avoid restarting from the beginning with corrupted locals/stack
             local compiled_fn = compiled_funcs and compiled_funcs[func_idx]
-            if compiled_fn then
+            if compiled_fn and (entry_point > 0 or pc <= 1) then
                 -- === Compiled function execution ===
                 while true do
                     -- Rough instruction cost per segment (~50 instrs between calls)
@@ -2154,6 +2153,9 @@ function Interp.run(instance, max_instructions)
                 running = true
                 state.running = true
                 entry_point = frame.compiled_resume or 0
+                -- Refresh memory cache (callee may have grown memory)
+                mem_data = memory.data
+                mem_len = memory.byte_length
 
                 for i = 1, return_arity do
                     sp = sp + 1; stack[sp] = results[i]

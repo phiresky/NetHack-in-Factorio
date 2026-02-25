@@ -3,6 +3,7 @@
 /* NetHack may be freely redistributed.  See license for details. */
 
 #include "hack.h"
+#include "dlb.h"
 #include "func_tab.h"
 
 /*
@@ -183,6 +184,13 @@ struct window_procs factorio_procs = {
 };
 
 /* ================================================================
+ * Window type tracking (for blocking display_nhwindow decisions)
+ * ================================================================ */
+
+#define MAX_FACTORIO_WINDOWS 32
+static int factorio_window_types[MAX_FACTORIO_WINDOWS];
+
+/* ================================================================
  * Implementation of window port functions
  * ================================================================ */
 
@@ -219,7 +227,9 @@ factorio_askname()
 static void
 factorio_get_nh_event()
 {
-    /* no-op */
+    /* No-op: NetHack calls this to let the window port process pending UI events
+       (e.g. X11 expose events, terminal resizes). Factorio handles its own event
+       loop, so there's nothing to do here. */
 }
 
 static void
@@ -250,7 +260,10 @@ static winid
 factorio_create_nhwindow(type)
 int type;
 {
-    return (winid) host_create_nhwindow(type);
+    winid wid = (winid) host_create_nhwindow(type);
+    if ((int) wid >= 0 && (int) wid < MAX_FACTORIO_WINDOWS)
+        factorio_window_types[(int) wid] = type;
+    return wid;
 }
 
 static void
@@ -265,13 +278,22 @@ factorio_display_nhwindow(window, blocking)
 winid window;
 boolean blocking;
 {
+    int wtype = ((int) window >= 0 && (int) window < MAX_FACTORIO_WINDOWS)
+                ? factorio_window_types[(int) window] : 0;
     host_display_nhwindow((int) window, (int) blocking);
+    if (blocking && (wtype == NHW_TEXT || wtype == NHW_MESSAGE)) {
+        /* Wait for user acknowledgment (like --More-- in tty).
+         * nhgetch blocks WASM execution until the player presses a key. */
+        (void) host_nhgetch();
+    }
 }
 
 static void
 factorio_destroy_nhwindow(window)
 winid window;
 {
+    if ((int) window >= 0 && (int) window < MAX_FACTORIO_WINDOWS)
+        factorio_window_types[(int) window] = 0;
     host_destroy_nhwindow((int) window);
 }
 
@@ -308,10 +330,37 @@ const char *str;
 
 static void
 factorio_display_file(fname, complain)
-const char *fname UNUSED;
-boolean complain UNUSED;
+const char *fname;
+boolean complain;
 {
-    /* no-op: we don't display help files etc. in Factorio */
+    dlb *f;
+    char buf[BUFSZ];
+    winid win;
+
+    if (!fname || !*fname)
+        return;
+
+    f = dlb_fopen(fname, "r");
+    if (!f) {
+        if (complain) {
+            char msgbuf[BUFSZ];
+            Sprintf(msgbuf, "Cannot display file: %s", fname);
+            factorio_raw_print(msgbuf);
+        }
+        return;
+    }
+
+    win = factorio_create_nhwindow(NHW_TEXT);
+    while (dlb_fgets(buf, BUFSZ, f)) {
+        int len = (int) strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n')
+            buf[len - 1] = '\0';
+        factorio_putstr(win, 0, buf);
+    }
+    dlb_fclose(f);
+
+    factorio_display_nhwindow(win, TRUE);
+    factorio_destroy_nhwindow(win);
 }
 
 static void

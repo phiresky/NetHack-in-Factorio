@@ -87,12 +87,21 @@ function Bridge.create_imports(memory_ref, instance_ref)
 
   imports["env.host_display_nhwindow"] = function(winid, blocking)
     Gui.display_window(winid, blocking ~= 0)
-    -- If blocking and it's a text/menu window, we may need input
-    -- For now, treat as immediate
+    -- When blocking a message window, show --More-- indicator.
+    -- The C code will call host_nhgetch next to actually block.
+    if blocking ~= 0 then
+      local gui_data = storage.nh_gui
+      local win = gui_data and gui_data.windows[winid]
+      if win and win.type == NHW_MESSAGE then
+        Gui.add_message("--More--", 1)
+      end
+    end
   end
 
   imports["env.host_clear_nhwindow"] = function(winid)
-    if winid == NHW_MAP or winid == 3 then
+    local gui_data = storage.nh_gui
+    local win = gui_data and gui_data.windows[winid]
+    if win and win.type == NHW_MAP then
       Display.clear_map()
     else
       Gui.clear_window(winid)

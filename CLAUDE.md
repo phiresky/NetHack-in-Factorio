@@ -195,6 +195,12 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   `state` — especially `state.code`. After an inlined `call` changes the local
   `code` variable, `state.code` becomes stale. On resume, `code = state.code`
   loads the wrong bytecode. Same applies to `state.running` after frame restore.
+- **Refresh `mem_len`/`mem_data` after callee returns**: The frame-pop path in
+  `interp.lua` must refresh `mem_len = memory.byte_length` and `mem_data = memory.data`
+  after restoring a caller frame. If the callee (or anything it called) grew memory,
+  the caller's cached `mem_len` is stale, causing valid accesses to fail with
+  "out of bounds memory access". The exception-handling path already did this
+  correctly; the normal return path did not.
 - **WASI preopened directories**: wasi-libc startup calls `fd_prestat_get` on fd 3, 4, 5, ...
   until EBADF. Must provide fd 3 = "/" as a preopened directory. VFS files opened via
   `path_open` get fds starting at 4.
@@ -237,6 +243,13 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   1269..1511=other. The C port passes `glyph2tile[glyph]` as `tile_idx` to Lua.
   Entity prototypes use sprite sheet regions (`x`/`y` offsets within sheet PNGs).
   Entity names derived from tile names (nh-mon-giant-ant, nh-obj-arrow, etc.).
+- **Compiled/interpreter resume mismatch**: When budget expires mid-interpretation
+  of a function that also has a compiled version, the outer loop must NOT dispatch
+  to the compiled version on resume. The compiled path starts at entry_point=0
+  (beginning), but locals/stack are from mid-interpretation — corrupted state causes
+  wild memory accesses. Fix: only use compiled version when `entry_point > 0`
+  (resuming compiled) or `pc <= 1` (fresh call). If `entry_point == 0 and pc > 1`,
+  continue interpreting.
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)

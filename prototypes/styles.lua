@@ -24,13 +24,29 @@ default_gui["nh_top_frame"] = {
 }
 
 -----------------------------------------------------
--- Message Area
+-- Message Frame (top-left panel)
 -----------------------------------------------------
+
+default_gui["nh_msg_frame"] = {
+  type = "frame_style",
+  top_padding = 4,
+  bottom_padding = 4,
+  left_padding = 8,
+  right_padding = 8,
+  vertical_spacing = 2,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.85,
+    },
+  },
+}
 
 default_gui["nh_msg_scroll"] = {
   type = "scroll_pane_style",
-  maximal_height = 180,
-  minimal_width = 300,
+  maximal_height = 120,
+  minimal_height = 60,
   extra_padding_when_activated = 0,
   vertical_spacing = 1,
 }
@@ -54,14 +70,28 @@ default_gui["nh_message_label_bold"] = {
 }
 
 -----------------------------------------------------
--- Status Panel
+-- Status Frame (top-right panel)
 -----------------------------------------------------
+
+default_gui["nh_status_frame"] = {
+  type = "frame_style",
+  top_padding = 4,
+  bottom_padding = 4,
+  left_padding = 8,
+  right_padding = 8,
+  vertical_spacing = 1,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.85,
+    },
+  },
+}
 
 default_gui["nh_status_flow"] = {
   type = "vertical_flow_style",
   vertical_spacing = 1,
-  left_padding = 8,
-  minimal_width = 280,
 }
 
 default_gui["nh_status_name_label"] = {
@@ -150,7 +180,7 @@ default_gui["nh_action_panel_frame"] = {
 
 default_gui["nh_action_scroll"] = {
   type = "scroll_pane_style",
-  maximal_height = 800,
+  maximal_height = 500,
   minimal_width = 120,
   extra_padding_when_activated = 0,
 }
@@ -228,4 +258,77 @@ default_gui["nh_menu_accel_label"] = {
   minimal_width = 24,
   left_padding = 2,
   right_padding = 4,
+}
+
+-----------------------------------------------------
+-- Loading Progress Bar (shown during startup)
+-----------------------------------------------------
+
+default_gui["nh_loading_frame"] = {
+  type = "frame_style",
+  top_padding = 12,
+  bottom_padding = 12,
+  left_padding = 20,
+  right_padding = 20,
+  minimal_width = 350,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.92,
+    },
+  },
+}
+
+default_gui["nh_loading_label"] = {
+  type = "label_style",
+  font = "default-large-bold",
+  font_color = {r = 1, g = 1, b = 1},
+  bottom_padding = 4,
+}
+
+default_gui["nh_loading_progressbar"] = {
+  type = "progressbar_style",
+  bar_width = 20,
+  color = {r = 0.3, g = 0.8, b = 0.3},
+  minimal_width = 310,
+}
+
+default_gui["nh_loading_count_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 0.8, g = 0.8, b = 0.8},
+  top_padding = 4,
+}
+
+-----------------------------------------------------
+-- Engine State (corner display, always visible)
+-----------------------------------------------------
+
+default_gui["nh_engine_frame"] = {
+  type = "frame_style",
+  top_padding = 2,
+  bottom_padding = 2,
+  left_padding = 8,
+  right_padding = 8,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.7,
+    },
+  },
+}
+
+default_gui["nh_engine_state_label"] = {
+  type = "label_style",
+  font = "default-small-bold",
+  font_color = {r = 0.7, g = 0.7, b = 0.7},
+  right_padding = 8,
+}
+
+default_gui["nh_engine_count_label"] = {
+  type = "label_style",
+  font = "default-small",
+  font_color = {r = 0.5, g = 0.5, b = 0.5},
 }

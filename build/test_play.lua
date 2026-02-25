@@ -182,6 +182,7 @@ local wasm_data = require("scripts.nethack_wasm")
 local load_elapsed = os.clock() - load_start
 
 -- Load AOT-compiled sources if available and requested
+local compiled_sources = nil
 local aot_elapsed = 0
 if WasmInterp.use_compiler then
     if use_aot then
@@ -190,7 +191,7 @@ if WasmInterp.use_compiler then
         local ok, aot = pcall(require, "scripts.nethack_compiled")
         aot_elapsed = os.clock() - aot_start
         if ok and aot then
-            WasmInterp.compiled_sources = aot
+            compiled_sources = aot
             print(string.format("  AOT sources loaded in %s", fmt_time(aot_elapsed)))
         else
             print("  AOT sources not found, falling back to JIT")
@@ -212,7 +213,7 @@ end
 local imports = Bridge.create_imports(memory_ref, instance_ref)
 print("Instantiating...")
 local instantiate_start = os.clock()
-local instance = WasmInterp.instantiate(module, imports)
+local instance = WasmInterp.instantiate(module, imports, compiled_sources)
 local instantiate_elapsed = os.clock() - instantiate_start
 instance_ref.inst = instance
 
@@ -442,6 +443,6 @@ print(string.format("  Total:        %s  (%dK instr)", fmt_time(total_elapsed), 
 print(string.format("  Overall:      %.0fK inst/sec", total_instrs / (startup_elapsed + play_elapsed) / 1000))
 local mode = "off"
 if WasmInterp.use_compiler then
-    mode = WasmInterp.compiled_sources and "AOT" or "JIT"
+    mode = compiled_sources and "AOT" or "JIT"
 end
 print(string.format("  Compiler:     %s", mode))
