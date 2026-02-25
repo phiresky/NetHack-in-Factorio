@@ -1,16 +1,19 @@
--- NetHack GUI styles for Factorio 2.0
--- Extends the default GuiStyle with custom frame and label styles.
+-- NetHack Qt-style GUI styles for Factorio 2.0
+-- Extends the default GuiStyle with custom styles for the top panel layout.
 
 local default_gui = data.raw["gui-style"]["default"]
 
--- Message log frame (top of screen)
-default_gui["nh_message_frame"] = {
+-----------------------------------------------------
+-- Top Panel (contains messages, status, toolbar)
+-----------------------------------------------------
+
+default_gui["nh_top_frame"] = {
   type = "frame_style",
   top_padding = 4,
   bottom_padding = 4,
   left_padding = 8,
   right_padding = 8,
-  maximal_height = 200,
+  vertical_spacing = 2,
   graphical_set = {
     base = {
       position = {0, 0},
@@ -20,43 +23,59 @@ default_gui["nh_message_frame"] = {
   },
 }
 
--- Status bar frame (bottom of screen)
-default_gui["nh_status_frame"] = {
-  type = "frame_style",
-  top_padding = 2,
-  bottom_padding = 2,
-  left_padding = 8,
-  right_padding = 8,
-  maximal_height = 60,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.85,
-    },
-  },
-}
+-----------------------------------------------------
+-- Message Area
+-----------------------------------------------------
 
--- Menu frame (inventory, selections)
-default_gui["nh_menu_frame"] = {
-  type = "frame_style",
-  top_padding = 8,
-  bottom_padding = 8,
-  left_padding = 12,
-  right_padding = 12,
+default_gui["nh_msg_scroll"] = {
+  type = "scroll_pane_style",
+  maximal_height = 180,
   minimal_width = 300,
-  maximal_width = 500,
-  maximal_height = 600,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.9,
-    },
-  },
+  extra_padding_when_activated = 0,
+  vertical_spacing = 1,
 }
 
--- Status label for HP, AC, etc.
+default_gui["nh_message_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 1, g = 1, b = 1},
+  single_line = false,
+  left_padding = 2,
+  right_padding = 2,
+}
+
+default_gui["nh_message_label_bold"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 1, g = 1, b = 0.7},
+  single_line = false,
+  left_padding = 2,
+  right_padding = 2,
+}
+
+-----------------------------------------------------
+-- Status Panel
+-----------------------------------------------------
+
+default_gui["nh_status_flow"] = {
+  type = "vertical_flow_style",
+  vertical_spacing = 1,
+  left_padding = 8,
+  minimal_width = 280,
+}
+
+default_gui["nh_status_name_label"] = {
+  type = "label_style",
+  font = "default-large-bold",
+  font_color = {r = 1, g = 1, b = 1},
+}
+
+default_gui["nh_status_dlevel_label"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 0.8, g = 0.8, b = 1},
+}
+
 default_gui["nh_status_label"] = {
   type = "label_style",
   font = "default-bold",
@@ -65,8 +84,7 @@ default_gui["nh_status_label"] = {
   right_padding = 4,
 }
 
--- HP label (turns red at low HP)
-default_gui["nh_hp_label"] = {
+default_gui["nh_status_label_good"] = {
   type = "label_style",
   font = "default-bold",
   font_color = {r = 0.2, g = 1, b = 0.2},
@@ -74,8 +92,7 @@ default_gui["nh_hp_label"] = {
   right_padding = 4,
 }
 
--- HP label when critically low
-default_gui["nh_hp_critical_label"] = {
+default_gui["nh_status_label_bad"] = {
   type = "label_style",
   font = "default-bold",
   font_color = {r = 1, g = 0.2, b = 0.2},
@@ -83,7 +100,6 @@ default_gui["nh_hp_critical_label"] = {
   right_padding = 4,
 }
 
--- Gold display label
 default_gui["nh_gold_label"] = {
   type = "label_style",
   font = "default-bold",
@@ -92,66 +108,31 @@ default_gui["nh_gold_label"] = {
   right_padding = 4,
 }
 
--- Message text label
-default_gui["nh_message_label"] = {
-  type = "label_style",
-  font = "default",
-  font_color = {r = 1, g = 1, b = 1},
-  single_line = false,
-}
+-----------------------------------------------------
+-- Toolbar (horizontal button bar below status area)
+-----------------------------------------------------
 
--- Menu item button (for PICK_ONE menus)
-default_gui["nh_menu_item_button_style"] = {
-  type = "button_style",
-  font = "default",
-  font_color = {r = 0.9, g = 0.9, b = 0.9},
-  left_padding = 4,
-  right_padding = 4,
-  top_padding = 2,
-  bottom_padding = 2,
-  minimal_width = 200,
-}
-
--- Menu item label
-default_gui["nh_menu_item_label"] = {
-  type = "label_style",
-  font = "default",
-  font_color = {r = 0.9, g = 0.9, b = 0.9},
-  left_padding = 4,
-  right_padding = 4,
-  top_padding = 2,
-  bottom_padding = 2,
-}
-
--- Menu header label
-default_gui["nh_menu_header_label"] = {
-  type = "label_style",
-  font = "default-bold",
-  font_color = {r = 1, g = 0.85, b = 0.4},
-  bottom_padding = 4,
-}
-
--- Horizontal flow for status bar items
-default_gui["nh_status_flow"] = {
+default_gui["nh_toolbar_flow"] = {
   type = "horizontal_flow_style",
-  horizontal_spacing = 12,
-  vertical_align = "center",
+  horizontal_spacing = 4,
+  top_padding = 2,
 }
 
--- Vertical flow for message log
-default_gui["nh_message_flow"] = {
-  type = "vertical_flow_style",
-  vertical_spacing = 2,
+default_gui["nh_toolbar_button"] = {
+  type = "button_style",
+  font = "default-small-bold",
+  minimal_width = 50,
+  left_padding = 6,
+  right_padding = 6,
+  top_padding = 2,
+  bottom_padding = 2,
+  height = 28,
 }
 
--- Scroll pane for menu
-default_gui["nh_menu_scroll"] = {
-  type = "scroll_pane_style",
-  maximal_height = 500,
-  extra_padding_when_activated = 0,
-}
+-----------------------------------------------------
+-- Action Panel (right side, collapsible)
+-----------------------------------------------------
 
--- Action panel frame (right side of screen)
 default_gui["nh_action_panel_frame"] = {
   type = "frame_style",
   top_padding = 4,
@@ -167,7 +148,6 @@ default_gui["nh_action_panel_frame"] = {
   },
 }
 
--- Action panel scroll pane
 default_gui["nh_action_scroll"] = {
   type = "scroll_pane_style",
   maximal_height = 800,
@@ -175,7 +155,6 @@ default_gui["nh_action_scroll"] = {
   extra_padding_when_activated = 0,
 }
 
--- Action button (compact)
 default_gui["nh_action_button"] = {
   type = "button_style",
   font = "default-small",
@@ -189,11 +168,64 @@ default_gui["nh_action_button"] = {
   height = 24,
 }
 
--- Action group header label
 default_gui["nh_action_header"] = {
   type = "label_style",
   font = "default-small-bold",
   font_color = {r = 1, g = 0.85, b = 0.4},
   top_padding = 4,
   bottom_padding = 0,
+}
+
+-----------------------------------------------------
+-- Menu System
+-----------------------------------------------------
+
+default_gui["nh_menu_frame"] = {
+  type = "frame_style",
+  top_padding = 8,
+  bottom_padding = 8,
+  left_padding = 12,
+  right_padding = 12,
+  minimal_width = 300,
+  maximal_width = 600,
+  maximal_height = 600,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.92,
+    },
+  },
+}
+
+default_gui["nh_menu_scroll"] = {
+  type = "scroll_pane_style",
+  maximal_height = 500,
+  extra_padding_when_activated = 0,
+}
+
+default_gui["nh_menu_item_button_style"] = {
+  type = "button_style",
+  font = "default",
+  left_padding = 4,
+  right_padding = 4,
+  top_padding = 2,
+  bottom_padding = 2,
+  minimal_width = 300,
+}
+
+default_gui["nh_menu_header_label"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 1, g = 0.85, b = 0.4},
+  bottom_padding = 4,
+}
+
+default_gui["nh_menu_accel_label"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 0.7, g = 0.9, b = 1},
+  minimal_width = 24,
+  left_padding = 2,
+  right_padding = 4,
 }

@@ -252,6 +252,9 @@ local function advance_turn(key_code)
     storage.nh_bridge.pending_yn = nil
     storage.nh_bridge.pending_getlin = nil
   end
+  if storage.nh_gui then
+    storage.nh_gui.pending_yn = nil
+  end
 
   WasmInterp.provide_input(wasm_instance, key_code)
   run_and_process()
@@ -395,18 +398,16 @@ local function on_gui_click(event)
   local element = event.element
   if not element or not element.valid then return end
 
-  -- Action button panel
-  local action_key = Gui.handle_action_click(element.name)
-  if action_key then
+  -- Toolbar or action panel button -> key code
+  local btn_key = Gui.handle_toolbar_click(element.name)
+                  or Gui.handle_action_click(element.name)
+  if btn_key then
     if state.input_type == "getch" or state.input_type == "yn" then
-      -- Close yn prompt if open
+      -- Close yn popup if open (inline yn has no popup)
       if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
         player.gui.screen.nh_yn_frame.destroy()
-        if storage.nh_gui then
-          storage.nh_gui.pending_yn = nil
-        end
       end
-      advance_turn(action_key)
+      advance_turn(btn_key)
     end
     return
   end

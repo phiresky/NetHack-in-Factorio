@@ -65,7 +65,7 @@ local MG_BW_ICE   = 0x0080
 local MG_BW_WATER = 0x0100
 
 -- Map tile_idx to entity name using the tile category boundaries
-local function tile_entity_name(tile_idx)
+function Display.tile_entity_name(tile_idx)
   if tile_idx < TC.n_monsters then
     return "nh-mon-" .. tile_idx
   elseif tile_idx < TC.n_monsters + TC.n_objects then
@@ -237,7 +237,7 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
   local is_detect = (special and bit32.band(special, MG_DETECT) ~= 0)
 
   -- Determine entity name from tile index
-  local ent_name = tile_entity_name(tile_idx)
+  local ent_name = Display.tile_entity_name(tile_idx)
 
   -- Determine tint for special effects
   local tint = nil
