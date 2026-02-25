@@ -340,9 +340,12 @@ boolean blocking;
     int wtype = ((int) window >= 0 && (int) window < MAX_FACTORIO_WINDOWS)
                 ? factorio_window_types[(int) window] : 0;
     host_display_nhwindow((int) window, (int) blocking);
-    if (blocking && (wtype == NHW_TEXT || wtype == NHW_MESSAGE)) {
+    if (blocking && (wtype == NHW_TEXT || wtype == NHW_MESSAGE
+                     || wtype == NHW_MENU)) {
         /* Wait for user acknowledgment (like --More-- in tty).
-         * nhgetch blocks WASM execution until the player presses a key. */
+         * nhgetch blocks WASM execution until the player presses a key.
+         * NHW_MENU is included because questpgr.c delivers some quest text
+         * via NHW_MENU windows (com_pager msgnum==1). */
         (void) host_nhgetch();
     }
 }
