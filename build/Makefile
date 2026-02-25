@@ -212,6 +212,7 @@ all: $(WASM_LUA) $(DATA_LUA)
 
 nethack.wasm: $(ALL_SRC) factorioconf.h
 	$(CC) $(CFLAGS) $(LDFLAGS) $(ALL_SRC) -o nethack.wasm
+	wasm-opt -Oz --enable-exception-handling -o nethack.wasm nethack.wasm
 	@echo "Build complete: nethack.wasm"
 
 $(WASM_LUA): nethack.wasm
