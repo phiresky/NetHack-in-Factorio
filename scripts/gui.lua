@@ -464,6 +464,25 @@ function Gui.create_player_gui(player)
     style = "nh_engine_count_label",
   }
 
+  -------------------------------------------------
+  -- Hover tooltip (bottom-right corner)
+  -------------------------------------------------
+  local hover_frame = screen.add{
+    type = "frame",
+    name = "nh_hover_frame",
+    direction = "horizontal",
+    style = "nh_hover_frame",
+  }
+  hover_frame.location = {x = ui_width - 310, y = ui_height - 36}
+  hover_frame.visible = false
+
+  hover_frame.add{
+    type = "label",
+    name = "nh_hover_label",
+    caption = "",
+    style = "nh_hover_label",
+  }
+
   gui_data.player_frames[player.index] = true
 
   -- Render current status if available
@@ -477,7 +496,7 @@ function Gui.destroy_player_gui(player)
   -- Destroy all our top-level screen elements
   local names = {
     "nh_top_panel", "nh_mb_dropdown",
-    "nh_engine_frame",
+    "nh_engine_frame", "nh_hover_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
@@ -1590,6 +1609,27 @@ function Gui.update_engine_state(state_text, instructions, color)
       end
     end
   end
+end
+
+-----------------------------------------------------
+-- Hover Tooltip
+-----------------------------------------------------
+
+function Gui.update_hover_info(player, text)
+  local screen = player.gui.screen
+  local frame = screen.nh_hover_frame
+  if not frame then return end
+
+  if not text or text == "" then
+    frame.visible = false
+    return
+  end
+
+  local label = frame.nh_hover_label
+  if label then
+    label.caption = text
+  end
+  frame.visible = true
 end
 
 -----------------------------------------------------

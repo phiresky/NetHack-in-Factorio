@@ -449,3 +449,28 @@ default_gui["nh_engine_count_label"] = {
   font = "default-small",
   font_color = {r = 0.5, g = 0.5, b = 0.5},
 }
+
+-----------------------------------------------------
+-- Hover Tooltip (bottom-right corner)
+-----------------------------------------------------
+
+default_gui["nh_hover_frame"] = {
+  type = "frame_style",
+  top_padding = 2,
+  bottom_padding = 2,
+  left_padding = 8,
+  right_padding = 8,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.7,
+    },
+  },
+}
+
+default_gui["nh_hover_label"] = {
+  type = "label_style",
+  font = "default-small-bold",
+  font_color = {r = 1, g = 1, b = 1},
+}

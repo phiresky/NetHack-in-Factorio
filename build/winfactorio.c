@@ -48,6 +48,8 @@ extern void host_cliparound(int x, int y);
 extern void host_delay_output(void);
 extern void host_update_inventory(void);
 extern void host_mark_synch(void);
+extern void host_describe_result(const char *buf, int buf_len,
+                                 const char *monbuf, int monbuf_len);
 
 /* Player selection dialog imports */
 extern void host_plsel_setup_role(int idx, const char *name, int len, int allow);
@@ -847,6 +849,30 @@ static boolean
 factorio_can_suspend()
 {
     return FALSE;
+}
+
+/* ================================================================
+ * Exported helper: describe a map position using lookat()
+ * Called from Lua via WASM to get tile descriptions for hover tooltip.
+ * ================================================================ */
+
+extern struct permonst *lookat(int, int, char *, char *);
+
+__attribute__((export_name("nh_describe_pos")))
+void
+nh_describe_pos(int x, int y)
+{
+    char buf[BUFSZ];
+    char monbuf[BUFSZ];
+
+    buf[0] = '\0';
+    monbuf[0] = '\0';
+
+    if (x >= 1 && x < COLNO && y >= 0 && y < ROWNO) {
+        (void) lookat(x, y, buf, monbuf);
+    }
+
+    host_describe_result(buf, (int) strlen(buf), monbuf, (int) strlen(monbuf));
 }
 
 /* winfactorio.c */

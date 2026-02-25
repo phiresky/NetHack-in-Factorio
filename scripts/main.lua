@@ -24,7 +24,7 @@ local M = {}
 local MAX_INSTRUCTIONS_PER_RUN = 50000
 
 -- Maximum instructions per tick (for background processing like level gen)
-local MAX_INSTRUCTIONS_PER_TICK = 10000
+local MAX_INSTRUCTIONS_PER_TICK = 20000
 
 ---------------------------------------------------------------------------
 -- Initialization
@@ -300,7 +300,7 @@ local function start_nethack(player)
 
   -- Slow the player down so tile-based movement feels right
   if player.character then
-    player.character.character_running_speed_modifier = -0.6
+    player.character.character_running_speed_modifier = -0.4
   end
 
   -- Start NetHack by calling _start (WASI entry point)
@@ -743,10 +743,42 @@ local function on_gui_checked_state_changed(event)
   Gui.handle_plsel_checkbox(player, element.name, element.state)
 end
 
+-- Hover tooltip: describe tile under cursor using NetHack's lookat()
+local function on_selected_entity_changed(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input then return end
+  if not wasm_instance then return end
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+
+  local entity = player.selected
+  if not entity or not entity.valid then
+    Gui.update_hover_info(player, nil)
+    return
+  end
+
+  -- Only describe NetHack entities
+  local name = entity.name
+  if not name:find("^nh%-") then
+    Gui.update_hover_info(player, nil)
+    return
+  end
+
+  -- Convert entity position to NetHack grid coordinates
+  local gx = math.floor(entity.position.x)
+  local gy = math.floor(entity.position.y)
+
+  local description = Bridge.describe_pos(wasm_instance, gx, gy)
+  Gui.update_hover_info(player, description)
+end
+
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
 script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
+script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
 script.on_event(defines.events.on_tick, on_tick)
 
 -- Register all custom input events

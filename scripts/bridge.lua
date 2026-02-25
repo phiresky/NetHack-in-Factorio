@@ -6,6 +6,8 @@ local Display = require("scripts.display")
 local Gui = require("scripts.gui")
 local Wasi = require("scripts.wasm.wasi")
 
+local WasmInterp = require("scripts.wasm.interp")
+
 local Bridge = {}
 
 -- Window type constants (from NetHack)
@@ -281,6 +283,15 @@ function Bridge.create_imports(memory_ref, instance_ref)
     end,
   }
 
+  -- NON-BLOCKING: receive tile description from nh_describe_pos
+  imports["env.host_describe_result"] = function(buf_ptr, buf_len, monbuf_ptr, monbuf_len)
+    local memory = memory_ref()
+    local buf = Bridge.read_string_len(memory, buf_ptr, buf_len)
+    local monbuf = Bridge.read_string_len(memory, monbuf_ptr, monbuf_len)
+    if not storage.nh_bridge then storage.nh_bridge = {} end
+    storage.nh_bridge.describe_result = {buf = buf, monbuf = monbuf}
+  end
+
   -- Add WASI runtime imports (filesystem, clock, environment)
   Wasi.add_imports(imports, memory_ref, instance_ref)
 
@@ -294,6 +305,50 @@ function Bridge.init()
       cursor = {winid = 0, x = 0, y = 0},
     }
   end
+end
+
+-- Describe a map position by calling nh_describe_pos in WASM.
+-- Safe to call while paused at nhgetch: saves/restores exec state.
+-- Returns description string, or nil on failure.
+function Bridge.describe_pos(instance, x, y)
+  if not instance or not instance.exec then return nil end
+
+  -- Cache the export index
+  if not Bridge._describe_idx then
+    Bridge._describe_idx = WasmInterp.get_export(instance, "nh_describe_pos")
+    if not Bridge._describe_idx then return nil end
+  end
+
+  -- Save current execution state
+  local saved_exec = instance.exec
+
+  -- Clear any previous result
+  if storage.nh_bridge then
+    storage.nh_bridge.describe_result = nil
+  end
+
+  -- Call nh_describe_pos(x, y) and run to completion
+  local ok, err = pcall(function()
+    WasmInterp.call(instance, Bridge._describe_idx, {x, y})
+    WasmInterp.run(instance, 50000)
+  end)
+
+  -- Restore execution state (even on error)
+  instance.exec = saved_exec
+
+  if not ok then return nil end
+
+  -- Read result
+  local result = storage.nh_bridge and storage.nh_bridge.describe_result
+  if not result then return nil end
+  storage.nh_bridge.describe_result = nil
+
+  -- Combine monbuf (monster info) and buf (feature/object info)
+  local parts = {}
+  if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
+  if result.buf ~= "" then parts[#parts + 1] = result.buf end
+  if #parts == 0 then return nil end
+  return table.concat(parts, "  ")
 end
 
 return Bridge
