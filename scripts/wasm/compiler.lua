@@ -296,6 +296,21 @@ local cmp_branch_fold = {
     [0x4E] = {"((__c >= 0x80000000 and __c - 0x100000000 or __c) >= %s)", signed_i32_lit},  -- i32.ge_s
 }
 
+-- Group 5: local.get A + local.get B + binary op → single push with locals
+local get_get_fold = {
+    [0x6A] = "sp = sp + 1; stack[sp] = band(loc[%d] + loc[%d], 0xFFFFFFFF)",             -- i32.add
+    [0x6B] = "sp = sp + 1; stack[sp] = band(loc[%d] - loc[%d] + 0x100000000, 0xFFFFFFFF)", -- i32.sub
+    [0x46] = "sp = sp + 1; stack[sp] = loc[%d] == loc[%d] and 1 or 0",                    -- i32.eq
+    [0x47] = "sp = sp + 1; stack[sp] = loc[%d] ~= loc[%d] and 1 or 0",                    -- i32.ne
+    [0x71] = "sp = sp + 1; stack[sp] = band(loc[%d], loc[%d])",                            -- i32.and
+    [0x72] = "sp = sp + 1; stack[sp] = bor(loc[%d], loc[%d])",                             -- i32.or
+    [0x73] = "sp = sp + 1; stack[sp] = bxor(loc[%d], loc[%d])",                            -- i32.xor
+    [0x49] = "sp = sp + 1; stack[sp] = loc[%d] < loc[%d] and 1 or 0",                     -- i32.lt_u
+    [0x4B] = "sp = sp + 1; stack[sp] = loc[%d] > loc[%d] and 1 or 0",                     -- i32.gt_u
+    [0x4D] = "sp = sp + 1; stack[sp] = loc[%d] <= loc[%d] and 1 or 0",                    -- i32.le_u
+    [0x4F] = "sp = sp + 1; stack[sp] = loc[%d] >= loc[%d] and 1 or 0",                    -- i32.ge_u
+}
+
 ---------------------------------------------------------------------------
 -- Table-driven opcode emission
 -- One flat map: opcode -> {type, param}, plus emitters: type -> function.
@@ -683,8 +698,29 @@ local function generate_source(func_idx, func_def, module)
                     emit("  else stack[sp] = mem:load_i32(__addr) end end")
                 end
                 i = i + 2; goto continue_loop
-            elseif nop == 0x2D then -- i32.const C + i32.load8_u
+            elseif nop == 0x2D then -- i32.const C + i32.load8_u [+ branch]
                 local addr = C + ni.offset
+                -- 4-instr: const + load8_u + eqz + br_if → load byte, branch if zero
+                if i + 3 <= n_instrs and instrs[i+2].op == 0x45 and instrs[i+3].op == 0x0D then
+                    emit(string.format("do local __addr = %s", u32_lit(addr)))
+                    emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                    emit("  local __v = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF)")
+                    emit_cond_branch_nopop(instrs[i+3].depth, "__v == 0")
+                    emit("end")
+                    i = i + 4; goto continue_loop
+                end
+                -- 3-instr: const + load8_u + br_if → load byte, branch if nonzero
+                if i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
+                    emit(string.format("do local __addr = %s", u32_lit(addr)))
+                    emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                    emit("  local __v = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF)")
+                    emit_cond_branch_nopop(instrs[i+2].depth, "__v ~= 0")
+                    emit("end")
+                    i = i + 3; goto continue_loop
+                end
+                -- 2-instr: const + load8_u → push to stack
                 emit("sp = sp + 1")
                 emit(string.format("do local __addr = %s", u32_lit(addr)))
                 emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
@@ -919,6 +955,27 @@ local function generate_source(func_idx, func_def, module)
             i = i + 2; goto continue_loop
         end
 
+        if op == 0x45 and i + 1 <= n_instrs and instrs[i+1].op == 0x04 then
+            -- i32.eqz + if → branch to else when original value != 0
+            local if_instr = instrs[i+1]
+            local label_id = new_label()
+            local sb_var = "__sbs[" .. label_id .. "]"
+            block_sp = block_sp + 1
+            block_stack[block_sp] = {
+                type = "if", label_id = label_id,
+                n_results = if_instr.n_results, n_params = if_instr.n_params,
+                has_else = false, stack_base_var = sb_var,
+            }
+            emit("__cond = stack[sp]; sp = sp - 1")
+            if if_instr.n_params > 0 then
+                emit(sb_var .. " = sp - " .. if_instr.n_params)
+            else
+                emit(sb_var .. " = sp")
+            end
+            emit(string.format("if __cond ~= 0 then goto __else_%d end", label_id))
+            i = i + 2; goto continue_loop
+        end
+
         if op == 0x41 and i + 2 <= n_instrs then
             local C = instr.value
             local ni1 = instrs[i+1]
@@ -929,6 +986,15 @@ local function generate_source(func_idx, func_def, module)
                     emit_cond_branch(ni2.depth, string.format(fold[1], fold[2](C)))
                     i = i + 3; goto continue_loop
                 end
+            end
+        end
+
+        -- Group 5: local.get A + local.get B + binary op → single push
+        if op == 0x20 and i + 2 <= n_instrs and instrs[i+1].op == 0x20 then
+            local fold = get_get_fold[instrs[i+2].op]
+            if fold then
+                emit(string.format(fold, instr.idx, instrs[i+1].idx))
+                i = i + 3; goto continue_loop
             end
         end
 
