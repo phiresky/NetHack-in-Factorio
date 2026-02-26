@@ -368,7 +368,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
 
   local pos_key = x .. "," .. y
 
-  -- Check caches FIRST (before aborting any in-progress precache)
+  -- Check caches first
   local cached_short = Bridge._pos_cache[pos_key]
   if not full then
     if cached_short ~= nil then

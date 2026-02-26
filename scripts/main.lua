@@ -359,7 +359,6 @@ local function advance_turn(key_code)
 
   state.last_advance_tick = game.tick
   Bridge.clear_pos_cache(wasm_instance)
-  Bridge.mark_precache_dirty()
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
@@ -753,24 +752,6 @@ local function on_tick(event)
     update_player_position()
   end
 
-  -- Pre-cache descriptions in background (one per tick while idle)
-  if state.awaiting_input and wasm_instance then
-    local did_work = Bridge.tick_precache(wasm_instance)
-    if not did_work and Bridge._precache_dirty then
-      log("[precache] on_tick rescan triggered (dirty=true, did_work=false)")
-      local disp = storage.nh_display
-      if disp and disp.current_level then
-        local level = disp.levels[disp.current_level]
-        if level then
-          local surface = game.surfaces[level.surface_name]
-          if surface then Bridge.start_precache(surface) end
-        end
-      end
-    end
-    if did_work then
-      update_engine_gui()
-    end
-  end
 end
 
 ---------------------------------------------------------------------------
@@ -892,7 +873,6 @@ local function on_click_move(event)
 
   -- Clear state like advance_turn does, but don't execute yet
   Bridge.clear_pos_cache(wasm_instance)
-  Bridge.mark_precache_dirty()
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
