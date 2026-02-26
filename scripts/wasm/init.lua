@@ -348,63 +348,34 @@ function Parser:parse_element_section(size)
     local elements = {}
     for i = 1, count do
         local flags = self:read_leb128_u()
+        local seg = {}
         if flags == 0 then
             -- Active segment, implicit table 0
-            local offset_val, offset_op = self:read_init_expr()
-            local num_elems = self:read_leb128_u()
-            local func_indices = {}
-            for j = 1, num_elems do
-                func_indices[j] = self:read_leb128_u()
-            end
-            elements[i] = {
-                table_idx = 0,
-                offset = offset_val,
-                offset_opcode = offset_op,
-                func_indices = func_indices,
-            }
+            seg.table_idx = 0
+            seg.offset, seg.offset_opcode = self:read_init_expr()
         elseif flags == 1 then
             -- Passive segment
-            local _elemkind = self:read_byte() -- 0x00 = funcref
-            local num_elems = self:read_leb128_u()
-            local func_indices = {}
-            for j = 1, num_elems do
-                func_indices[j] = self:read_leb128_u()
-            end
-            elements[i] = {
-                passive = true,
-                func_indices = func_indices,
-            }
+            self:read_byte() -- elemkind (0x00 = funcref)
+            seg.passive = true
         elseif flags == 2 then
             -- Active segment with explicit table index
-            local table_idx = self:read_leb128_u()
-            local offset_val, offset_op = self:read_init_expr()
-            local _elemkind = self:read_byte() -- 0x00 = funcref
-            local num_elems = self:read_leb128_u()
-            local func_indices = {}
-            for j = 1, num_elems do
-                func_indices[j] = self:read_leb128_u()
-            end
-            elements[i] = {
-                table_idx = table_idx,
-                offset = offset_val,
-                offset_opcode = offset_op,
-                func_indices = func_indices,
-            }
+            seg.table_idx = self:read_leb128_u()
+            seg.offset, seg.offset_opcode = self:read_init_expr()
+            self:read_byte() -- elemkind
         elseif flags == 3 then
             -- Declarative segment
-            local _elemkind = self:read_byte()
-            local num_elems = self:read_leb128_u()
-            local func_indices = {}
-            for j = 1, num_elems do
-                func_indices[j] = self:read_leb128_u()
-            end
-            elements[i] = {
-                declarative = true,
-                func_indices = func_indices,
-            }
+            self:read_byte() -- elemkind
+            seg.declarative = true
         else
             fail("unsupported element segment flags: " .. flags)
         end
+        local num_elems = self:read_leb128_u()
+        local func_indices = {}
+        for j = 1, num_elems do
+            func_indices[j] = self:read_leb128_u()
+        end
+        seg.func_indices = func_indices
+        elements[i] = seg
     end
     return elements
 end
@@ -457,40 +428,24 @@ function Parser:parse_data_section(size)
     local segments = {}
     for i = 1, count do
         local flags = self:read_leb128_u()
+        local seg = {}
         if flags == 0 then
             -- Active segment, implicit memory 0
-            local offset_val, offset_op = self:read_init_expr()
-            local data_len = self:read_leb128_u()
-            local data = self:read_bytes(data_len)
-            segments[i] = {
-                memory_idx = 0,
-                offset = offset_val,
-                offset_opcode = offset_op,
-                data = data,
-            }
+            seg.memory_idx = 0
+            seg.offset, seg.offset_opcode = self:read_init_expr()
         elseif flags == 1 then
-            -- Passive segment (no memory/offset)
-            local data_len = self:read_leb128_u()
-            local data = self:read_bytes(data_len)
-            segments[i] = {
-                passive = true,
-                data = data,
-            }
+            -- Passive segment
+            seg.passive = true
         elseif flags == 2 then
             -- Active segment with explicit memory index
-            local mem_idx = self:read_leb128_u()
-            local offset_val, offset_op = self:read_init_expr()
-            local data_len = self:read_leb128_u()
-            local data = self:read_bytes(data_len)
-            segments[i] = {
-                memory_idx = mem_idx,
-                offset = offset_val,
-                offset_opcode = offset_op,
-                data = data,
-            }
+            seg.memory_idx = self:read_leb128_u()
+            seg.offset, seg.offset_opcode = self:read_init_expr()
         else
             fail("invalid data segment flags: " .. flags)
         end
+        local data_len = self:read_leb128_u()
+        seg.data = self:read_bytes(data_len)
+        segments[i] = seg
     end
     return segments
 end

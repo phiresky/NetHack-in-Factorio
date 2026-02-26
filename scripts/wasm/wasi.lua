@@ -408,48 +408,27 @@ function Wasi.add_imports(imports, memory_ref, instance_ref, opts)
         return WASI_ESUCCESS
     end
 
+    local function write_fdstat(memory, buf_ptr, filetype)
+        memory:store_byte(buf_ptr, filetype)
+        memory:store_byte(buf_ptr + 1, 0)
+        for off = 8, 20, 4 do
+            memory:store_i32(buf_ptr + off, 0xFFFFFFFF)
+        end
+    end
+
     imports["wasi_snapshot_preview1.fd_fdstat_get"] = function(fd, buf_ptr)
         local memory = memory_ref()
-        -- struct fdstat: u8 fs_filetype, u16 fs_flags, u64 fs_rights_base, u64 fs_rights_inheriting
-        -- total 24 bytes
-        if fd == 0 then
-            -- stdin: character device
-            memory:store_byte(buf_ptr, 2)  -- FILETYPE_CHARACTER_DEVICE
-            memory:store_byte(buf_ptr + 1, 0)
-            memory:store_i32(buf_ptr + 8, 0xFFFFFFFF)  -- all rights
-            memory:store_i32(buf_ptr + 12, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 16, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 20, 0xFFFFFFFF)
-            return WASI_ESUCCESS
-        elseif fd == 1 or fd == 2 then
-            -- stdout/stderr: character device
-            memory:store_byte(buf_ptr, 2)  -- FILETYPE_CHARACTER_DEVICE
-            memory:store_byte(buf_ptr + 1, 0)
-            memory:store_i32(buf_ptr + 8, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 12, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 16, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 20, 0xFFFFFFFF)
+        if fd == 0 or fd == 1 or fd == 2 then
+            write_fdstat(memory, buf_ptr, 2)  -- FILETYPE_CHARACTER_DEVICE
             return WASI_ESUCCESS
         elseif fd == 3 then
-            -- preopened directory
-            memory:store_byte(buf_ptr, WASI_FILETYPE_DIRECTORY)
-            memory:store_byte(buf_ptr + 1, 0)
-            memory:store_i32(buf_ptr + 8, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 12, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 16, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 20, 0xFFFFFFFF)
+            write_fdstat(memory, buf_ptr, WASI_FILETYPE_DIRECTORY)
             return WASI_ESUCCESS
         else
-            -- VFS file
             local vfs = get_vfs()
             local entry = vfs.fds[fd]
             if not entry then return WASI_EBADF end
-            memory:store_byte(buf_ptr, WASI_FILETYPE_REGULAR)
-            memory:store_byte(buf_ptr + 1, 0)
-            memory:store_i32(buf_ptr + 8, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 12, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 16, 0xFFFFFFFF)
-            memory:store_i32(buf_ptr + 20, 0xFFFFFFFF)
+            write_fdstat(memory, buf_ptr, WASI_FILETYPE_REGULAR)
             return WASI_ESUCCESS
         end
     end
