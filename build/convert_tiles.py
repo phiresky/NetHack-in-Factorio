@@ -46,6 +46,8 @@ def make_unique_names(tiles):
         if base in seen:
             seen[base] += 1
             names.append(f"{base}-{seen[base]}")
+            # print to stderr
+            print(f"WARNING: duplicate tile name '{tile['name']}' -> '{base}', renamed to '{base}-{seen[base]}'", file=sys.stderr)
         else:
             seen[base] = 1
             names.append(base)
@@ -194,10 +196,12 @@ def render_tile_opaque(palette, tile):
 # Sprite sheet generation
 # ================================================================
 
-def generate_sprite_sheet(palette, tiles, output_path):
+def generate_sprite_sheet(palette, tiles, output_path, palette_overrides=None):
     """Generate a sprite sheet PNG from a list of tiles.
 
     Layout: SHEET_COLS tiles per row, each tile TILE_DST x TILE_DST pixels.
+    palette_overrides: dict of {tile_index: {char: (r,g,b), ...}} to override
+        palette entries for specific tiles (rendered opaque, no transparent bg).
     """
     n_tiles = len(tiles)
     n_cols = SHEET_COLS
@@ -209,7 +213,13 @@ def generate_sprite_sheet(palette, tiles, output_path):
     sheet = bytearray(sheet_w * sheet_h * 4)
 
     for i, tile in enumerate(tiles):
-        tile_pixels = render_tile(palette, tile, transparent_bg=True)
+        overrides = palette_overrides and palette_overrides.get(tile["index"])
+        if overrides:
+            pal = dict(palette)
+            pal.update(overrides)
+            tile_pixels = render_tile(pal, tile, transparent_bg=False)
+        else:
+            tile_pixels = render_tile(palette, tile, transparent_bg=True)
         col = i % n_cols
         row = i // n_cols
         ox = col * TILE_DST
@@ -282,6 +292,14 @@ def main():
 
     print(f"  Parsed: {len(mon_tiles)} monsters, {len(obj_tiles)} objects, {len(oth_tiles)} other")
 
+    # Override misleading tile names from the source tile text files
+    # Tile 0 in other.txt is S_stone (unexplored rock) but named "dark part of a room"
+    # which collides with tile 20 (S_darkroom, the actual dark room floor).
+    other_name_overrides = {0: "stone"}
+    for tile in oth_tiles:
+        if tile["index"] in other_name_overrides:
+            tile["name"] = other_name_overrides[tile["index"]]
+
     # Generate unique sanitized names for each tile category
     mon_names = make_unique_names(mon_tiles)
     obj_names = make_unique_names(obj_tiles)
@@ -292,8 +310,13 @@ def main():
                                   os.path.join(sheets_dir, "nh-monsters.png"))
     n_obj = generate_sprite_sheet(obj_palette, obj_tiles,
                                   os.path.join(sheets_dir, "nh-objects.png"))
+    # S_darkroom (tile 20): checkerboard of '.' (71,108,108) and 'A' (0,0,0)
+    # looks bad at 2x — average both to a clean dark blue-gray
+    avg = (35, 54, 54)
+    oth_pal_overrides = {20: {".": avg, "A": avg}}
     n_oth = generate_sprite_sheet(oth_palette, oth_tiles,
-                                  os.path.join(sheets_dir, "nh-other.png"))
+                                  os.path.join(sheets_dir, "nh-other.png"),
+                                  palette_overrides=oth_pal_overrides)
 
     # Generate ground tile PNGs from specific "other" tiles
     ground_mapping = {
