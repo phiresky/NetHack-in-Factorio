@@ -27,6 +27,16 @@ function Memory.new(initial_pages, max_pages)
     return self
 end
 
+-- Wrap an existing data table as a Memory object (for save/restore)
+function Memory.wrap(data, page_count, max_pages)
+    local self = setmetatable({}, Memory)
+    self.data = data
+    self.page_count = page_count
+    self.max_pages = max_pages or MAX_PAGES
+    self.byte_length = page_count * PAGE_SIZE
+    return self
+end
+
 function Memory:size()
     return self.page_count
 end
