@@ -230,6 +230,11 @@ sprites: $(STAMPS)/sprites-optimized
 $(NETHACK):
 	git clone --depth 1 --branch $(NETHACK_TAG) $(NETHACK_REPO) $@
 
+# Files inside the clone are created by the clone step.
+# Without this, make fails with "No rule to make target 'NetHack/src/...'"
+# when the clone directory doesn't exist yet.
+$(NETHACK)/%: | $(NETHACK) ;
+
 # ================================================================
 # Stage 2 — Build 32-bit host tools
 # ================================================================

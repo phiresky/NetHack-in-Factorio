@@ -1044,8 +1044,9 @@ function Interp.instantiate(module, imports, compiled_sources)
         end
 
         instance.compiled_funcs = compiled
-        instance.ctx = create_ctx(instance)
     end
+
+    instance.ctx = create_ctx(instance)
 
     -- Build exports convenience map
     -- Each exported function becomes a synchronous wrapper (for tests / simple use)
@@ -1256,6 +1257,11 @@ function Interp.run(instance, max_instructions)
     state.running = true
     local instructions = 0
 
+    -- Debug counters (upvalues so they survive pcall)
+    local dbg_segments = 0
+    local dbg_calls = 0
+    local dbg_interp_instrs = 0
+
     -- Main interpretation loop
     local ok, err = pcall(function()
         -- Cache state fields as locals (not upvalues) for maximum speed
@@ -1300,6 +1306,7 @@ function Interp.run(instance, max_instructions)
                 while true do
                     -- Rough instruction cost per segment (~50 instrs between calls)
                     instructions = instructions + 50
+                    dbg_segments = dbg_segments + 1
                     if instructions >= max_instr then
                         state.sp = sp; state.locals = loc
                         state.memory = memory; state.globals = globals
@@ -1338,7 +1345,24 @@ function Interp.run(instance, max_instructions)
                         local target_def_ci = module.funcs[target_idx]
                         if not target_def_ci then fail("Unknown function index") end
                         if target_def_ci.type_idx ~= type_idx then
-                            fail("indirect call type mismatch")
+                            -- Structural type check
+                            local expected = module.types[type_idx + 1]
+                            local actual = module.types[target_def_ci.type_idx + 1]
+                            if not expected or not actual
+                                or #expected.params ~= #actual.params
+                                or #expected.results ~= #actual.results then
+                                fail("indirect call type mismatch")
+                            end
+                            for ci = 1, #expected.params do
+                                if expected.params[ci] ~= actual.params[ci] then
+                                    fail("indirect call type mismatch")
+                                end
+                            end
+                            for ci = 1, #expected.results do
+                                if expected.results[ci] ~= actual.results[ci] then
+                                    fail("indirect call type mismatch")
+                                end
+                            end
                         end
                     elseif target == -3 then
                         -- throw: create exception and propagate
@@ -1366,6 +1390,7 @@ function Interp.run(instance, max_instructions)
                         target_idx = target
                     end
 
+                    dbg_calls = dbg_calls + 1
                     -- Handle the call (common path for direct and indirect)
                     local target_def = module.funcs[target_idx]
                     if not target_def then
@@ -1410,18 +1435,15 @@ function Interp.run(instance, max_instructions)
                         local args_base = sp - num_params
                         call_sp = call_sp + 1
                         if call_sp > 1000 then fail("call stack exhaustion") end
-                        call_stack[call_sp] = {
-                            locals = loc,
-                            pc = pc,
-                            code = code,
-                            block_stack = block_stack,
-                            block_sp = block_sp,
-                            block_map = block_map,
-                            stack_base = args_base,
-                            return_arity = #target_type.results,
-                            func_idx = func_idx,
-                            compiled_resume = ctx.resume_point,
-                        }
+                        local frame = call_stack[call_sp]
+                        if not frame then frame = {}; call_stack[call_sp] = frame end
+                        frame.locals = loc; frame.pc = pc; frame.code = code
+                        frame.block_stack = block_stack; frame.block_sp = block_sp
+                        frame.block_map = block_map; frame.stack_base = args_base
+                        frame.return_arity = #target_type.results
+                        frame.func_idx = func_idx
+                        frame.compiled_resume = ctx.resume_point
+                        frame.__sbs = ctx.__sbs
 
                         func_idx = target_idx
                         loc = {}
@@ -1470,6 +1492,7 @@ function Interp.run(instance, max_instructions)
                 local op = code[pc]
                 pc = pc + 1
                 instructions = instructions + 1
+                dbg_interp_instrs = dbg_interp_instrs + 1
 
                 -- Inlined opcodes ordered by frequency (covers ~90% of instructions)
                 if not inline_opcodes then
@@ -1533,17 +1556,15 @@ function Interp.run(instance, max_instructions)
                         else
                             call_sp = call_sp + 1
                             if call_sp > 1000 then fail("call stack exhaustion") end
-                            call_stack[call_sp] = {
-                                locals = loc,
-                                pc = pc,
-                                code = code,
-                                block_stack = block_stack,
-                                block_sp = block_sp,
-                                block_map = block_map,
-                                stack_base = args_base,
-                                return_arity = #target_type.results,
-                                func_idx = func_idx,
-                            }
+                            local frame = call_stack[call_sp]
+                            if not frame then frame = {}; call_stack[call_sp] = frame end
+                            frame.locals = loc; frame.pc = pc; frame.code = code
+                            frame.block_stack = block_stack; frame.block_sp = block_sp
+                            frame.block_map = block_map; frame.stack_base = args_base
+                            frame.return_arity = #target_type.results
+                            frame.func_idx = func_idx
+                            frame.compiled_resume = nil
+                            frame.__sbs = ctx.__sbs
 
                             func_idx = target_idx
                             loc = {}
@@ -1570,6 +1591,8 @@ function Interp.run(instance, max_instructions)
                                 arity = #target_type.results,
                                 stack_height = sp,
                             }
+                            entry_point = 0
+                            break -- exit inner loop to check compiled version
                         end
                     end
 
@@ -1906,17 +1929,15 @@ function Interp.run(instance, max_instructions)
                         local args_base = sp - num_params
                         call_sp = call_sp + 1
                         if call_sp > 1000 then fail("call stack exhaustion") end
-                        call_stack[call_sp] = {
-                            locals = loc,
-                            pc = pc,
-                            code = code,
-                            block_stack = block_stack,
-                            block_sp = block_sp,
-                            block_map = block_map,
-                            stack_base = args_base,
-                            return_arity = #target_type.results,
-                            func_idx = func_idx,
-                        }
+                        local frame = call_stack[call_sp]
+                        if not frame then frame = {}; call_stack[call_sp] = frame end
+                        frame.locals = loc; frame.pc = pc; frame.code = code
+                        frame.block_stack = block_stack; frame.block_sp = block_sp
+                        frame.block_map = block_map; frame.stack_base = args_base
+                        frame.return_arity = #target_type.results
+                        frame.func_idx = func_idx
+                        frame.compiled_resume = nil
+                        frame.__sbs = ctx.__sbs
 
                         func_idx = target_idx
                         loc = {}
@@ -1943,6 +1964,8 @@ function Interp.run(instance, max_instructions)
                             arity = #target_type.results,
                             stack_height = sp,
                         }
+                        entry_point = 0
+                        break -- exit inner loop to check compiled version
                     end
 
                 elseif op == 0x1A then -- drop
@@ -2161,17 +2184,15 @@ function Interp.run(instance, max_instructions)
                         else
                             call_sp = call_sp + 1
                             if call_sp > 1000 then fail("call stack exhaustion") end
-                            call_stack[call_sp] = {
-                                locals = loc,
-                                pc = pc,
-                                code = code,
-                                block_stack = block_stack,
-                                block_sp = block_sp,
-                                block_map = block_map,
-                                stack_base = args_base,
-                                return_arity = #target_type.results,
-                                func_idx = func_idx,
-                            }
+                            local frame = call_stack[call_sp]
+                            if not frame then frame = {}; call_stack[call_sp] = frame end
+                            frame.locals = loc; frame.pc = pc; frame.code = code
+                            frame.block_stack = block_stack; frame.block_sp = block_sp
+                            frame.block_map = block_map; frame.stack_base = args_base
+                            frame.return_arity = #target_type.results
+                            frame.func_idx = func_idx
+                            frame.compiled_resume = nil
+                            frame.__sbs = ctx.__sbs
 
                             func_idx = target_idx
                             loc = {}
@@ -2198,18 +2219,24 @@ function Interp.run(instance, max_instructions)
                                 arity = #target_type.results,
                                 stack_height = sp,
                             }
+                            entry_point = 0
+                            break -- exit inner loop to check compiled version
                         end
                     end
                 end
             end -- while running
             end -- if compiled_fn then ... else
 
+            -- If running is still true, a callee was set up — loop back
+            -- to check if the callee has a compiled version
+            if running then -- luacheck: ignore
+                -- Continue outer while-true loop
+            else
             -- Function ended (running became false)
             if state.exception then
                 -- Exception propagation: unwind call frames until handled
                 while call_sp > 0 do
                     local frame = call_stack[call_sp]
-                    call_stack[call_sp] = nil
                     call_sp = call_sp - 1
 
                     -- Restore caller frame
@@ -2224,6 +2251,11 @@ function Interp.run(instance, max_instructions)
                     state.do_return = false
                     state.call_func = nil
                     func_idx = frame.func_idx
+                    local f_compiled_resume_ex = frame.compiled_resume
+                    local f_sbs_ex = frame.__sbs
+                    -- Nil out large references for GC but keep the table
+                    frame.locals = nil; frame.block_stack = nil
+                    frame.code = nil; frame.block_map = nil; frame.__sbs = nil
 
                     -- Try to handle exception in this frame
                     if handle_exception(state, state.exception) then
@@ -2235,7 +2267,8 @@ function Interp.run(instance, max_instructions)
                         running = true
                         memory = state.memory; mem_data = memory.data
                         mem_len = memory.byte_length; globals = state.globals
-                        entry_point = frame.compiled_resume or 0
+                        entry_point = f_compiled_resume_ex or 0
+                        ctx.__sbs = f_sbs_ex
                         break
                     end
                     -- Not handled, keep unwinding
@@ -2251,30 +2284,41 @@ function Interp.run(instance, max_instructions)
                     fail("unhandled exception (tag=" .. tostring(state.exception.tag) .. ")")
                 end
             elseif call_sp > 0 then
-                -- Restore caller frame
+                -- Restore caller frame (keep table for reuse)
                 local frame = call_stack[call_sp]
-                call_stack[call_sp] = nil -- allow GC
                 call_sp = call_sp - 1
 
                 local return_arity = frame.return_arity
+                local f_locals = frame.locals; local f_pc = frame.pc
+                local f_code = frame.code; local f_block_stack = frame.block_stack
+                local f_block_sp = frame.block_sp; local f_block_map = frame.block_map
+                local f_func_idx = frame.func_idx
+                local f_compiled_resume = frame.compiled_resume
+                local f_sbs = frame.__sbs
+                -- Nil out large references for GC but keep the table
+                frame.locals = nil; frame.block_stack = nil; frame.code = nil
+                frame.block_map = nil; frame.__sbs = nil
+
                 if return_arity == 1 then
                     -- Single return (most common): no temp table needed
                     local result = stack[sp]
                     sp = frame.stack_base
-                    loc = frame.locals; pc = frame.pc; code = frame.code
-                    block_stack = frame.block_stack; block_sp = frame.block_sp
-                    block_map = frame.block_map; func_idx = frame.func_idx
+                    loc = f_locals; pc = f_pc; code = f_code
+                    block_stack = f_block_stack; block_sp = f_block_sp
+                    block_map = f_block_map; func_idx = f_func_idx
                     running = true; state.running = true
-                    entry_point = frame.compiled_resume or 0
+                    entry_point = f_compiled_resume or 0
+                    ctx.__sbs = f_sbs
                     mem_data = memory.data; mem_len = memory.byte_length
                     sp = sp + 1; stack[sp] = result
                 elseif return_arity == 0 then
                     sp = frame.stack_base
-                    loc = frame.locals; pc = frame.pc; code = frame.code
-                    block_stack = frame.block_stack; block_sp = frame.block_sp
-                    block_map = frame.block_map; func_idx = frame.func_idx
+                    loc = f_locals; pc = f_pc; code = f_code
+                    block_stack = f_block_stack; block_sp = f_block_sp
+                    block_map = f_block_map; func_idx = f_func_idx
                     running = true; state.running = true
-                    entry_point = frame.compiled_resume or 0
+                    entry_point = f_compiled_resume or 0
+                    ctx.__sbs = f_sbs
                     mem_data = memory.data; mem_len = memory.byte_length
                 else
                     -- Multi-return (rare)
@@ -2283,11 +2327,12 @@ function Interp.run(instance, max_instructions)
                         results[i] = stack[sp]; sp = sp - 1
                     end
                     sp = frame.stack_base
-                    loc = frame.locals; pc = frame.pc; code = frame.code
-                    block_stack = frame.block_stack; block_sp = frame.block_sp
-                    block_map = frame.block_map; func_idx = frame.func_idx
+                    loc = f_locals; pc = f_pc; code = f_code
+                    block_stack = f_block_stack; block_sp = f_block_sp
+                    block_map = f_block_map; func_idx = f_func_idx
                     running = true; state.running = true
-                    entry_point = frame.compiled_resume or 0
+                    entry_point = f_compiled_resume or 0
+                    ctx.__sbs = f_sbs
                     mem_data = memory.data; mem_len = memory.byte_length
                     for i = 1, return_arity do
                         sp = sp + 1; stack[sp] = results[i]
@@ -2304,6 +2349,7 @@ function Interp.run(instance, max_instructions)
                 exec.finished = true
                 return -- exits pcall
             end
+            end -- if running then ... else (function ended)
         end -- while true
     end) -- pcall
 
@@ -2312,6 +2358,10 @@ function Interp.run(instance, max_instructions)
 
     -- Accumulate instructions into instance-level counter
     instance.total_instructions = instance.total_instructions + instructions
+    -- Debug: accumulate counters
+    instance._dbg_segments = (instance._dbg_segments or 0) + dbg_segments
+    instance._dbg_calls = (instance._dbg_calls or 0) + dbg_calls
+    instance._dbg_interp_instrs = (instance._dbg_interp_instrs or 0) + dbg_interp_instrs
 
     if not ok then
         exec.finished = true

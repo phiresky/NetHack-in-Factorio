@@ -495,6 +495,21 @@ if WasmInterp.use_compiler then
     mode = compiled_sources and "AOT" or "JIT"
 end
 print(string.format("  Compiler:     %s", mode))
+-- Debug counters
+if instance._dbg_segments then
+    print(string.format("  [DBG] Compiled segments: %dK, Calls: %dK, Interp instrs: %dK",
+        (instance._dbg_segments or 0) / 1000,
+        (instance._dbg_calls or 0) / 1000,
+        (instance._dbg_interp_instrs or 0) / 1000))
+    local seg = instance._dbg_segments or 0
+    local calls = instance._dbg_calls or 0
+    local interp = instance._dbg_interp_instrs or 0
+    if seg > 0 then
+        print(string.format("  [DBG] Avg instrs between calls: %.1f (estimated from %dK segments for %dK counted instrs)",
+            total_instrs / seg, seg / 1000, total_instrs / 1000))
+    end
+    print(string.format("  [DBG] Calls per second: %.0fK", calls / (startup_elapsed + play_elapsed) / 1000))
+end
 
 -- Machine-parseable output line (for scripts/benchmarking)
 io.write(string.format("RESULT load=%.2f parse=%.2f instantiate=%.2f startup=%.2f play=%.2f total_exec=%.2f inst_startup=%d inst_total=%d compiler=%s\n",

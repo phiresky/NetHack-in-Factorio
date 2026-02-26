@@ -383,6 +383,12 @@ local function generate_source(func_idx, func_def, module)
     -- Emit the function header
     emit_raw("return function(stack, sp, loc, mem, globals, ctx, entry_point)")
 
+    -- Pre-declare block-scope variables at function top level
+    -- __sbs: table of stack base values per block (saved/restored via ctx.__sbs)
+    -- __cond: reused for if conditions
+    emit("local __sbs, __cond")
+    emit("if entry_point > 0 then __sbs = ctx.__sbs else __sbs = {}; ctx.__sbs = __sbs end")
+
     -- Emit the entry point dispatcher for resume after calls
     if n_calls > 0 then
         emit("if entry_point > 0 then")
@@ -439,11 +445,244 @@ local function generate_source(func_idx, func_def, module)
         end
     end
 
+    -- Helper: emit conditional branch (shared by br_if and peephole fusions)
+    -- cond_expr: Lua expression string referencing __c (e.g. "__c ~= 0", "__c == 0")
+    local function emit_cond_branch(depth, cond_expr)
+        local target = get_branch_target(depth)
+        if not target then return end
+        emit("do local __c = stack[sp]; sp = sp - 1")
+        if target.type == "func" then
+            emit("  if " .. cond_expr .. " then ctx.call_target = nil; return sp end")
+        else
+            local arity = target.branch_arity or target.n_results or 0
+            emit("  if " .. cond_expr .. " then")
+            if target.stack_base_var then
+                emit_branch_adjust(target.stack_base_var, arity)
+            end
+            if target.type == "loop" then
+                emit("    goto L_" .. target.label_id)
+            else
+                emit("    goto B_" .. target.label_id)
+            end
+            emit("  end")
+        end
+        emit("end")
+    end
+
     -- Process each instruction
     local i = 1
     while i <= n_instrs do
         local instr = instrs[i]
         local op = instr.op
+
+        -- === Peephole optimization: multi-instruction patterns ===
+        -- Fuses common instruction sequences into single optimized Lua statements.
+        -- Reduces stack[sp] read/write traffic and generated code size.
+
+        -- Group 1: i32.const C + binary/cmp/load op → fold constant
+        if op == 0x41 and i + 1 <= n_instrs then
+            local C = instr.value
+            local ni = instrs[i+1]
+            local nop = ni.op
+
+            if nop == 0x6A then -- i32.const C + i32.add
+                if C ~= 0 then emit(string.format("stack[sp] = band(stack[sp] + %s, 0xFFFFFFFF)", u32_lit(C))) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x6B then -- i32.const C + i32.sub (A - C)
+                if C ~= 0 then emit(string.format("stack[sp] = band(stack[sp] - %s, 0xFFFFFFFF)", u32_lit(C))) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x71 then -- i32.const C + i32.and
+                emit(string.format("stack[sp] = band(stack[sp], %s)", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x72 then -- i32.const C + i32.or
+                if C ~= 0 then emit(string.format("stack[sp] = bor(stack[sp], %s)", u32_lit(C))) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x73 then -- i32.const C + i32.xor
+                if C ~= 0 then emit(string.format("stack[sp] = bxor(stack[sp], %s)", u32_lit(C))) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x74 then -- i32.const C + i32.shl
+                local s = bit32.band(C, 31)
+                if s ~= 0 then emit(string.format("stack[sp] = lshift(stack[sp], %d)", s)) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x75 then -- i32.const C + i32.shr_s
+                local s = bit32.band(C, 31)
+                if s ~= 0 then emit(string.format("stack[sp] = arshift(stack[sp], %d)", s)) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x76 then -- i32.const C + i32.shr_u
+                local s = bit32.band(C, 31)
+                if s ~= 0 then emit(string.format("stack[sp] = rshift(stack[sp], %d)", s)) end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x46 then -- i32.const C + i32.eq
+                emit(string.format("stack[sp] = stack[sp] == %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x47 then -- i32.const C + i32.ne
+                emit(string.format("stack[sp] = stack[sp] ~= %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x49 then -- i32.const C + i32.lt_u
+                emit(string.format("stack[sp] = stack[sp] < %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x4B then -- i32.const C + i32.gt_u
+                emit(string.format("stack[sp] = stack[sp] > %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x4D then -- i32.const C + i32.le_u
+                emit(string.format("stack[sp] = stack[sp] <= %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x4F then -- i32.const C + i32.ge_u
+                emit(string.format("stack[sp] = stack[sp] >= %s and 1 or 0", u32_lit(C)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x28 then -- i32.const C + i32.load
+                local addr = C + ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = %s", u32_lit(addr)))
+                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                if bit32.band(addr, 3) == 0 then
+                    emit(string.format("  stack[sp] = mem.data[%d] or 0 end", bit32.rshift(addr, 2)))
+                else
+                    emit("  if band(__addr, 3) == 0 then stack[sp] = mem.data[rshift(__addr, 2)] or 0")
+                    emit("  else stack[sp] = mem:load_i32(__addr) end end")
+                end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x2D then -- i32.const C + i32.load8_u
+                local addr = C + ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = %s", u32_lit(addr)))
+                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
+                i = i + 2; goto continue_loop
+            end
+        end
+
+        -- Group 2: local.get X + i32.const C + binary op
+        if op == 0x20 and i + 2 <= n_instrs and instrs[i+1].op == 0x41 then
+            local X = instr.idx
+            local C = instrs[i+1].value
+            local n2 = instrs[i+2]
+            local nop2 = n2.op
+
+            if nop2 == 0x6A then -- local.get + i32.const + i32.add
+                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d] + %s, 0xFFFFFFFF)", X, u32_lit(C)))
+                i = i + 3; goto continue_loop
+            elseif nop2 == 0x6B then -- local.get + i32.const + i32.sub
+                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d] - %s, 0xFFFFFFFF)", X, u32_lit(C)))
+                i = i + 3; goto continue_loop
+            elseif nop2 == 0x71 then -- local.get + i32.const + i32.and
+                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d], %s)", X, u32_lit(C)))
+                i = i + 3; goto continue_loop
+            elseif nop2 == 0x72 then -- local.get + i32.const + i32.or
+                emit(string.format("sp = sp + 1; stack[sp] = bor(loc[%d], %s)", X, u32_lit(C)))
+                i = i + 3; goto continue_loop
+            elseif nop2 == 0x74 then -- local.get + i32.const + i32.shl
+                emit(string.format("sp = sp + 1; stack[sp] = lshift(loc[%d], %d)", X, bit32.band(C, 31)))
+                i = i + 3; goto continue_loop
+            elseif nop2 == 0x76 then -- local.get + i32.const + i32.shr_u
+                emit(string.format("sp = sp + 1; stack[sp] = rshift(loc[%d], %d)", X, bit32.band(C, 31)))
+                i = i + 3; goto continue_loop
+            end
+        end
+
+        -- Group 3: local.get X + memory load → direct load from local
+        if op == 0x20 and i + 1 <= n_instrs then
+            local X = instr.idx
+            local ni = instrs[i+1]
+            local nop = ni.op
+
+            if nop == 0x28 then -- local.get + i32.load
+                local off = ni.offset
+                emit("sp = sp + 1")
+                if off == 0 then
+                    emit(string.format("do local __addr = loc[%d]", X))
+                else
+                    emit(string.format("do local __addr = loc[%d] + %d", X, off))
+                end
+                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  if band(__addr, 3) == 0 then stack[sp] = mem.data[rshift(__addr, 2)] or 0")
+                emit("  else stack[sp] = mem:load_i32(__addr) end end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x2D then -- local.get + i32.load8_u
+                local off = ni.offset
+                emit("sp = sp + 1")
+                if off == 0 then
+                    emit(string.format("do local __addr = loc[%d]", X))
+                else
+                    emit(string.format("do local __addr = loc[%d] + %d", X, off))
+                end
+                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x2C then -- local.get + i32.load8_s
+                local off = ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = loc[%d] + %d", X, off))
+                emit("  local __v = mem:load_i8_s(__addr)")
+                emit("  if __v < 0 then __v = __v + 0x100000000 end")
+                emit("  stack[sp] = __v end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x2E then -- local.get + i32.load16_s
+                local off = ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = loc[%d] + %d", X, off))
+                emit("  local __v = mem:load_i16_s(__addr)")
+                emit("  if __v < 0 then __v = __v + 0x100000000 end")
+                emit("  stack[sp] = __v end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x2F then -- local.get + i32.load16_u
+                local off = ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = loc[%d] + %d; stack[sp] = mem:load_i16_u(__addr) end", X, off))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x36 then -- local.get + i32.store (value from local)
+                local off = ni.offset
+                if off == 0 then
+                    emit(string.format("do local __addr = stack[sp]; sp = sp - 1"))
+                else
+                    emit(string.format("do local __addr = stack[sp] + %d; sp = sp - 1", off))
+                end
+                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit(string.format("  local __v = band(loc[%d], 0xFFFFFFFF)", X))
+                emit("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = __v")
+                emit("  else mem:store_i32(__addr, __v) end end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x3A then -- local.get + i32.store8 (value from local)
+                local off = ni.offset
+                if off == 0 then
+                    emit("do local __addr = stack[sp]; sp = sp - 1")
+                else
+                    emit(string.format("do local __addr = stack[sp] + %d; sp = sp - 1", off))
+                end
+                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                emit("  local __sh = __bo * 8; local __mask = bnot(lshift(0xFF, __sh))")
+                emit("  local __w = mem.data[__wi] or 0")
+                emit(string.format("  mem.data[__wi] = bor(band(__w, __mask), lshift(band(loc[%d], 0xFF), __sh)) end", X))
+                i = i + 2; goto continue_loop
+            end
+        end
+
+        -- Group 4: Comparison + branch fusion
+        if op == 0x45 and i + 1 <= n_instrs and instrs[i+1].op == 0x0D then
+            -- i32.eqz + br_if → branch if value == 0
+            emit_cond_branch(instrs[i+1].depth, "__c == 0")
+            i = i + 2; goto continue_loop
+        end
+
+        if op == 0x41 and i + 2 <= n_instrs then
+            local C = instr.value
+            local ni1 = instrs[i+1]
+            local ni2 = instrs[i+2]
+            if ni2.op == 0x0D then -- ... + br_if
+                if ni1.op == 0x47 then -- i32.const C + i32.ne + br_if
+                    emit_cond_branch(ni2.depth, string.format("__c ~= %s", u32_lit(C)))
+                    i = i + 3; goto continue_loop
+                elseif ni1.op == 0x46 then -- i32.const C + i32.eq + br_if
+                    emit_cond_branch(ni2.depth, string.format("__c == %s", u32_lit(C)))
+                    i = i + 3; goto continue_loop
+                end
+            end
+        end
+
+        -- === End peephole, fall through to single-instruction codegen ===
 
         -- Control flow
         if op == 0x00 then -- unreachable
@@ -454,7 +693,7 @@ local function generate_source(func_idx, func_def, module)
 
         elseif op == 0x02 then -- block
             local label_id = new_label()
-            local sb_var = "__sb_" .. label_id
+            local sb_var = "__sbs[" .. label_id .. "]"
             block_sp = block_sp + 1
             block_stack[block_sp] = {
                 type = "block",
@@ -464,16 +703,14 @@ local function generate_source(func_idx, func_def, module)
                 stack_base_var = sb_var,
             }
             if instr.n_params > 0 then
-                emit("local " .. sb_var .. " = sp - " .. instr.n_params)
+                emit(sb_var .. " = sp - " .. instr.n_params)
             else
-                emit("local " .. sb_var .. " = sp")
+                emit(sb_var .. " = sp")
             end
-            emit("do -- block B_" .. label_id)
-            indent_level = indent_level + 1
 
         elseif op == 0x03 then -- loop
             local label_id = new_label()
-            local sb_var = "__sb_" .. label_id
+            local sb_var = "__sbs[" .. label_id .. "]"
             block_sp = block_sp + 1
             block_stack[block_sp] = {
                 type = "loop",
@@ -484,17 +721,15 @@ local function generate_source(func_idx, func_def, module)
                 stack_base_var = sb_var,
             }
             if instr.n_params > 0 then
-                emit("local " .. sb_var .. " = sp - " .. instr.n_params)
+                emit(sb_var .. " = sp - " .. instr.n_params)
             else
-                emit("local " .. sb_var .. " = sp")
+                emit(sb_var .. " = sp")
             end
             emit("::L_" .. label_id .. "::")
-            emit("do -- loop L_" .. label_id)
-            indent_level = indent_level + 1
 
         elseif op == 0x04 then -- if
             local label_id = new_label()
-            local sb_var = "__sb_" .. label_id
+            local sb_var = "__sbs[" .. label_id .. "]"
             block_sp = block_sp + 1
             block_stack[block_sp] = {
                 type = "if",
@@ -504,56 +739,40 @@ local function generate_source(func_idx, func_def, module)
                 has_else = false,
                 stack_base_var = sb_var,
             }
-            emit("local __cond = stack[sp]; sp = sp - 1")
+            emit("__cond = stack[sp]; sp = sp - 1")
             if instr.n_params > 0 then
-                emit("local " .. sb_var .. " = sp - " .. instr.n_params)
+                emit(sb_var .. " = sp - " .. instr.n_params)
             else
-                emit("local " .. sb_var .. " = sp")
+                emit(sb_var .. " = sp")
             end
-            emit("do -- if I_" .. label_id)
-            indent_level = indent_level + 1
-            emit("if __cond ~= 0 then")
-            indent_level = indent_level + 1
+            emit("if __cond == 0 then goto __else_" .. label_id .. " end")
 
         elseif op == 0x05 then -- else
             local blk = block_stack[block_sp]
             blk.has_else = true
-            indent_level = indent_level - 1
-            emit("else")
-            indent_level = indent_level + 1
+            emit("goto B_" .. blk.label_id)
+            emit("::__else_" .. blk.label_id .. "::")
 
         elseif op == 0x0B then -- end
             if block_sp <= 1 then
                 -- End of function
                 -- Results are on stack. Signal completion.
                 emit("ctx.call_target = nil")
-                emit("return sp")
+                emit("do return sp end")
             else
                 local blk = block_stack[block_sp]
                 block_sp = block_sp - 1
 
                 if blk.type == "if" then
-                    -- If without else still needs the else branch to handle the false case
                     if not blk.has_else then
-                        indent_level = indent_level - 1
-                        emit("end -- if")
-                    else
-                        indent_level = indent_level - 1
-                        emit("end -- if/else")
+                        emit("::__else_" .. blk.label_id .. "::")
                     end
-                    indent_level = indent_level - 1
-                    emit("end -- do if I_" .. blk.label_id)
                     emit("::B_" .. blk.label_id .. "::")
                 elseif blk.type == "loop" then
-                    indent_level = indent_level - 1
-                    emit("end -- do loop L_" .. blk.label_id)
+                    -- loop body falls through naturally
                 elseif blk.type == "block" then
-                    indent_level = indent_level - 1
-                    emit("end -- do block B_" .. blk.label_id)
                     emit("::B_" .. blk.label_id .. "::")
                 elseif blk.type == "try_table" then
-                    indent_level = indent_level - 1
-                    emit("end -- do try_table")
                     emit("::B_" .. blk.label_id .. "::")
                 end
             end
@@ -563,7 +782,7 @@ local function generate_source(func_idx, func_def, module)
             if target then
                 if target.type == "func" then
                     emit("ctx.call_target = nil")
-                    emit("return sp")
+                    emit("do return sp end")
                 else
                     local arity = target.branch_arity or target.n_results or 0
                     if arity > 0 and target.stack_base_var then
@@ -580,26 +799,7 @@ local function generate_source(func_idx, func_def, module)
             end
 
         elseif op == 0x0D then -- br_if
-            local target = get_branch_target(instr.depth)
-            if target then
-                emit("do local __c = stack[sp]; sp = sp - 1")
-                if target.type == "func" then
-                    emit("  if __c ~= 0 then ctx.call_target = nil; return sp end")
-                else
-                    local arity = target.branch_arity or target.n_results or 0
-                    emit("  if __c ~= 0 then")
-                    if target.stack_base_var then
-                        emit_branch_adjust(target.stack_base_var, arity)
-                    end
-                    if target.type == "loop" then
-                        emit("    goto L_" .. target.label_id)
-                    else
-                        emit("    goto B_" .. target.label_id)
-                    end
-                    emit("  end")
-                end
-                emit("end")
-            end
+            emit_cond_branch(instr.depth, "__c ~= 0")
 
         elseif op == 0x0E then -- br_table
             emit("do")
@@ -655,20 +855,20 @@ local function generate_source(func_idx, func_def, module)
 
         elseif op == 0x0F then -- return
             emit("ctx.call_target = nil")
-            emit("return sp")
+            emit("do return sp end")
 
         -- Calls: return to interpreter
         elseif op == 0x10 then -- call
             local csid = instr.call_site_id
             emit(string.format("ctx.call_target = %d; ctx.resume_point = %d", instr.func_idx, csid))
-            emit("return sp")
+            emit("do return sp end")
             emit(string.format("::C_%d::", csid))
 
         elseif op == 0x11 then -- call_indirect
             local csid = instr.call_site_id
             emit(string.format("ctx.call_indirect_type = %d; ctx.call_indirect_table = %d", instr.type_idx, instr.table_idx))
             emit(string.format("ctx.call_target = -2; ctx.resume_point = %d", csid))
-            emit("return sp")
+            emit("do return sp end")
             emit(string.format("::C_%d::", csid))
 
         -- Exception handling: fall back to interpreter for these
@@ -681,7 +881,7 @@ local function generate_source(func_idx, func_def, module)
         elseif op == 0x1F then -- try_table
             -- For now, fall back to interpreter for try_table
             local label_id = new_label()
-            local sb_var = "__sb_" .. label_id
+            local sb_var = "__sbs[" .. label_id .. "]"
             block_sp = block_sp + 1
             block_stack[block_sp] = {
                 type = "try_table",
@@ -691,14 +891,10 @@ local function generate_source(func_idx, func_def, module)
                 stack_base_var = sb_var,
             }
             if instr.n_params > 0 then
-                emit("local " .. sb_var .. " = sp - " .. instr.n_params)
+                emit(sb_var .. " = sp - " .. instr.n_params)
             else
-                emit("local " .. sb_var .. " = sp")
+                emit(sb_var .. " = sp")
             end
-            -- We can't easily compile try_table, but NetHack doesn't use EH instructions
-            -- in the hot path. Fall back to interpreter.
-            emit("do -- try_table (simplified)")
-            indent_level = indent_level + 1
 
         -- Locals
         elseif op == 0x20 then -- local.get
@@ -1177,6 +1373,7 @@ local function generate_source(func_idx, func_def, module)
         end
 
         i = i + 1
+        ::continue_loop::
     end
 
     -- Close the function
@@ -1246,9 +1443,7 @@ end
 function Compiler.load_source(source, func_idx)
     local fn, err = load(source, "=wasm_func_" .. func_idx)
     if not fn then
-        if Compiler.debug then
-            io.stderr:write(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
-        end
+        io.stderr:write(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
         return nil
     end
     return fn()
