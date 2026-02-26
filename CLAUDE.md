@@ -255,6 +255,13 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   skips GUI destruction for visible NHW_TEXT windows, deferring to the OK button click
   handler. The close handler checks if window data still exists to decide whether to
   advance the turn (exists = nhgetch waiting for dismissal; nil = next game command).
+- **`factorioconf.h` is not included during WASM compilation**: The header exists
+  but nothing `-include`s it. Most of its defines are duplicated as `-D` flags in
+  the Makefile CFLAGS, but some were missed (e.g. `TEXT_TOMBSTONE`). When adding
+  new NetHack config defines, add them to CFLAGS, not just `factorioconf.h`.
+- **`factorioconf.h` is the single source of truth for NetHack config defines**:
+  It's force-included via `-include build/factorioconf.h` in CFLAGS. Add new
+  NetHack config defines there, not as `-D` flags in the Makefile.
 - **Compiled/interpreter resume mismatch**: When budget expires mid-interpretation
   of a function that also has a compiled version, the outer loop must NOT dispatch
   to the compiled version on resume. The compiled path starts at entry_point=0

@@ -3,6 +3,13 @@
 #ifndef WASI_COMPAT_H
 #define WASI_COMPAT_H
 
+/* wasi-libc emulation and cross-compilation flags */
+#define L_tmpnam 32
+#define _WASI_EMULATED_PROCESS_CLOCKS
+#define _WASI_EMULATED_SIGNAL
+#define _WASI_EMULATED_GETPID
+#define CROSS_TO_WASM
+
 /* NetHack's unixconf.h defines USE_FCNTL when POSIX_TYPES is set,
  * but wasi-libc lacks fcntl file locking constants and implementation.
  * Provide stub definitions so the code compiles (locking is a no-op

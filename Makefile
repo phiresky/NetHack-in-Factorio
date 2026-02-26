@@ -33,25 +33,9 @@ CFLAGS  += $(TARGET)
 CFLAGS  += -I$(NETHACK)/include
 CFLAGS  += -Ibuild
 
-# NetHack configuration
-CFLAGS  += -DFACTORIO_GRAPHICS
-CFLAGS  += -DFACTORIO_PORT
-CFLAGS  += -DSAFEPROCS
-CFLAGS  += -DNO_SIGNAL
-CFLAGS  += -DTEXT_TOMBSTONE
-CFLAGS  += -DNOTPARMDECL
-CFLAGS  += -DNOTTYGRAPHICS
-CFLAGS  += -DDEFAULT_WINDOW_SYS=\"factorio\"
-CFLAGS  += -DGCC_WARN
-CFLAGS  += -DNO_FILE_LINKS
-CFLAGS  += -DSYSCF
-
-# wasi-libc compatibility
-CFLAGS  += -DL_tmpnam=32
-CFLAGS  += -D_WASI_EMULATED_PROCESS_CLOCKS
-CFLAGS  += -D_WASI_EMULATED_SIGNAL
-CFLAGS  += -D_WASI_EMULATED_GETPID
-CFLAGS  += -DCROSS_TO_WASM
+# NetHack configuration (defines live in build/factorioconf.h)
+# WASI compatibility stubs (defines live in build/wasi_compat.h)
+CFLAGS  += -include build/factorioconf.h
 CFLAGS  += -include build/wasi_compat.h
 
 # Suppress warnings from NetHack's old-style C
@@ -230,11 +214,6 @@ sprites: $(STAMPS)/sprites-optimized
 $(NETHACK):
 	git clone --depth 1 --branch $(NETHACK_TAG) $(NETHACK_REPO) $@
 
-# Files inside the clone are created by the clone step.
-# Without this, make fails with "No rule to make target 'NetHack/src/...'"
-# when the clone directory doesn't exist yet.
-$(NETHACK)/%: | $(NETHACK) ;
-
 # ================================================================
 # Stage 2 — Build 32-bit host tools
 # ================================================================
@@ -274,7 +253,7 @@ $(NETHACK)/src/tile.c: $(STAMPS)/host-tools
 
 $(WASM): $(NH_SRC) $(STAMPS)/pager-patched $(NETHACK)/src/tile.c build/factorioconf.h
 	$(WASM_CC) $(CFLAGS) $(LDFLAGS) $(NH_SRC) -o $@
-	wasm-opt -Oz --enable-exception-handling -o $@ $@
+	#  wasm-opt -Oz --enable-exception-handling -o $@ $@
 	@echo "Build complete: $@ ($$(stat -c%s $@ 2>/dev/null || stat -f%z $@) bytes)"
 
 # ================================================================

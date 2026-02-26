@@ -27,7 +27,7 @@
 #endif
 
 /* Disable features we don't need or can't support in WASM */
-#define NOMAIL
+/* NOTE: Do NOT define NOMAIL — it shifts object indices vs native makedefs */
 #define NO_FILE_LINKS
 
 /* File creation mask */
@@ -35,10 +35,7 @@
 #define FCMASK 0660
 #endif
 
-/* Lock file name */
-#ifndef HLOCK
-#define HLOCK "NHPERM"
-#endif
+/* Lock file name — override after unixconf.h sets it */
 
 /* We need POSIX types for compat */
 #define POSIX_TYPES
@@ -54,5 +51,11 @@
 
 /* Ensure we have syscf support for sysconf defaults */
 #define SYSCF
+
+/* Suppress old-style K&R parameter warnings */
+#define NOTPARMDECL
+
+/* Enable gcc warnings in NetHack headers */
+#define GCC_WARN
 
 #endif /* FACTORIOCONF_H */
