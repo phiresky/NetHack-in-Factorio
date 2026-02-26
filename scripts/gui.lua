@@ -2,12 +2,17 @@
 -- Layout: single top panel with menu bar + [messages | status], matching Qt port
 local Gui = {}
 
--- Window type constants (from NetHack)
+-- Window type constants (from NetHack) — exported for use by bridge.lua
 local NHW_MESSAGE = 1
 local NHW_STATUS  = 2
 local NHW_MAP     = 3
 local NHW_MENU    = 4
 local NHW_TEXT    = 5
+Gui.NHW_MESSAGE = NHW_MESSAGE
+Gui.NHW_STATUS  = NHW_STATUS
+Gui.NHW_MAP     = NHW_MAP
+Gui.NHW_MENU    = NHW_MENU
+Gui.NHW_TEXT    = NHW_TEXT
 
 local TC = require("scripts.tile_config")
 local TOTAL_TILES = TC.n_monsters + TC.n_objects + TC.n_other

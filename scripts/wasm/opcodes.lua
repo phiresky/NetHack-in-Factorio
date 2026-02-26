@@ -12,6 +12,8 @@ local math_min = math.min
 local math_max = math.max
 local math_huge = math.huge
 
+local Decode = require("scripts.wasm.decode")
+
 local Opcodes = {}
 
 local function fail(msg) error({msg = msg}) end
@@ -113,26 +115,14 @@ local function read_memarg(state)
     return offset
 end
 
--- Stateless helpers for bytecode scanning (used by build_block_map)
-local function skip_leb128_at(code, pos)
-    while code[pos] >= 128 do pos = pos + 1 end
-    return pos + 1
-end
+-- Stateless helpers for bytecode scanning (from shared decode module)
+local skip_leb128_at = Decode.skip_leb128
+local read_leb128_u_at = Decode.leb128_u
 
-local function read_leb128_u_at(code, pos)
-    local result = 0
-    local shift = 0
-    while true do
-        local b = code[pos]
-        pos = pos + 1
-        result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
-        if b < 128 then return result, pos end
-        shift = shift + 7
-    end
-end
-
--- Skip operands of a single instruction at position pos in code array
--- Returns new position after the operands
+-- Skip operands of a single instruction at position pos in code array.
+-- Returns new position after the operands.
+-- Used by both build_block_map (stateless scanning) and skip_instruction_operands
+-- (runtime scanning via state wrapper).
 local function skip_operands_at(code, pos, op)
     if op == 0x08 then return skip_leb128_at(code, pos) -- throw
     elseif op == 0x0A then return pos -- throw_ref
@@ -150,6 +140,18 @@ local function skip_operands_at(code, pos, op)
         pos = skip_leb128_at(code, pos)
         return skip_leb128_at(code, pos)
     elseif op == 0x1A or op == 0x1B then return pos -- drop, select
+    elseif op == 0x1F then -- try_table
+        pos = skip_leb128_at(code, pos) -- blocktype
+        local num_catches
+        num_catches, pos = read_leb128_u_at(code, pos)
+        for _ = 1, num_catches do
+            local kind = code[pos]; pos = pos + 1
+            if kind == 0 or kind == 2 then -- catch / catch_ref have tagidx
+                pos = skip_leb128_at(code, pos)
+            end
+            pos = skip_leb128_at(code, pos) -- label depth
+        end
+        return pos
     elseif op >= 0x20 and op <= 0x24 then return skip_leb128_at(code, pos)
     elseif op >= 0x28 and op <= 0x3E then -- memory load/store
         pos = skip_leb128_at(code, pos)
@@ -1252,56 +1254,9 @@ dispatch[0x1F] = function(state)
 end
 
 -- Helper: skip instruction operands for code scanning
+-- Wrapper: skip operands using the stateless skip_operands_at on state.code/state.pc
 function skip_instruction_operands(state, op)
-    if op == 0x08 then -- throw
-        read_leb128_u(state) -- tagidx
-    elseif op == 0x0A then -- throw_ref
-        -- no operands
-    elseif op == 0x0C or op == 0x0D then -- br, br_if
-        read_leb128_u(state)
-    elseif op == 0x0E then -- br_table
-        local count = read_leb128_u(state)
-        for _ = 0, count do
-            read_leb128_u(state)
-        end
-    elseif op == 0x0F then -- return
-        -- no operands
-    elseif op == 0x10 then -- call
-        read_leb128_u(state)
-    elseif op == 0x11 then -- call_indirect
-        read_leb128_u(state)
-        read_leb128_u(state) -- table index (reserved, must be 0 in MVP)
-    elseif op == 0x1A or op == 0x1B then -- drop, select
-        -- no operands
-    elseif op == 0x1F then -- try_table
-        read_blocktype(state)
-        local num_catches = read_leb128_u(state)
-        for _ = 1, num_catches do
-            local kind = read_byte(state)
-            if kind == 0 or kind == 2 then -- catch / catch_ref have tagidx
-                read_leb128_u(state)
-            end
-            read_leb128_u(state) -- label depth
-        end
-    elseif op >= 0x20 and op <= 0x24 then -- local.get/set/tee, global.get/set
-        read_leb128_u(state)
-    elseif op >= 0x28 and op <= 0x3E then -- memory load/store ops
-        read_leb128_u(state) -- align
-        read_leb128_u(state) -- offset
-    elseif op == 0x3F or op == 0x40 then -- memory.size, memory.grow
-        read_leb128_u(state) -- reserved byte (memory index)
-    elseif op == 0x41 then -- i32.const
-        read_leb128_s(state)
-    elseif op == 0x42 then -- i64.const
-        read_leb128_s64(state)
-    elseif op == 0x43 then -- f32.const
-        state.pc = state.pc + 4
-    elseif op == 0x44 then -- f64.const
-        state.pc = state.pc + 8
-    elseif op == 0xFC then -- prefix byte for extended ops
-        read_leb128_u(state) -- extended opcode
-    end
-    -- All other opcodes (0x45-0xC4 etc) have no immediates
+    state.pc = skip_operands_at(state.code, state.pc, op)
 end
 
 -- Helper: branch to depth N

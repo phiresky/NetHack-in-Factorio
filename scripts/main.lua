@@ -298,6 +298,14 @@ local GOD_DIR_TO_KEY = {
   [defines.direction.northwest] = string.byte("y"),
 }
 
+-- Clamp a position to within a tile's boundaries (for blocking movement).
+local function clamp_to_tile(player_pos, tile_x, tile_y)
+  local eps = 0.05
+  local tx = math.max(tile_x + eps, math.min(tile_x + 1 - eps, player_pos.x))
+  local ty = math.max(tile_y + eps, math.min(tile_y + 1 - eps, player_pos.y))
+  return tx, ty
+end
+
 -- Correct Factorio player position if it doesn't match NetHack's @ position.
 -- During travel (state.travel_active), snaps to tile center every tick.
 -- During normal play (awaiting input), clamps to nearest tile edge.
@@ -600,27 +608,25 @@ local function clear_input_state()
   end
 end
 
--- Clamp a position to within a tile's boundaries (for blocking movement).
-local function clamp_to_tile(player_pos, tile_x, tile_y)
-  local eps = 0.05
-  local tx = math.max(tile_x + eps, math.min(tile_x + 1 - eps, player_pos.x))
-  local ty = math.max(tile_y + eps, math.min(tile_y + 1 - eps, player_pos.y))
-  return tx, ty
+-- Common helper for all advance_turn variants: guards, clears state, provides
+-- input, runs the interpreter, and updates the GUI/position.
+local function do_advance(input_value, skip_position_update)
+  local state = storage.nh_main
+  if not state.awaiting_input or not wasm_instance then return end
+  state.last_advance_tick = game.tick
+  clear_input_state()
+  WasmInterp.provide_input(wasm_instance, input_value)
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
+  update_engine_gui()
+  if not skip_position_update then
+    update_player_position()
+  end
 end
 
 -- Provide a key input to the interpreter and resume execution.
 -- Used for getch (direction/command) and yn (single key answer).
 local function advance_turn(key_code)
-  local state = storage.nh_main
-  if not state.awaiting_input or not wasm_instance then return end
-
-  state.last_advance_tick = game.tick
-  clear_input_state()
-
-  WasmInterp.provide_input(wasm_instance, key_code)
-  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
-  update_engine_gui()
-  update_player_position()
+  do_advance(key_code)
 end
 
 -- Provide string input (for getlin).
@@ -631,11 +637,9 @@ local function advance_turn_string(text)
   if not state.awaiting_input or not wasm_instance then return end
 
   -- Queue characters for nhgetch to consume one-by-one
-  -- First char goes via provide_input, rest via queue
   local queue = state.input_queue
   if text == "\027" then
-    -- ESC = cancel
-    queue[#queue + 1] = 27
+    queue[#queue + 1] = 27  -- ESC = cancel
   else
     for i = 1, #text do
       queue[#queue + 1] = string.byte(text, i)
@@ -643,14 +647,8 @@ local function advance_turn_string(text)
   end
   queue[#queue + 1] = 0  -- null terminator ends the getlin loop
 
-  clear_input_state()
-
-  -- Feed first character, run_and_process drains the rest
-  local first = table.remove(state.input_queue, 1)
-  WasmInterp.provide_input(wasm_instance, first)
-  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
-  update_engine_gui()
-  update_player_position()
+  -- Feed first character via do_advance, run_and_process drains the rest
+  do_advance(table.remove(state.input_queue, 1))
 end
 
 -- Provide menu selection result.
@@ -673,13 +671,7 @@ local function advance_turn_menu(result)
     count = 0
   end
 
-  clear_input_state()
-
-  -- Provide count to resume from select_menu; run_and_process feeds IDs via queue
-  WasmInterp.provide_input(wasm_instance, count)
-  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
-  update_engine_gui()
-  update_player_position()
+  do_advance(count)
 end
 
 -- Provide player selection dialog result.
@@ -691,10 +683,7 @@ local function advance_turn_plsel(result)
 
   if result.action == "quit" then
     -- Provide -1 status; C code will call clearlocks + exit
-    clear_input_state()
-    WasmInterp.provide_input(wasm_instance, -1)
-    run_and_process(MAX_INSTRUCTIONS_PER_RUN)
-    update_engine_gui()
+    do_advance(-1, true)  -- no position update on quit
     return
   end
 
@@ -712,13 +701,7 @@ local function advance_turn_plsel(result)
   queue[#queue + 1] = result.gend >= 0 and result.gend or -1
   queue[#queue + 1] = result.align >= 0 and result.align or -1
 
-  clear_input_state()
-
-  -- Provide status 0 (play) to resume from host_plsel_show
-  WasmInterp.provide_input(wasm_instance, 0)
-  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
-  update_engine_gui()
-  update_player_position()
+  do_advance(0)  -- status 0 = play
 end
 
 -- God mode movement: called from on_tick. Reads walking_state direction

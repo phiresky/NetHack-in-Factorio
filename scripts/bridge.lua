@@ -17,12 +17,12 @@ local function get_bridge_state()
 end
 Bridge.get_state = get_bridge_state
 
--- Window type constants (from NetHack)
-local NHW_MESSAGE = 1
-local NHW_STATUS  = 2
-local NHW_MAP     = 3
-local NHW_MENU    = 4
-local NHW_TEXT    = 5
+-- Window type constants (from Gui module)
+local NHW_MESSAGE = Gui.NHW_MESSAGE
+local NHW_STATUS  = Gui.NHW_STATUS
+local NHW_MAP     = Gui.NHW_MAP
+local NHW_MENU    = Gui.NHW_MENU
+local NHW_TEXT    = Gui.NHW_TEXT
 
 -- Helper: read a null-terminated string from WASM linear memory
 function Bridge.read_string(memory, ptr, max_len)
