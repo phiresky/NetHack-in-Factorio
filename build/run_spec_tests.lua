@@ -2,7 +2,6 @@
 -- WebAssembly Spec Test Runner
 -- Reads wast2json output (.json + .wasm files) and runs them against our interpreter.
 
-local bit32 = bit32
 local unpack = table.unpack or unpack
 
 ---------------------------------------------------------------------------
@@ -15,68 +14,265 @@ local JSON = require("build.json")
 ---------------------------------------------------------------------------
 local Parser = require("scripts.wasm.init")
 local Interp = require("scripts.wasm.interp")
-local Memory = require("scripts.wasm.memory")
 local Validator = require("scripts.wasm.validate")
 
 ---------------------------------------------------------------------------
--- Value conversion helpers (from build/test_values.lua)
+-- Shared test utilities
 ---------------------------------------------------------------------------
-local V = require("build.test_values")
-local convert_arg = V.convert_arg
-local is_nan_value = V.is_nan_value
-local compare_result = V.compare_result
+local TU = require("build.test_util")
+local load_wasm_file = TU.load_wasm_file
+local make_spectest_imports = TU.make_spectest_imports
+local convert_action_args = TU.convert_action_args
+local extract_error_msg = TU.extract_error_msg
+local check_error_prefix = TU.check_error_prefix
+local compare_result = TU.compare_result
 
 ---------------------------------------------------------------------------
--- Spectest import module (standard test host imports)
+-- Shared: resolve instance from action (handles named modules)
 ---------------------------------------------------------------------------
-local function make_spectest_imports()
-    return {
-        spectest = {
-            print_i32 = function() end,
-            print_i64 = function() end,
-            print_f32 = function() end,
-            print_f64 = function() end,
-            print = function() end,
-            global_i32 = 666,
-            global_i64 = {666, 0},
-            global_f32 = 666.6,
-            global_f64 = 666.6,
-            memory = Memory.new(1, 2),
-        },
-    }
+local function resolve_instance(action, ctx)
+    if action.module and ctx.named_instances[action.module] then
+        return ctx.named_instances[action.module]
+    end
+    return ctx.current_instance
 end
+
+-- Invoke an exported function, returning ok, results_or_err.
+local function invoke_export(ctx, action)
+    local inst = resolve_instance(action, ctx)
+    if not inst then return nil end -- signals "skip"
+    local func_idx = Interp.get_export(inst, action.field)
+    if not func_idx then return nil end
+    local args = convert_action_args(action)
+    return inst, func_idx, pcall(Interp.execute, inst, func_idx, args)
+end
+
+---------------------------------------------------------------------------
+-- Command handlers
+---------------------------------------------------------------------------
+
+local function handle_module(ctx, cmd)
+    local wasm_path = ctx.base_dir .. cmd.filename
+    local wasm_data = load_wasm_file(wasm_path)
+    if not wasm_data then
+        ctx.skipped = ctx.skipped + 1; return
+    end
+    local ok, mod = pcall(Parser.parse, wasm_data)
+    if not ok then
+        ctx.current_instance = nil; ctx.skipped = ctx.skipped + 1; return
+    end
+    local ok2, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
+    if not ok2 then
+        ctx.current_instance = nil; ctx.skipped = ctx.skipped + 1; return
+    end
+    ctx.current_instance = inst
+    if cmd.name then ctx.named_instances[cmd.name] = inst end
+end
+
+local function handle_assert_return(ctx, cmd)
+    local action = cmd.action
+    if action.type ~= "invoke" then ctx.skipped = ctx.skipped + 1; return end
+
+    local inst, func_idx, ok, results = invoke_export(ctx, action)
+    if not inst then ctx.skipped = ctx.skipped + 1; return end
+
+    if not ok then
+        ctx.failed = ctx.failed + 1
+        ctx.failures[#ctx.failures+1] = string.format("line %d: %s(%s) trapped: %s",
+            cmd.line, action.field, #(action.args or {}), extract_error_msg(results):sub(1, 80))
+        return
+    end
+
+    local expected = cmd.expected or {}
+    results = results or {}
+    local all_match = true
+
+    if #expected ~= #results then
+        if #expected ~= 0 then all_match = false end
+    end
+    for i, exp in ipairs(expected) do
+        if not compare_result(results[i], exp) then
+            all_match = false; break
+        end
+    end
+
+    if all_match then
+        ctx.passed = ctx.passed + 1
+    else
+        ctx.failed = ctx.failed + 1
+        local exp_str, got_str = "", ""
+        for i, exp in ipairs(expected) do
+            if i > 1 then exp_str = exp_str .. ", " end
+            exp_str = exp_str .. exp.type .. ":" .. tostring(exp.value)
+        end
+        for i, r in ipairs(results) do
+            if i > 1 then got_str = got_str .. ", " end
+            if type(r) == "table" then
+                if r.nan32 then
+                    got_str = got_str .. string.format("f32:nan(0x%08X)", r.nan32)
+                elseif r.nan64 then
+                    got_str = got_str .. string.format("f64:nan(0x%08X%08X)", r.nan64[2], r.nan64[1])
+                else
+                    got_str = got_str .. string.format("{%s,%s}", tostring(r[1]), tostring(r[2]))
+                end
+            else
+                got_str = got_str .. tostring(r)
+            end
+        end
+        ctx.failures[#ctx.failures+1] = string.format("line %d: %s expected [%s] got [%s]",
+            cmd.line, action.field, exp_str, got_str)
+    end
+end
+
+local function handle_assert_trap(ctx, cmd)
+    local action = cmd.action
+    if action.type ~= "invoke" then ctx.skipped = ctx.skipped + 1; return end
+
+    local inst, func_idx, ok, err = invoke_export(ctx, action)
+    if not inst then ctx.skipped = ctx.skipped + 1; return end
+
+    if not ok then
+        local prefix_ok, actual = check_error_prefix(err, cmd.text)
+        if prefix_ok then
+            ctx.passed = ctx.passed + 1
+        else
+            ctx.failed = ctx.failed + 1
+            ctx.failures[#ctx.failures+1] = string.format(
+                "line %d: %s trap mismatch: expected \"%s\", got \"%s\"",
+                cmd.line, action.field, cmd.text or "?", actual or "?")
+        end
+    else
+        ctx.failed = ctx.failed + 1
+        ctx.failures[#ctx.failures+1] = string.format("line %d: %s expected trap, got success",
+            cmd.line, action.field)
+    end
+end
+
+local function handle_assert_exhaustion(ctx, cmd)
+    local action = cmd.action
+    if action.type ~= "invoke" then ctx.skipped = ctx.skipped + 1; return end
+
+    local inst, func_idx, ok, err = invoke_export(ctx, action)
+    if not inst then ctx.skipped = ctx.skipped + 1; return end
+
+    if not ok then
+        ctx.passed = ctx.passed + 1
+    else
+        ctx.failed = ctx.failed + 1
+        ctx.failures[#ctx.failures+1] = string.format("line %d: %s expected exhaustion",
+            cmd.line, action.field)
+    end
+end
+
+local function handle_action(ctx, cmd)
+    local action = cmd.action
+    if not ctx.current_instance or action.type ~= "invoke" then return end
+    local inst, func_idx, ok, err = invoke_export(ctx, action)
+    -- Result intentionally ignored
+end
+
+local function handle_assert_invalid(ctx, cmd)
+    if cmd.module_type == "text" or not cmd.filename then
+        ctx.skipped = ctx.skipped + 1; return
+    end
+    local wasm_path = ctx.base_dir .. cmd.filename
+    local wasm_data = load_wasm_file(wasm_path)
+    if not wasm_data then
+        ctx.passed = ctx.passed + 1; return -- missing file counts as rejected
+    end
+
+    local err_msg = nil
+    local ok, mod = pcall(Parser.parse, wasm_data)
+    if not ok then
+        err_msg = mod
+    else
+        local ok2, err2 = pcall(Validator.validate, mod)
+        if not ok2 then
+            err_msg = err2
+        else
+            local ok3, err3 = pcall(Interp.instantiate, mod, make_spectest_imports())
+            if not ok3 then err_msg = err3 end
+        end
+    end
+
+    if err_msg then
+        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
+        if prefix_ok then
+            ctx.passed = ctx.passed + 1
+        else
+            ctx.failed = ctx.failed + 1
+            ctx.failures[#ctx.failures+1] = string.format(
+                "line %d: %s error mismatch: expected \"%s\", got \"%s\"",
+                cmd.line, cmd.type, cmd.text or "?", actual or "?")
+        end
+    else
+        ctx.failed = ctx.failed + 1
+        ctx.failures[#ctx.failures+1] = string.format("line %d: %s expected rejection (%s), but succeeded",
+            cmd.line, cmd.type, cmd.text or "?")
+    end
+end
+
+local function handle_assert_uninstantiable(ctx, cmd)
+    if not cmd.filename then
+        ctx.skipped = ctx.skipped + 1; return
+    end
+    local wasm_path = ctx.base_dir .. cmd.filename
+    local wasm_data = load_wasm_file(wasm_path)
+    if not wasm_data then
+        ctx.skipped = ctx.skipped + 1; return
+    end
+
+    local err_msg = nil
+    local ok, mod = pcall(Parser.parse, wasm_data)
+    if not ok then
+        err_msg = mod
+    else
+        local ok2, err2 = pcall(Interp.instantiate, mod, make_spectest_imports())
+        if not ok2 then err_msg = err2 end
+    end
+
+    if err_msg then
+        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
+        if prefix_ok then
+            ctx.passed = ctx.passed + 1
+        else
+            ctx.failed = ctx.failed + 1
+            ctx.failures[#ctx.failures+1] = string.format(
+                "line %d: assert_uninstantiable error mismatch: expected \"%s\", got \"%s\"",
+                cmd.line, cmd.text or "?", actual or "?")
+        end
+    else
+        ctx.failed = ctx.failed + 1
+        ctx.failures[#ctx.failures+1] = string.format("line %d: assert_uninstantiable expected failure, but succeeded",
+            cmd.line)
+    end
+end
+
+local function handle_register(ctx, cmd)
+    if ctx.current_instance and cmd.as then
+        ctx.named_instances[cmd.as] = ctx.current_instance
+    end
+    ctx.skipped = ctx.skipped + 1
+end
+
+---------------------------------------------------------------------------
+-- Handler dispatch table
+---------------------------------------------------------------------------
+local handlers = {
+    module = handle_module,
+    assert_return = handle_assert_return,
+    assert_trap = handle_assert_trap,
+    assert_exhaustion = handle_assert_exhaustion,
+    action = handle_action,
+    assert_invalid = handle_assert_invalid,
+    assert_malformed = handle_assert_invalid, -- same logic
+    assert_uninstantiable = handle_assert_uninstantiable,
+    register = handle_register,
+}
 
 ---------------------------------------------------------------------------
 -- Test Runner
 ---------------------------------------------------------------------------
-
-local function load_wasm_file(path)
-    local f = io.open(path, "rb")
-    if not f then return nil end
-    local data = f:read("*a")
-    f:close()
-    return data
-end
-
--- Extract the error message from a pcall error value.
--- Our WASM code throws table errors {msg = "..."} to avoid Lua's file:line prefix.
-local function extract_error_msg(err)
-    if type(err) == "table" and err.msg then
-        return err.msg
-    end
-    return tostring(err)
-end
-
--- Check that expected_text is a prefix of actual error message.
--- Returns true if match, false + details if mismatch.
-local function check_error_prefix(err, expected_text)
-    if not expected_text or expected_text == "" then return true end
-    local msg = extract_error_msg(err)
-    if msg:sub(1, #expected_text) == expected_text then
-        return true
-    end
-    return false, msg
-end
 
 local function run_spec_test(json_path)
     local f = io.open(json_path, "r")
@@ -93,320 +289,26 @@ local function run_spec_test(json_path)
         return 0, 0, 0
     end
 
-    local base_dir = json_path:match("(.*/)")
-    local passed = 0
-    local failed = 0
-    local skipped = 0
-    local failures = {}
-
-    -- Current module instance (can change with each "module" command)
-    local current_instance = nil
-    local current_module = nil
-    -- Named modules for multi-module tests
-    local named_instances = {}
+    local ctx = {
+        base_dir = json_path:match("(.*/)" ),
+        passed = 0,
+        failed = 0,
+        skipped = 0,
+        failures = {},
+        current_instance = nil,
+        named_instances = {},
+    }
 
     for _, cmd in ipairs(test_data.commands) do
-        if cmd.type == "module" then
-            -- Load and instantiate a module
-            local wasm_path = base_dir .. cmd.filename
-            local wasm_data = load_wasm_file(wasm_path)
-            if not wasm_data then
-                skipped = skipped + 1
-            else
-                local ok, mod = pcall(Parser.parse, wasm_data)
-                if not ok then
-                    -- Parse failure - skip remaining commands for this module
-                    current_instance = nil
-                    current_module = nil
-                    skipped = skipped + 1
-                else
-                    local ok2, inst = pcall(Interp.instantiate, mod, make_spectest_imports())
-                    if not ok2 then
-                        current_instance = nil
-                        current_module = nil
-                        skipped = skipped + 1
-                    else
-                        current_instance = inst
-                        current_module = mod
-                        if cmd.name then
-                            named_instances[cmd.name] = inst
-                        end
-                    end
-                end
-            end
-
-        elseif cmd.type == "assert_return" then
-            if not current_instance then
-                skipped = skipped + 1
-            else
-                local action = cmd.action
-                if action.type ~= "invoke" then
-                    skipped = skipped + 1
-                else
-                    local field = action.field
-                    local inst = current_instance
-                    if action.module and named_instances[action.module] then
-                        inst = named_instances[action.module]
-                    end
-
-                    -- Convert args
-                    local args = {}
-                    for _, a in ipairs(action.args or {}) do
-                        args[#args+1] = convert_arg(a)
-                    end
-
-                    -- Find and call the exported function
-                    local func_idx = Interp.get_export(inst, field)
-                    if not func_idx then
-                        skipped = skipped + 1
-                    else
-                        local ok, results = pcall(Interp.execute, inst, func_idx, args)
-                        if not ok then
-                            failed = failed + 1
-                            failures[#failures+1] = string.format("line %d: %s(%s) trapped: %s",
-                                cmd.line, field, #args, extract_error_msg(results):sub(1, 80))
-                        else
-                            -- Compare results
-                            local expected = cmd.expected or {}
-                            results = results or {}
-                            local all_match = true
-
-                            if #expected ~= #results then
-                                -- Allow void functions to return empty
-                                if #expected == 0 then
-                                    -- OK
-                                else
-                                    all_match = false
-                                end
-                            end
-
-                            for i, exp in ipairs(expected) do
-                                if not compare_result(results[i], exp) then
-                                    all_match = false
-                                    break
-                                end
-                            end
-
-                            if all_match then
-                                passed = passed + 1
-                            else
-                                failed = failed + 1
-                                local exp_str = ""
-                                local got_str = ""
-                                for i, exp in ipairs(expected) do
-                                    if i > 1 then exp_str = exp_str .. ", " end
-                                    exp_str = exp_str .. exp.type .. ":" .. tostring(exp.value)
-                                end
-                                for i, r in ipairs(results) do
-                                    if i > 1 then got_str = got_str .. ", " end
-                                    if type(r) == "table" then
-                                        if r.nan32 then
-                                            got_str = got_str .. string.format("f32:nan(0x%08X)", r.nan32)
-                                        elseif r.nan64 then
-                                            got_str = got_str .. string.format("f64:nan(0x%08X%08X)", r.nan64[2], r.nan64[1])
-                                        else
-                                            got_str = got_str .. string.format("{%s,%s}", tostring(r[1]), tostring(r[2]))
-                                        end
-                                    else
-                                        got_str = got_str .. tostring(r)
-                                    end
-                                end
-                                failures[#failures+1] = string.format("line %d: %s expected [%s] got [%s]",
-                                    cmd.line, field, exp_str, got_str)
-                            end
-                        end
-                    end
-                end
-            end
-
-        elseif cmd.type == "assert_trap" then
-            if not current_instance then
-                skipped = skipped + 1
-            else
-                local action = cmd.action
-                if action.type ~= "invoke" then
-                    skipped = skipped + 1
-                else
-                    local field = action.field
-                    local inst = current_instance
-                    if action.module and named_instances[action.module] then
-                        inst = named_instances[action.module]
-                    end
-
-                    local args = {}
-                    for _, a in ipairs(action.args or {}) do
-                        args[#args+1] = convert_arg(a)
-                    end
-
-                    local func_idx = Interp.get_export(inst, field)
-                    if not func_idx then
-                        skipped = skipped + 1
-                    else
-                        local ok, err = pcall(Interp.execute, inst, func_idx, args)
-                        if not ok then
-                            local prefix_ok, actual = check_error_prefix(err, cmd.text)
-                            if prefix_ok then
-                                passed = passed + 1
-                            else
-                                failed = failed + 1
-                                failures[#failures+1] = string.format(
-                                    "line %d: %s trap mismatch: expected \"%s\", got \"%s\"",
-                                    cmd.line, field, cmd.text or "?", actual or "?")
-                            end
-                        else
-                            failed = failed + 1
-                            failures[#failures+1] = string.format("line %d: %s expected trap, got success",
-                                cmd.line, field)
-                        end
-                    end
-                end
-            end
-
-        elseif cmd.type == "assert_exhaustion" then
-            if not current_instance then
-                skipped = skipped + 1
-            else
-                local action = cmd.action
-                if action.type ~= "invoke" then
-                    skipped = skipped + 1
-                else
-                    local field = action.field
-                    local args = {}
-                    for _, a in ipairs(action.args or {}) do
-                        args[#args+1] = convert_arg(a)
-                    end
-                    local func_idx = Interp.get_export(current_instance, field)
-                    if not func_idx then
-                        skipped = skipped + 1
-                    else
-                        local ok, err = pcall(Interp.execute, current_instance, func_idx, args)
-                        if not ok then
-                            passed = passed + 1
-                        else
-                            failed = failed + 1
-                            failures[#failures+1] = string.format("line %d: %s expected exhaustion",
-                                cmd.line, field)
-                        end
-                    end
-                end
-            end
-
-        elseif cmd.type == "action" then
-            -- Bare action (invoke without assert)
-            if current_instance then
-                local action = cmd.action
-                if action.type == "invoke" then
-                    local args = {}
-                    for _, a in ipairs(action.args or {}) do
-                        args[#args+1] = convert_arg(a)
-                    end
-                    local func_idx = Interp.get_export(current_instance, action.field)
-                    if func_idx then
-                        pcall(Interp.execute, current_instance, func_idx, args)
-                    end
-                end
-            end
-
-        elseif cmd.type == "assert_invalid" or cmd.type == "assert_malformed" then
-            -- Module should fail to parse or validate
-            if cmd.module_type == "text" then
-                -- WAT text format - wast2json doesn't produce a .wasm for these
-                skipped = skipped + 1
-            elseif not cmd.filename then
-                skipped = skipped + 1
-            else
-                local wasm_path = base_dir .. cmd.filename
-                local wasm_data = load_wasm_file(wasm_path)
-                if not wasm_data then
-                    passed = passed + 1 -- file missing/unreadable counts as rejected
-                else
-                    local err_msg = nil
-                    local ok, mod = pcall(Parser.parse, wasm_data)
-                    if not ok then
-                        err_msg = mod -- parse error
-                    else
-                        local ok2, err2 = pcall(Validator.validate, mod)
-                        if not ok2 then
-                            err_msg = err2 -- validation error
-                        else
-                            local ok3, err3 = pcall(Interp.instantiate, mod, make_spectest_imports())
-                            if not ok3 then
-                                err_msg = err3 -- instantiation error
-                            end
-                        end
-                    end
-
-                    if err_msg then
-                        -- Got an error - check that it matches expected text
-                        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
-                        if prefix_ok then
-                            passed = passed + 1
-                        else
-                            failed = failed + 1
-                            failures[#failures+1] = string.format(
-                                "line %d: %s error mismatch: expected \"%s\", got \"%s\"",
-                                cmd.line, cmd.type, cmd.text or "?", actual or "?")
-                        end
-                    else
-                        failed = failed + 1
-                        failures[#failures+1] = string.format("line %d: %s expected rejection (%s), but succeeded",
-                            cmd.line, cmd.type, cmd.text or "?")
-                    end
-                end
-            end
-
-        elseif cmd.type == "assert_uninstantiable" then
-            -- Module should parse but fail to instantiate
-            if not cmd.filename then
-                skipped = skipped + 1
-            else
-                local wasm_path = base_dir .. cmd.filename
-                local wasm_data = load_wasm_file(wasm_path)
-                if not wasm_data then
-                    skipped = skipped + 1
-                else
-                    local err_msg = nil
-                    local ok, mod = pcall(Parser.parse, wasm_data)
-                    if not ok then
-                        err_msg = mod
-                    else
-                        local ok2, err2 = pcall(Interp.instantiate, mod, make_spectest_imports())
-                        if not ok2 then
-                            err_msg = err2
-                        end
-                    end
-
-                    if err_msg then
-                        local prefix_ok, actual = check_error_prefix(err_msg, cmd.text)
-                        if prefix_ok then
-                            passed = passed + 1
-                        else
-                            failed = failed + 1
-                            failures[#failures+1] = string.format(
-                                "line %d: assert_uninstantiable error mismatch: expected \"%s\", got \"%s\"",
-                                cmd.line, cmd.text or "?", actual or "?")
-                        end
-                    else
-                        failed = failed + 1
-                        failures[#failures+1] = string.format("line %d: assert_uninstantiable expected failure, but succeeded",
-                            cmd.line)
-                    end
-                end
-            end
-
-        elseif cmd.type == "register" then
-            -- Register a module under a name for import
-            if current_instance and cmd.as then
-                named_instances[cmd.as] = current_instance
-            end
-            skipped = skipped + 1
-
+        local h = handlers[cmd.type]
+        if h then
+            h(ctx, cmd)
         else
-            skipped = skipped + 1
+            ctx.skipped = ctx.skipped + 1
         end
     end
 
-    return passed, failed, skipped, failures
+    return ctx.passed, ctx.failed, ctx.skipped, ctx.failures
 end
 
 ---------------------------------------------------------------------------

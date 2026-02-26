@@ -68,6 +68,7 @@ package.loaded["scripts.display"] = {
     get_or_create_level = function() end,
     switch_level = function() end,
     get_current_surface = function() return nil end,
+    set_hero_pos = function(x, y) player_x = x; player_y = y end,
 }
 package.loaded["scripts.gui"] = {
     init = function() end,

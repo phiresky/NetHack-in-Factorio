@@ -1105,13 +1105,7 @@ end)
 -- ====================================================================
 -- LOAD .wasm FILES FROM DISK (if available)
 -- ====================================================================
-local function load_wasm_file(path)
-    local f = io.open(path, "rb")
-    if not f then return nil end
-    local data = f:read("*a")
-    f:close()
-    return data
-end
+local load_wasm_file = require("build.test_util").load_wasm_file
 
 -- Try loading spec test .wasm files from build/tests/
 local test_dir = "build/tests/"

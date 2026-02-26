@@ -4,9 +4,9 @@
 -- and resume later via run().
 
 local Memory = require("scripts.wasm.memory")
-local Opcodes = require("scripts.wasm.opcodes")
 local WasmParser = require("scripts.wasm.init")
 local Compiler = require("scripts.wasm.compiler")
+local Decode = require("scripts.wasm.decode")
 
 local bit32 = bit32
 local math_floor = math.floor
@@ -16,13 +16,7 @@ local math_sqrt = math.sqrt
 local math_huge = math.huge
 local unpack = table.unpack or unpack
 
-local dispatch = Opcodes.dispatch
-local do_branch = Opcodes.do_branch
-local op_push = Opcodes.push
-local handle_exception = Opcodes.handle_exception
-
 local function fail(msg) error({msg = msg}) end
-local op_pop = Opcodes.pop
 
 -- Cached bit32 functions for the hot loop
 local bit32_band = bit32.band
@@ -34,10 +28,6 @@ local bit32_arshift = bit32.arshift
 local bit32_btest = bit32.btest
 
 local Interp = {}
-
--- Set to false to disable inlined opcodes and use dispatch table for everything.
--- Useful for benchmarking the effect of opcode inlining.
-Interp.inline_opcodes = true
 
 -- Set to true to use compiled functions instead of interpreting bytecode.
 Interp.use_compiler = true
@@ -132,7 +122,6 @@ end
 -- Provides all helper functions that compiled Lua code calls into.
 ---------------------------------------------------------------------------
 
--- Import helpers from Opcodes (they're exported at the bottom of opcodes.lua)
 local NAN = 0/0
 local function isnan(v) return v ~= v or type(v) == "table" end
 
@@ -159,7 +148,17 @@ local function f32_trunc_val(v)
     return result
 end
 
-local nan_mt = Opcodes.nan_mt
+local nan_mt = {
+    __add = function() return NAN end,
+    __sub = function() return NAN end,
+    __mul = function() return NAN end,
+    __div = function() return NAN end,
+    __mod = function() return NAN end,
+    __pow = function() return NAN end,
+    __unm = function() return NAN end,
+    __lt = function() return false end,
+    __le = function() return false end,
+}
 
 local function f32_reinterpret_i32(bits)
     local sign = bit32_btest(bits, 0x80000000) and -1 or 1
@@ -234,7 +233,13 @@ local function i64_reinterpret_f64(v)
     return {lo, hi}
 end
 
--- i64 helpers (duplicated from opcodes.lua for compiled code access)
+-- Convert unsigned i32 to signed i32
+local function to_signed32(v) if v >= 0x80000000 then return v - 0x100000000 end; return v end
+
+-- Ensure value is in u32 range
+local function to_u32(v) return bit32_band(v, 0xFFFFFFFF) end
+
+-- i64 helpers
 local function i64_is_zero(v) return v[1] == 0 and v[2] == 0 end
 local function i64_eq(a, b) return a[1] == b[1] and a[2] == b[2] end
 local function i64_ne(a, b) return a[1] ~= b[1] or a[2] ~= b[2] end
@@ -276,7 +281,6 @@ end
 local function i64_shr_s(v, shift)
     shift = shift % 64
     if shift == 0 then return {v[1], v[2]} end
-    local to_signed32 = Opcodes.to_signed32
     if shift >= 32 then
         local hi_signed = to_signed32(v[2])
         if shift >= 64 then
@@ -598,7 +602,6 @@ end
 local function i64_to_f32_s(v) if i64_is_neg(v) then return -i64_to_f32_u(i64_neg(v)) end; return i64_to_f32_u(v) end
 
 -- Conversion helpers for ctx
-local function to_signed32(v) if v >= 0x80000000 then return v - 0x100000000 end; return v end
 
 local function i32_trunc_f32_s(val)
     if isnan(val) then fail("invalid conversion to integer") end
@@ -701,6 +704,1188 @@ end
 local function i64_extend32_s(val)
     local lo = type(val) == "table" and val[1] or val
     return {lo, bit32_btest(lo, 0x80000000) and 0xFFFFFFFF or 0}
+end
+
+---------------------------------------------------------------------------
+-- State-based reader functions (used by dispatch table handlers)
+---------------------------------------------------------------------------
+
+local function read_byte(state)
+    local pc = state.pc
+    local b = state.code[pc]
+    state.pc = pc + 1
+    return b
+end
+
+local function read_leb128_u(state)
+    local result = 0
+    local shift = 0
+    local code = state.code
+    local pc = state.pc
+    while true do
+        local b = code[pc]
+        pc = pc + 1
+        result = bit32_bor(result, bit32_lshift(bit32_band(b, 0x7F), shift))
+        if bit32_band(b, 0x80) == 0 then
+            break
+        end
+        shift = shift + 7
+    end
+    state.pc = pc
+    return result
+end
+
+local function read_leb128_s(state)
+    local result = 0
+    local shift = 0
+    local code = state.code
+    local pc = state.pc
+    local b
+    while true do
+        b = code[pc]
+        pc = pc + 1
+        result = bit32_bor(result, bit32_lshift(bit32_band(b, 0x7F), shift))
+        shift = shift + 7
+        if bit32_band(b, 0x80) == 0 then
+            break
+        end
+    end
+    state.pc = pc
+    if shift < 32 and bit32_btest(b, 0x40) then
+        result = bit32_bor(result, bit32_lshift(-1, shift))
+    end
+    if bit32_btest(result, 0x80000000) then
+        return result - 0x100000000
+    end
+    return result
+end
+
+local function read_leb128_s64(state)
+    local lo = 0
+    local hi = 0
+    local shift = 0
+    local code = state.code
+    local pc = state.pc
+    local b
+    while true do
+        b = code[pc]
+        pc = pc + 1
+        local val = bit32_band(b, 0x7F)
+        if shift < 32 then
+            lo = bit32_bor(lo, bit32_lshift(val, shift))
+            if shift + 7 > 32 then
+                hi = bit32_bor(hi, bit32_rshift(val, 32 - shift))
+            end
+        elseif shift < 64 then
+            hi = bit32_bor(hi, bit32_lshift(val, shift - 32))
+        end
+        shift = shift + 7
+        if bit32_band(b, 0x80) == 0 then
+            break
+        end
+    end
+    state.pc = pc
+    if bit32_btest(b, 0x40) then
+        if shift < 32 then
+            lo = bit32_bor(lo, bit32_lshift(0xFFFFFFFF, shift))
+            hi = 0xFFFFFFFF
+        elseif shift < 64 then
+            hi = bit32_bor(hi, bit32_lshift(0xFFFFFFFF, shift - 32))
+        end
+    end
+    return {lo, hi}
+end
+
+local function read_memarg(state)
+    local _align = read_leb128_u(state)
+    local offset = read_leb128_u(state)
+    return offset
+end
+
+local function read_blocktype(state)
+    local result = 0
+    local shift = 0
+    local code = state.code
+    local pc = state.pc
+    local b
+    while true do
+        b = code[pc]
+        pc = pc + 1
+        result = bit32_bor(result, bit32_lshift(bit32_band(b, 0x7F), shift))
+        shift = shift + 7
+        if bit32_band(b, 0x80) == 0 then break end
+    end
+    state.pc = pc
+    if shift < 32 and bit32_btest(b, 0x40) then
+        result = bit32_bor(result, bit32_lshift(-1, shift))
+    end
+    if bit32_btest(result, 0x80000000) then
+        result = result - 0x100000000
+    end
+
+    if result == -64 then
+        return 0, 0
+    elseif result < 0 then
+        return 0, 1
+    else
+        local type_info = state.module and state.module.types[result + 1]
+        if type_info then
+            return #type_info.params, #type_info.results
+        end
+        return 0, 1
+    end
+end
+
+-- Stack push/pop helpers (state-based, used by dispatch table handlers)
+local function push(state, val)
+    local sp = state.sp + 1
+    state.sp = sp
+    state.stack[sp] = val
+end
+
+local function pop(state)
+    local sp = state.sp
+    local val = state.stack[sp]
+    state.sp = sp - 1
+    return val
+end
+
+local op_push = push
+local op_pop = pop
+
+---------------------------------------------------------------------------
+-- Stateless bytecode scanning helpers (for build_block_map)
+---------------------------------------------------------------------------
+
+local skip_leb128_at = Decode.skip_leb128
+local read_leb128_u_at = Decode.leb128_u
+
+local function skip_operands_at(code, pos, op)
+    if op == 0x08 then return skip_leb128_at(code, pos)
+    elseif op == 0x0A then return pos
+    elseif op == 0x0C or op == 0x0D then return skip_leb128_at(code, pos)
+    elseif op == 0x0E then
+        local count
+        count, pos = read_leb128_u_at(code, pos)
+        for _ = 0, count do
+            pos = skip_leb128_at(code, pos)
+        end
+        return pos
+    elseif op == 0x0F then return pos
+    elseif op == 0x10 then return skip_leb128_at(code, pos)
+    elseif op == 0x11 then
+        pos = skip_leb128_at(code, pos)
+        return skip_leb128_at(code, pos)
+    elseif op == 0x1A or op == 0x1B then return pos
+    elseif op == 0x1F then
+        pos = skip_leb128_at(code, pos)
+        local num_catches
+        num_catches, pos = read_leb128_u_at(code, pos)
+        for _ = 1, num_catches do
+            local kind = code[pos]; pos = pos + 1
+            if kind == 0 or kind == 2 then
+                pos = skip_leb128_at(code, pos)
+            end
+            pos = skip_leb128_at(code, pos)
+        end
+        return pos
+    elseif op >= 0x20 and op <= 0x24 then return skip_leb128_at(code, pos)
+    elseif op >= 0x28 and op <= 0x3E then
+        pos = skip_leb128_at(code, pos)
+        return skip_leb128_at(code, pos)
+    elseif op == 0x3F or op == 0x40 then return skip_leb128_at(code, pos)
+    elseif op == 0x41 then return skip_leb128_at(code, pos)
+    elseif op == 0x42 then return skip_leb128_at(code, pos)
+    elseif op == 0x43 then return pos + 4
+    elseif op == 0x44 then return pos + 8
+    elseif op == 0xFC then return skip_leb128_at(code, pos)
+    end
+    return pos
+end
+
+local function build_block_map(code)
+    local block_map = {}
+    local bstack = {}
+    local top = 0
+    local pos = 1
+    local len = #code
+
+    while pos <= len do
+        local op = code[pos]
+        local opcode_pc = pos
+        pos = pos + 1
+
+        if op == 0x02 or op == 0x03 or op == 0x04 then
+            top = top + 1
+            bstack[top] = opcode_pc
+            block_map[opcode_pc] = {}
+            pos = skip_leb128_at(code, pos)
+        elseif op == 0x1F then
+            top = top + 1
+            bstack[top] = opcode_pc
+            block_map[opcode_pc] = {}
+            pos = skip_leb128_at(code, pos)
+            local num_catches
+            num_catches, pos = read_leb128_u_at(code, pos)
+            for _ = 1, num_catches do
+                local kind = code[pos]; pos = pos + 1
+                if kind == 0 or kind == 2 then
+                    pos = skip_leb128_at(code, pos)
+                end
+                pos = skip_leb128_at(code, pos)
+            end
+        elseif op == 0x05 then
+            if top > 0 then
+                block_map[bstack[top]].else_pc = pos
+            end
+        elseif op == 0x0B then
+            if top > 0 then
+                block_map[bstack[top]].end_pc = pos
+                top = top - 1
+            end
+        else
+            pos = skip_operands_at(code, pos, op)
+        end
+    end
+
+    return block_map
+end
+
+---------------------------------------------------------------------------
+-- do_branch and handle_exception (used by dispatch table handlers)
+---------------------------------------------------------------------------
+
+local function do_branch(state, depth)
+    local target_idx = state.block_sp - depth
+    local target_block = state.block_stack[target_idx]
+    local arity = target_block.arity
+    local sp = state.sp
+    local base = target_block.stack_height
+
+    if target_block.opcode == 0x03 then
+        if arity > 0 then
+            for i = arity - 1, 0, -1 do
+                state.stack[base + 1 + i] = state.stack[sp - (arity - 1 - i)]
+            end
+            state.sp = base + arity
+        else
+            state.sp = base
+        end
+        state.block_sp = target_idx
+        state.pc = target_block.continuation_pc
+    else
+        if arity > 0 then
+            for i = arity - 1, 0, -1 do
+                state.stack[base + 1 + i] = state.stack[sp - (arity - 1 - i)]
+            end
+            state.sp = base + arity
+        else
+            state.sp = base
+        end
+        state.block_sp = target_idx - 1
+        if state.block_sp <= 0 then
+            state.running = false
+        else
+            state.pc = state.block_map[target_block.block_pc].end_pc
+        end
+    end
+end
+
+local function handle_exception(state, exception)
+    local bsp = state.block_sp
+    while bsp >= 1 do
+        local block = state.block_stack[bsp]
+        if block.opcode == 0x1F and block.catches then
+            for _, clause in ipairs(block.catches) do
+                local matched = false
+                if clause.kind == 0 then
+                    matched = (exception.tag == clause.tagidx)
+                elseif clause.kind == 1 then
+                    matched = true
+                elseif clause.kind == 2 then
+                    matched = (exception.tag == clause.tagidx)
+                elseif clause.kind == 3 then
+                    matched = true
+                end
+                if matched then
+                    state.sp = block.stack_height
+                    if clause.kind == 0 or clause.kind == 2 then
+                        for _, v in ipairs(exception.values) do
+                            push(state, v)
+                        end
+                    end
+                    if clause.kind == 2 or clause.kind == 3 then
+                        push(state, exception)
+                    end
+                    state.block_sp = bsp
+                    state.exception = nil
+                    do_branch(state, clause.depth)
+                    return true
+                end
+            end
+        end
+        bsp = bsp - 1
+    end
+    return false
+end
+
+-- Aliases for dispatch table compatibility (opcodes.lua used different names)
+local f32_trunc = f32_trunc_val
+local f32_floor = f32_floor_fn
+local f64_floor = f64_floor_fn
+
+---------------------------------------------------------------------------
+-- Dispatch table: opcode -> handler function
+-- Handlers for opcodes already inlined in the run loop are omitted.
+---------------------------------------------------------------------------
+local dispatch = {}
+
+-- 0x00: unreachable
+dispatch[0x00] = function(state)
+    fail("unreachable")
+end
+
+-- 0x01: nop
+dispatch[0x01] = function(state) end
+
+-- 0x02: block (also called from inlined non-void block path)
+dispatch[0x02] = function(state)
+    local block_pc = state.pc - 1
+    local n_params, n_results = read_blocktype(state)
+    local bsp = state.block_sp + 1
+    state.block_sp = bsp
+    state.block_stack[bsp] = {
+        opcode = 0x02,
+        arity = n_results,
+        stack_height = state.sp - n_params,
+        block_pc = block_pc,
+    }
+end
+
+-- 0x04: if (also called from inlined non-void if path)
+dispatch[0x04] = function(state)
+    local block_pc = state.pc - 1
+    local n_params, n_results = read_blocktype(state)
+    local cond = pop(state)
+    local bsp = state.block_sp + 1
+    state.block_sp = bsp
+    state.block_stack[bsp] = {
+        opcode = 0x04,
+        arity = n_results,
+        stack_height = state.sp - n_params,
+        block_pc = block_pc,
+    }
+    if cond == 0 then
+        local info = state.block_map[block_pc]
+        if info.else_pc then
+            state.pc = info.else_pc
+        else
+            state.block_sp = bsp - 1
+            state.pc = info.end_pc
+        end
+    end
+end
+
+-- 0x05: else
+dispatch[0x05] = function(state)
+    local bsp = state.block_sp
+    local block = state.block_stack[bsp]
+    state.pc = state.block_map[block.block_pc].end_pc
+    state.block_sp = bsp - 1
+    local n_results = block.result_arity or block.arity
+    if n_results > 0 then
+        local sp = state.sp
+        local base = block.stack_height
+        for i = n_results - 1, 0, -1 do
+            state.stack[base + 1 + i] = state.stack[sp - (n_results - 1 - i)]
+        end
+        state.sp = base + n_results
+    else
+        state.sp = block.stack_height
+    end
+end
+
+-- 0x0B: end
+dispatch[0x0B] = function(state)
+    local bsp = state.block_sp
+    if bsp <= 0 then
+        state.running = false
+        return
+    end
+    local block = state.block_stack[bsp]
+    state.block_sp = bsp - 1
+    local n_results = block.result_arity or block.arity
+    if n_results > 0 then
+        local sp = state.sp
+        local base = block.stack_height
+        for i = n_results - 1, 0, -1 do
+            state.stack[base + 1 + i] = state.stack[sp - (n_results - 1 - i)]
+        end
+        state.sp = base + n_results
+    else
+        state.sp = block.stack_height
+    end
+    if bsp - 1 <= 0 then
+        state.running = false
+    end
+end
+
+-- 0x0D: br_if
+dispatch[0x0D] = function(state)
+    local depth = read_leb128_u(state)
+    local cond = pop(state)
+    if cond ~= 0 then
+        do_branch(state, depth)
+    end
+end
+
+-- 0x10: call
+dispatch[0x10] = function(state)
+    local func_idx = read_leb128_u(state)
+    state.call_func = func_idx
+end
+
+-- 0x1A: drop
+dispatch[0x1A] = function(state)
+    state.sp = state.sp - 1
+end
+
+-- 0x1B: select
+dispatch[0x1B] = function(state)
+    local cond = pop(state)
+    local val2 = pop(state)
+    local val1 = pop(state)
+    if cond ~= 0 then
+        push(state, val1)
+    else
+        push(state, val2)
+    end
+end
+
+-- 0x20: local.get
+dispatch[0x20] = function(state)
+    local idx = read_leb128_u(state)
+    push(state, state.locals[idx])
+end
+
+-- 0x21: local.set
+dispatch[0x21] = function(state)
+    local idx = read_leb128_u(state)
+    state.locals[idx] = pop(state)
+end
+
+-- 0x22: local.tee
+dispatch[0x22] = function(state)
+    local idx = read_leb128_u(state)
+    state.locals[idx] = state.stack[state.sp]
+end
+
+-- 0x23: global.get
+dispatch[0x23] = function(state)
+    local idx = read_leb128_u(state)
+    push(state, state.instance.globals[idx])
+end
+
+-- 0x24: global.set
+dispatch[0x24] = function(state)
+    local idx = read_leb128_u(state)
+    state.instance.globals[idx] = pop(state)
+end
+
+-- 0x28: i32.load
+dispatch[0x28] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_i32(base + offset))
+end
+
+-- 0x2D: i32.load8_u
+dispatch[0x2D] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_i8_u(base + offset))
+end
+
+-- 0x36: i32.store
+dispatch[0x36] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_i32(base + offset, val)
+end
+
+-- 0x3A: i32.store8
+dispatch[0x3A] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_i8(base + offset, val)
+end
+
+-- 0x41: i32.const
+dispatch[0x41] = function(state)
+    local val = read_leb128_s(state)
+    if val < 0 then val = val + 0x100000000 end
+    push(state, val)
+end
+
+-- 0x45: i32.eqz
+dispatch[0x45] = function(state) local val = pop(state); push(state, val == 0 and 1 or 0) end
+-- 0x46: i32.eq
+dispatch[0x46] = function(state) local b = pop(state); local a = pop(state); push(state, a == b and 1 or 0) end
+-- 0x47: i32.ne
+dispatch[0x47] = function(state) local b = pop(state); local a = pop(state); push(state, a ~= b and 1 or 0) end
+-- 0x48: i32.lt_s
+dispatch[0x48] = function(state) local b = to_signed32(pop(state)); local a = to_signed32(pop(state)); push(state, a < b and 1 or 0) end
+-- 0x49: i32.lt_u
+dispatch[0x49] = function(state) local b = pop(state); local a = pop(state); push(state, a < b and 1 or 0) end
+-- 0x4A: i32.gt_s
+dispatch[0x4A] = function(state) local b = to_signed32(pop(state)); local a = to_signed32(pop(state)); push(state, a > b and 1 or 0) end
+-- 0x4B: i32.gt_u
+dispatch[0x4B] = function(state) local b = pop(state); local a = pop(state); push(state, a > b and 1 or 0) end
+-- 0x4C: i32.le_s
+dispatch[0x4C] = function(state) local b = to_signed32(pop(state)); local a = to_signed32(pop(state)); push(state, a <= b and 1 or 0) end
+-- 0x4D: i32.le_u
+dispatch[0x4D] = function(state) local b = pop(state); local a = pop(state); push(state, a <= b and 1 or 0) end
+-- 0x4E: i32.ge_s
+dispatch[0x4E] = function(state) local b = to_signed32(pop(state)); local a = to_signed32(pop(state)); push(state, a >= b and 1 or 0) end
+-- 0x4F: i32.ge_u
+dispatch[0x4F] = function(state) local b = pop(state); local a = pop(state); push(state, a >= b and 1 or 0) end
+
+-- 0x6A: i32.add
+dispatch[0x6A] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_band(a + b, 0xFFFFFFFF)) end
+-- 0x6B: i32.sub
+dispatch[0x6B] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_band(a - b + 0x100000000, 0xFFFFFFFF)) end
+-- 0x6C: i32.mul
+dispatch[0x6C] = function(state)
+    local b = pop(state); local a = pop(state)
+    local a_lo = bit32_band(a, 0xFFFF); local a_hi = bit32_rshift(a, 16)
+    local b_lo = bit32_band(b, 0xFFFF); local b_hi = bit32_rshift(b, 16)
+    push(state, bit32_band(a_lo * b_lo + (a_lo * b_hi + a_hi * b_lo) * 65536, 0xFFFFFFFF))
+end
+-- 0x71: i32.and
+dispatch[0x71] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_band(a, b)) end
+-- 0x72: i32.or
+dispatch[0x72] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_bor(a, b)) end
+-- 0x73: i32.xor
+dispatch[0x73] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_bxor(a, b)) end
+-- 0x74: i32.shl
+dispatch[0x74] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_lshift(a, bit32_band(b, 31))) end
+-- 0x75: i32.shr_s
+dispatch[0x75] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_arshift(a, bit32_band(b, 31))) end
+-- 0x76: i32.shr_u
+dispatch[0x76] = function(state) local b = pop(state); local a = pop(state); push(state, bit32_rshift(a, bit32_band(b, 31))) end
+
+-- 0x03: loop
+dispatch[0x03] = function(state)
+    local block_pc = state.pc - 1
+    local n_params, n_results = read_blocktype(state)
+    local bsp = state.block_sp + 1
+    state.block_sp = bsp
+    state.block_stack[bsp] = {
+        opcode = 0x03,
+        arity = n_params,
+        result_arity = n_results,
+        stack_height = state.sp - n_params,
+        continuation_pc = state.pc,
+        block_pc = block_pc,
+    }
+end
+
+-- 0x08: throw
+dispatch[0x08] = function(state)
+    local tagidx = read_leb128_u(state)
+    local module = state.module or (state.instance and state.instance.module)
+    local tags = state.instance and state.instance.tags
+    local tag = tags and tags[tagidx]
+    local values = {}
+    if tag then
+        local type_info = module.types[tag.type_idx + 1]
+        if type_info then
+            for i = #type_info.params, 1, -1 do
+                values[i] = pop(state)
+            end
+        end
+    end
+    local exception = {tag = tagidx, values = values}
+    if not handle_exception(state, exception) then
+        state.exception = exception
+        state.running = false
+    end
+end
+
+-- 0x0A: throw_ref
+dispatch[0x0A] = function(state)
+    local exnref = pop(state)
+    if type(exnref) ~= "table" or exnref.tag == nil then
+        fail("throw_ref: invalid exnref")
+    end
+    if not handle_exception(state, exnref) then
+        state.exception = exnref
+        state.running = false
+    end
+end
+
+-- 0x0C: br
+dispatch[0x0C] = function(state)
+    local depth = read_leb128_u(state)
+    do_branch(state, depth)
+end
+
+-- 0x0E: br_table
+dispatch[0x0E] = function(state)
+    local count = read_leb128_u(state)
+    local targets = {}
+    for i = 0, count - 1 do
+        targets[i] = read_leb128_u(state)
+    end
+    local default = read_leb128_u(state)
+    local idx = pop(state)
+    local depth
+    if idx >= 0 and idx < count then
+        depth = targets[idx]
+    else
+        depth = default
+    end
+    do_branch(state, depth)
+end
+
+-- 0x0F: return
+dispatch[0x0F] = function(state)
+    state.do_return = true
+    state.running = false
+end
+
+-- 0x11: call_indirect
+dispatch[0x11] = function(state)
+    local type_idx = read_leb128_u(state)
+    local table_idx = read_leb128_u(state)
+    local elem_idx = pop(state)
+    local tbl = state.instance.tables[table_idx]
+    if elem_idx < 0 or elem_idx >= (state.instance.table_sizes[table_idx] or 0) then
+        fail("undefined element")
+    end
+    if not tbl[elem_idx] then
+        fail("uninitialized element")
+    end
+    local func_idx = tbl[elem_idx]
+    local expected_type = state.instance.module.types[type_idx + 1]
+    local actual_type = state.instance.module.types[state.instance.module.funcs[func_idx].type_idx + 1]
+    if expected_type and actual_type then
+        if #expected_type.params ~= #actual_type.params or #expected_type.results ~= #actual_type.results then
+            fail("indirect call type mismatch")
+        end
+        for i = 1, #expected_type.params do
+            if expected_type.params[i] ~= actual_type.params[i] then
+                fail("indirect call type mismatch")
+            end
+        end
+        for i = 1, #expected_type.results do
+            if expected_type.results[i] ~= actual_type.results[i] then
+                fail("indirect call type mismatch")
+            end
+        end
+    end
+    state.call_func = func_idx
+end
+
+-- 0x1F: try_table
+dispatch[0x1F] = function(state)
+    local block_pc = state.pc - 1
+    local n_params, n_results = read_blocktype(state)
+    local num_catches = read_leb128_u(state)
+    local catches = {}
+    for i = 1, num_catches do
+        local kind = read_byte(state)
+        local tagidx = nil
+        if kind == 0 or kind == 2 then
+            tagidx = read_leb128_u(state)
+        end
+        local depth = read_leb128_u(state)
+        catches[i] = {kind = kind, tagidx = tagidx, depth = depth}
+    end
+    local bsp = state.block_sp + 1
+    state.block_sp = bsp
+    state.block_stack[bsp] = {
+        opcode = 0x1F,
+        arity = n_results,
+        stack_height = state.sp - n_params,
+        catches = catches,
+        block_pc = block_pc,
+    }
+end
+
+-- 0x29: i64.load
+dispatch[0x29] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_i64(base + offset))
+end
+
+-- 0x2A: f32.load
+dispatch[0x2A] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_f32(base + offset))
+end
+
+-- 0x2B: f64.load
+dispatch[0x2B] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_f64(base + offset))
+end
+
+-- 0x2C: i32.load8_s
+dispatch[0x2C] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    local val = state.memory:load_i8_s(base + offset)
+    if val < 0 then val = val + 0x100000000 end
+    push(state, val)
+end
+
+-- 0x2E: i32.load16_s
+dispatch[0x2E] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    local val = state.memory:load_i16_s(base + offset)
+    if val < 0 then val = val + 0x100000000 end
+    push(state, val)
+end
+
+-- 0x2F: i32.load16_u
+dispatch[0x2F] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, state.memory:load_i16_u(base + offset))
+end
+
+-- 0x30: i64.load8_s
+dispatch[0x30] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    local val = state.memory:load_i8_s(base + offset)
+    if val < 0 then
+        push(state, {bit32_band(val + 0x100000000, 0xFFFFFFFF), 0xFFFFFFFF})
+    else
+        push(state, {val, 0})
+    end
+end
+
+-- 0x31: i64.load8_u
+dispatch[0x31] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, {state.memory:load_i8_u(base + offset), 0})
+end
+
+-- 0x32: i64.load16_s
+dispatch[0x32] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    local val = state.memory:load_i16_s(base + offset)
+    if val < 0 then
+        push(state, {bit32_band(val + 0x100000000, 0xFFFFFFFF), 0xFFFFFFFF})
+    else
+        push(state, {val, 0})
+    end
+end
+
+-- 0x33: i64.load16_u
+dispatch[0x33] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, {state.memory:load_i16_u(base + offset), 0})
+end
+
+-- 0x34: i64.load32_s
+dispatch[0x34] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    local val = state.memory:load_i32(base + offset)
+    local hi = bit32_btest(val, 0x80000000) and 0xFFFFFFFF or 0
+    push(state, {val, hi})
+end
+
+-- 0x35: i64.load32_u
+dispatch[0x35] = function(state)
+    local offset = read_memarg(state)
+    local base = pop(state)
+    push(state, {state.memory:load_i32(base + offset), 0})
+end
+
+-- 0x37: i64.store
+dispatch[0x37] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_i64(base + offset, val)
+end
+
+-- 0x38: f32.store
+dispatch[0x38] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_f32(base + offset, val)
+end
+
+-- 0x39: f64.store
+dispatch[0x39] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_f64(base + offset, val)
+end
+
+-- 0x3B: i32.store16
+dispatch[0x3B] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    state.memory:store_i16(base + offset, val)
+end
+
+-- 0x3C: i64.store8
+dispatch[0x3C] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    local byte_val = type(val) == "table" and val[1] or val
+    state.memory:store_i8(base + offset, byte_val)
+end
+
+-- 0x3D: i64.store16
+dispatch[0x3D] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    local short_val = type(val) == "table" and bit32_band(val[1], 0xFFFF) or bit32_band(val, 0xFFFF)
+    state.memory:store_i16(base + offset, short_val)
+end
+
+-- 0x3E: i64.store32
+dispatch[0x3E] = function(state)
+    local offset = read_memarg(state)
+    local val = pop(state)
+    local base = pop(state)
+    local word_val = type(val) == "table" and val[1] or bit32_band(val, 0xFFFFFFFF)
+    state.memory:store_i32(base + offset, word_val)
+end
+
+-- 0x3F: memory.size
+dispatch[0x3F] = function(state)
+    read_leb128_u(state)
+    push(state, state.memory:size())
+end
+
+-- 0x40: memory.grow
+dispatch[0x40] = function(state)
+    read_leb128_u(state)
+    local pages = pop(state)
+    push(state, state.memory:grow(pages))
+end
+
+-- 0x42: i64.const
+dispatch[0x42] = function(state)
+    push(state, read_leb128_s64(state))
+end
+
+-- 0x43: f32.const
+dispatch[0x43] = function(state)
+    local pc = state.pc
+    local code = state.code
+    local b0 = code[pc]
+    local b1 = code[pc + 1]
+    local b2 = code[pc + 2]
+    local b3 = code[pc + 3]
+    state.pc = pc + 4
+    local bits = bit32_bor(b0, bit32_lshift(b1, 8), bit32_lshift(b2, 16), bit32_lshift(b3, 24))
+    push(state, f32_reinterpret_i32(bits))
+end
+
+-- 0x44: f64.const
+dispatch[0x44] = function(state)
+    local pc = state.pc
+    local code = state.code
+    local b0 = code[pc]
+    local b1 = code[pc + 1]
+    local b2 = code[pc + 2]
+    local b3 = code[pc + 3]
+    local b4 = code[pc + 4]
+    local b5 = code[pc + 5]
+    local b6 = code[pc + 6]
+    local b7 = code[pc + 7]
+    state.pc = pc + 8
+    local lo = bit32_bor(b0, bit32_lshift(b1, 8), bit32_lshift(b2, 16), bit32_lshift(b3, 24))
+    local hi = bit32_bor(b4, bit32_lshift(b5, 8), bit32_lshift(b6, 16), bit32_lshift(b7, 24))
+    push(state, f64_reinterpret_i64({lo, hi}))
+end
+
+-- i64 comparison ops
+dispatch[0x50] = function(state) local val = pop(state); push(state, i64_eqz(val) and 1 or 0) end
+dispatch[0x51] = function(state) local b = pop(state); local a = pop(state); push(state, i64_eq(a, b) and 1 or 0) end
+dispatch[0x52] = function(state) local b = pop(state); local a = pop(state); push(state, i64_ne(a, b) and 1 or 0) end
+dispatch[0x53] = function(state) local b = pop(state); local a = pop(state); push(state, i64_lt_s(a, b) and 1 or 0) end
+dispatch[0x54] = function(state) local b = pop(state); local a = pop(state); push(state, i64_lt_u(a, b) and 1 or 0) end
+dispatch[0x55] = function(state) local b = pop(state); local a = pop(state); push(state, i64_gt_s(a, b) and 1 or 0) end
+dispatch[0x56] = function(state) local b = pop(state); local a = pop(state); push(state, i64_gt_u(a, b) and 1 or 0) end
+dispatch[0x57] = function(state) local b = pop(state); local a = pop(state); push(state, i64_le_s(a, b) and 1 or 0) end
+dispatch[0x58] = function(state) local b = pop(state); local a = pop(state); push(state, i64_le_u(a, b) and 1 or 0) end
+dispatch[0x59] = function(state) local b = pop(state); local a = pop(state); push(state, i64_ge_s(a, b) and 1 or 0) end
+dispatch[0x5A] = function(state) local b = pop(state); local a = pop(state); push(state, i64_ge_u(a, b) and 1 or 0) end
+
+-- f32 comparison ops
+dispatch[0x5B] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a == b and 1 or 0) end
+dispatch[0x5C] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 1); return end; push(state, a ~= b and 1 or 0) end
+dispatch[0x5D] = function(state) local b = pop(state); local a = pop(state); push(state, a < b and 1 or 0) end
+dispatch[0x5E] = function(state) local b = pop(state); local a = pop(state); push(state, a > b and 1 or 0) end
+dispatch[0x5F] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a <= b and 1 or 0) end
+dispatch[0x60] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a >= b and 1 or 0) end
+
+-- f64 comparison ops
+dispatch[0x61] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a == b and 1 or 0) end
+dispatch[0x62] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 1); return end; push(state, a ~= b and 1 or 0) end
+dispatch[0x63] = function(state) local b = pop(state); local a = pop(state); push(state, a < b and 1 or 0) end
+dispatch[0x64] = function(state) local b = pop(state); local a = pop(state); push(state, a > b and 1 or 0) end
+dispatch[0x65] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a <= b and 1 or 0) end
+dispatch[0x66] = function(state) local b = pop(state); local a = pop(state); if isnan(a) or isnan(b) then push(state, 0); return end; push(state, a >= b and 1 or 0) end
+
+-- i32 numeric ops
+dispatch[0x67] = function(state) push(state, i32_clz(pop(state))) end
+dispatch[0x68] = function(state) push(state, i32_ctz(pop(state))) end
+dispatch[0x69] = function(state) push(state, i32_popcnt(pop(state))) end
+
+-- 0x6D: i32.div_s
+dispatch[0x6D] = function(state)
+    local b = to_signed32(pop(state)); local a = to_signed32(pop(state))
+    if b == 0 then fail("integer divide by zero") end
+    if a == -2147483648 and b == -1 then fail("integer overflow") end
+    local result = a / b
+    if result >= 0 then result = math_floor(result) else result = math_ceil(result) end
+    if result < 0 then result = result + 0x100000000 end
+    push(state, result)
+end
+
+-- 0x6E: i32.div_u
+dispatch[0x6E] = function(state)
+    local b = pop(state); local a = pop(state)
+    if b == 0 then fail("integer divide by zero") end
+    push(state, math_floor(a / b))
+end
+
+-- 0x6F: i32.rem_s
+dispatch[0x6F] = function(state)
+    local b = to_signed32(pop(state)); local a = to_signed32(pop(state))
+    if b == 0 then fail("integer divide by zero") end
+    local result
+    if b == -1 then
+        result = 0
+    else
+        if a / b >= 0 then
+            result = a - math_floor(a / b) * b
+        else
+            result = a - math_ceil(a / b) * b
+        end
+    end
+    if result < 0 then result = result + 0x100000000 end
+    push(state, result)
+end
+
+-- 0x70: i32.rem_u
+dispatch[0x70] = function(state)
+    local b = pop(state); local a = pop(state)
+    if b == 0 then fail("integer divide by zero") end
+    push(state, a % b)
+end
+
+-- 0x77: i32.rotl
+dispatch[0x77] = function(state)
+    local b = pop(state); local a = pop(state)
+    push(state, bit32.lrotate(a, bit32_band(b, 31)))
+end
+
+-- 0x78: i32.rotr
+dispatch[0x78] = function(state)
+    local b = pop(state); local a = pop(state)
+    push(state, bit32.rrotate(a, bit32_band(b, 31)))
+end
+
+-- i64 numeric ops
+dispatch[0x79] = function(state) push(state, i64_clz(pop(state))) end
+dispatch[0x7A] = function(state) push(state, i64_ctz(pop(state))) end
+dispatch[0x7B] = function(state) push(state, i64_popcnt(pop(state))) end
+dispatch[0x7C] = function(state) local b = pop(state); local a = pop(state); push(state, i64_add(a, b)) end
+dispatch[0x7D] = function(state) local b = pop(state); local a = pop(state); push(state, i64_sub(a, b)) end
+dispatch[0x7E] = function(state) local b = pop(state); local a = pop(state); push(state, i64_mul(a, b)) end
+dispatch[0x7F] = function(state) local b = pop(state); local a = pop(state); push(state, i64_div_s(a, b)) end
+dispatch[0x80] = function(state) local b = pop(state); local a = pop(state); push(state, i64_div_u(a, b)) end
+dispatch[0x81] = function(state) local b = pop(state); local a = pop(state); push(state, i64_rem_s(a, b)) end
+dispatch[0x82] = function(state) local b = pop(state); local a = pop(state); push(state, i64_rem_u(a, b)) end
+dispatch[0x83] = function(state) local b = pop(state); local a = pop(state); push(state, i64_and(a, b)) end
+dispatch[0x84] = function(state) local b = pop(state); local a = pop(state); push(state, i64_or(a, b)) end
+dispatch[0x85] = function(state) local b = pop(state); local a = pop(state); push(state, i64_xor(a, b)) end
+dispatch[0x86] = function(state) local b = pop(state); local a = pop(state); push(state, i64_shl(a, type(b) == "table" and b[1] or b)) end
+dispatch[0x87] = function(state) local b = pop(state); local a = pop(state); push(state, i64_shr_s(a, type(b) == "table" and b[1] or b)) end
+dispatch[0x88] = function(state) local b = pop(state); local a = pop(state); push(state, i64_shr_u(a, type(b) == "table" and b[1] or b)) end
+dispatch[0x89] = function(state) local b = pop(state); local a = pop(state); push(state, i64_rotl(a, type(b) == "table" and b[1] or b)) end
+dispatch[0x8A] = function(state) local b = pop(state); local a = pop(state); push(state, i64_rotr(a, type(b) == "table" and b[1] or b)) end
+
+-- f32 numeric ops
+dispatch[0x8B] = function(state) push(state, f32_abs(pop(state))) end
+dispatch[0x8C] = function(state) push(state, f32_neg(pop(state))) end
+dispatch[0x8D] = function(state) push(state, f32_ceil(pop(state))) end
+dispatch[0x8E] = function(state) push(state, f32_floor(pop(state))) end
+dispatch[0x8F] = function(state) push(state, f32_trunc_op(pop(state))) end
+dispatch[0x90] = function(state) push(state, f32_nearest(pop(state))) end
+dispatch[0x91] = function(state) push(state, f32_sqrt(pop(state))) end
+dispatch[0x92] = function(state) local b = pop(state); local a = pop(state); push(state, f32_trunc(a + b)) end
+dispatch[0x93] = function(state) local b = pop(state); local a = pop(state); push(state, f32_trunc(a - b)) end
+dispatch[0x94] = function(state) local b = pop(state); local a = pop(state); push(state, f32_trunc(a * b)) end
+dispatch[0x95] = function(state) local b = pop(state); local a = pop(state); push(state, f32_trunc(a / b)) end
+dispatch[0x96] = function(state) local b = pop(state); local a = pop(state); push(state, f32_min(a, b)) end
+dispatch[0x97] = function(state) local b = pop(state); local a = pop(state); push(state, f32_max(a, b)) end
+dispatch[0x98] = function(state) local b = pop(state); local a = pop(state); push(state, f32_copysign(a, b)) end
+
+-- f64 numeric ops
+dispatch[0x99] = function(state) push(state, f64_abs(pop(state))) end
+dispatch[0x9A] = function(state) push(state, f64_neg(pop(state))) end
+dispatch[0x9B] = function(state) push(state, f64_ceil(pop(state))) end
+dispatch[0x9C] = function(state) push(state, f64_floor(pop(state))) end
+dispatch[0x9D] = function(state) push(state, f64_trunc_op(pop(state))) end
+dispatch[0x9E] = function(state) push(state, f64_nearest(pop(state))) end
+dispatch[0x9F] = function(state) push(state, f64_sqrt(pop(state))) end
+dispatch[0xA0] = function(state) local b = pop(state); local a = pop(state); push(state, a + b) end
+dispatch[0xA1] = function(state) local b = pop(state); local a = pop(state); push(state, a - b) end
+dispatch[0xA2] = function(state) local b = pop(state); local a = pop(state); push(state, a * b) end
+dispatch[0xA3] = function(state) local b = pop(state); local a = pop(state); push(state, a / b) end
+dispatch[0xA4] = function(state) local b = pop(state); local a = pop(state); push(state, f64_min(a, b)) end
+dispatch[0xA5] = function(state) local b = pop(state); local a = pop(state); push(state, f64_max(a, b)) end
+dispatch[0xA6] = function(state) local b = pop(state); local a = pop(state); push(state, f64_copysign(a, b)) end
+
+-- Conversion ops
+dispatch[0xA7] = function(state) local val = pop(state); push(state, type(val) == "table" and val[1] or bit32_band(val, 0xFFFFFFFF)) end
+dispatch[0xA8] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; val = val >= 0 and math_floor(val) or -math_floor(-val); if val >= 2147483648 or val < -2147483648 then fail("integer overflow") end; if val < 0 then val = val + 0x100000000 end; push(state, val) end
+dispatch[0xA9] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; val = (val >= 0 and math_floor(val) or -math_floor(-val)) + 0; if val >= 4294967296 or val < 0 then fail("integer overflow") end; push(state, val) end
+dispatch[0xAA] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; val = val >= 0 and math_floor(val) or -math_floor(-val); if val >= 2147483648 or val < -2147483648 then fail("integer overflow") end; if val < 0 then val = val + 0x100000000 end; push(state, val) end
+dispatch[0xAB] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; val = (val >= 0 and math_floor(val) or -math_floor(-val)) + 0; if val >= 4294967296 or val < 0 then fail("integer overflow") end; push(state, val) end
+dispatch[0xAC] = function(state) local val = pop(state); val = type(val) == "table" and val[1] or val; push(state, {val, bit32_btest(val, 0x80000000) and 0xFFFFFFFF or 0}) end
+dispatch[0xAD] = function(state) local val = pop(state); val = type(val) == "table" and val[1] or val; push(state, {val, 0}) end
+dispatch[0xAE] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; if val >= 9223372036854775808 or val < -9223372036854775808 then fail("integer overflow") end; push(state, f64_to_i64_s(val)) end
+dispatch[0xAF] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; if val >= 18446744073709551616 or val <= -1.0 then fail("integer overflow") end; push(state, f64_to_i64_u(val)) end
+dispatch[0xB0] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; if val >= 9223372036854775808 or val < -9223372036854775808 then fail("integer overflow") end; push(state, f64_to_i64_s(val)) end
+dispatch[0xB1] = function(state) local val = pop(state); if isnan(val) then fail("invalid conversion to integer") end; if val >= 18446744073709551616 or val <= -1.0 then fail("integer overflow") end; push(state, f64_to_i64_u(val)) end
+dispatch[0xB2] = function(state) push(state, f32_trunc(to_signed32(pop(state)))) end
+dispatch[0xB3] = function(state) push(state, f32_trunc(pop(state))) end
+dispatch[0xB4] = function(state) push(state, i64_to_f32_s(pop(state))) end
+dispatch[0xB5] = function(state) push(state, i64_to_f32_u(pop(state))) end
+dispatch[0xB6] = function(state) push(state, f32_trunc(pop(state))) end
+dispatch[0xB7] = function(state) push(state, to_signed32(pop(state)) + 0.0) end
+dispatch[0xB8] = function(state) push(state, pop(state) + 0.0) end
+dispatch[0xB9] = function(state) push(state, i64_to_f64_s(pop(state))) end
+dispatch[0xBA] = function(state) push(state, i64_to_f64_u(pop(state))) end
+dispatch[0xBB] = function(state) local v = state.stack[state.sp]; if isnan(v) then state.stack[state.sp] = NAN end end
+dispatch[0xBC] = function(state) push(state, i32_reinterpret_f32(pop(state))) end
+dispatch[0xBD] = function(state) push(state, i64_reinterpret_f64(pop(state))) end
+dispatch[0xBE] = function(state) push(state, f32_reinterpret_i32(pop(state))) end
+dispatch[0xBF] = function(state) push(state, f64_reinterpret_i64(pop(state))) end
+
+-- Sign extension ops
+dispatch[0xC0] = function(state) local val = bit32_band(pop(state), 0xFF); if val >= 0x80 then val = val - 0x100 end; if val < 0 then val = val + 0x100000000 end; push(state, val) end
+dispatch[0xC1] = function(state) local val = bit32_band(pop(state), 0xFFFF); if val >= 0x8000 then val = val - 0x10000 end; if val < 0 then val = val + 0x100000000 end; push(state, val) end
+dispatch[0xC2] = function(state) local val = pop(state); local lo = type(val) == "table" and val[1] or val; lo = bit32_band(lo, 0xFF); if lo >= 0x80 then push(state, {bit32_band(lo + 0xFFFFFF00, 0xFFFFFFFF), 0xFFFFFFFF}) else push(state, {lo, 0}) end end
+dispatch[0xC3] = function(state) local val = pop(state); local lo = type(val) == "table" and val[1] or val; lo = bit32_band(lo, 0xFFFF); if lo >= 0x8000 then push(state, {bit32_band(lo + 0xFFFF0000, 0xFFFFFFFF), 0xFFFFFFFF}) else push(state, {lo, 0}) end end
+dispatch[0xC4] = function(state) local val = pop(state); local lo = type(val) == "table" and val[1] or val; push(state, {lo, bit32_btest(lo, 0x80000000) and 0xFFFFFFFF or 0}) end
+
+-- 0xFC: extended ops
+dispatch[0xFC] = function(state)
+    local sub_op = read_leb128_u(state)
+    if sub_op == 0 then
+        local val = pop(state); if isnan(val) then push(state, 0); return end
+        if val >= 2147483647 then push(state, 0x7FFFFFFF); return end
+        if val <= -2147483648 then push(state, 0x80000000); return end
+        val = val >= 0 and math_floor(val) or math_ceil(val)
+        if val < 0 then val = val + 0x100000000 end; push(state, val)
+    elseif sub_op == 1 then
+        local val = pop(state); if isnan(val) or val < 0 then push(state, 0); return end
+        if val >= 4294967296 then push(state, 0xFFFFFFFF); return end; push(state, math_floor(val))
+    elseif sub_op == 2 then
+        local val = pop(state); if isnan(val) then push(state, 0); return end
+        if val >= 2147483647 then push(state, 0x7FFFFFFF); return end
+        if val <= -2147483648 then push(state, 0x80000000); return end
+        val = val >= 0 and math_floor(val) or math_ceil(val)
+        if val < 0 then val = val + 0x100000000 end; push(state, val)
+    elseif sub_op == 3 then
+        local val = pop(state); if isnan(val) or val < 0 then push(state, 0); return end
+        if val >= 4294967296 then push(state, 0xFFFFFFFF); return end; push(state, math_floor(val))
+    elseif sub_op == 4 then
+        local val = pop(state); if isnan(val) then push(state, {0, 0}); return end
+        if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
+        if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
+        push(state, f64_to_i64_s(val))
+    elseif sub_op == 5 then
+        local val = pop(state); if isnan(val) or val <= -1.0 then push(state, {0, 0}); return end
+        if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
+        push(state, f64_to_i64_u(val))
+    elseif sub_op == 6 then
+        local val = pop(state); if isnan(val) then push(state, {0, 0}); return end
+        if val >= 9223372036854775808 then push(state, {0xFFFFFFFF, 0x7FFFFFFF}); return end
+        if val < -9223372036854775808 then push(state, {0, 0x80000000}); return end
+        push(state, f64_to_i64_s(val))
+    elseif sub_op == 7 then
+        local val = pop(state); if isnan(val) or val <= -1.0 then push(state, {0, 0}); return end
+        if val >= 18446744073709551616 then push(state, {0xFFFFFFFF, 0xFFFFFFFF}); return end
+        push(state, f64_to_i64_u(val))
+    elseif sub_op == 8 then
+        local seg_idx = read_leb128_u(state); read_leb128_u(state)
+        local n = pop(state); local s = pop(state); local d = pop(state)
+        local seg_data = state.instance.data_segments_raw[seg_idx + 1]
+        if seg_data then for i = 0, n - 1 do state.memory:store_byte(d + i, string.byte(seg_data, s + i + 1)) end end
+    elseif sub_op == 9 then
+        local seg_idx = read_leb128_u(state)
+        if state.instance.data_segments_raw then state.instance.data_segments_raw[seg_idx + 1] = nil end
+    elseif sub_op == 10 then
+        read_leb128_u(state); read_leb128_u(state)
+        local n = pop(state); local s = pop(state); local d = pop(state)
+        if d <= s then for i = 0, n - 1 do state.memory:store_byte(d + i, state.memory:load_byte(s + i)) end
+        else for i = n - 1, 0, -1 do state.memory:store_byte(d + i, state.memory:load_byte(s + i)) end end
+    elseif sub_op == 11 then
+        read_leb128_u(state)
+        local n = pop(state); local val = pop(state); local d = pop(state)
+        val = bit32_band(val, 0xFF)
+        for i = 0, n - 1 do state.memory:store_byte(d + i, val) end
+    elseif sub_op == 12 then
+        local seg_idx = read_leb128_u(state); local tbl_idx = read_leb128_u(state)
+        local n = pop(state); local s = pop(state); local d = pop(state)
+        local seg = state.instance.element_segments_raw and state.instance.element_segments_raw[seg_idx + 1]
+        local tbl = state.instance.tables[tbl_idx]
+        if seg and tbl then for i = 0, n - 1 do tbl[d + i] = seg[s + i + 1] end end
+    elseif sub_op == 13 then
+        local seg_idx = read_leb128_u(state)
+        if state.instance.element_segments_raw then state.instance.element_segments_raw[seg_idx + 1] = nil end
+    elseif sub_op == 14 then
+        local dst_idx = read_leb128_u(state); local src_idx = read_leb128_u(state)
+        local n = pop(state); local s = pop(state); local d = pop(state)
+        local dst_tbl = state.instance.tables[dst_idx]; local src_tbl = state.instance.tables[src_idx]
+        if dst_tbl and src_tbl then
+            if d <= s then for i = 0, n - 1 do dst_tbl[d + i] = src_tbl[s + i] end
+            else for i = n - 1, 0, -1 do dst_tbl[d + i] = src_tbl[s + i] end end
+        end
+    elseif sub_op == 15 then
+        read_leb128_u(state); local n = pop(state); local _init = pop(state)
+        push(state, 0xFFFFFFFF)
+    elseif sub_op == 16 then
+        local tbl_idx = read_leb128_u(state)
+        push(state, state.instance.table_sizes[tbl_idx] or 0)
+    elseif sub_op == 17 then
+        local tbl_idx = read_leb128_u(state)
+        local n = pop(state); local val = pop(state); local d = pop(state)
+        local tbl = state.instance.tables[tbl_idx]
+        if tbl then for i = 0, n - 1 do tbl[d + i] = val end end
+    else
+        fail(string.format("unknown opcode 0xFC %d", sub_op))
+    end
 end
 
 -- Create the ctx object for compiled functions
@@ -1032,7 +2217,6 @@ function Interp.instantiate(module, imports, compiled_sources, restore_state)
     end
 
     -- Pre-compute block maps for O(1) branching
-    local build_block_map = Opcodes.build_block_map
     for idx, func_def in pairs(module.funcs) do
         if type(idx) == "number" and not func_def.import and func_def.code then
             func_def.code.block_map = build_block_map(func_def.code.code)
@@ -1426,8 +2610,6 @@ function Interp.run(instance, max_instructions)
         local globals = state.globals
         local running = true
         local max_instr = max_instructions or 50000
-        local inline_opcodes = Interp.inline_opcodes
-
         -- Cache bit32 functions as locals
         local bit32_band = bit32_band
         local bit32_bor = bit32_bor
@@ -1644,108 +2826,7 @@ function Interp.run(instance, max_instructions)
                 dbg_interp_instrs = dbg_interp_instrs + 1
 
                 -- Inlined opcodes ordered by frequency (covers ~90% of instructions)
-                if not inline_opcodes then
-                    -- Inlining disabled: use dispatch table for all opcodes
-                    state.sp = sp; state.pc = pc; state.locals = loc
-                    state.code = code; state.block_stack = block_stack
-                    state.block_sp = block_sp; state.block_map = block_map
-                    local handler = dispatch[op]
-                    if not handler then
-                        fail(string.format("Unknown opcode: 0x%02X at pc=%d in func %d", op, pc - 1, func_idx))
-                    end
-                    handler(state)
-                    sp = state.sp; pc = state.pc; loc = state.locals
-                    code = state.code; block_stack = state.block_stack
-                    block_sp = state.block_sp; block_map = state.block_map
-                    running = state.running
-                    memory = state.memory; mem_data = memory.data
-                    mem_len = memory.byte_length; globals = state.globals
-
-                    if state.call_func then
-                        local target_idx = state.call_func
-                        state.call_func = nil
-
-                        local target_def = module.funcs[target_idx]
-                        if not target_def then
-                            fail("Unknown function index: " .. tostring(target_idx))
-                        end
-
-                        local target_type = module.types[target_def.type_idx + 1]
-                        local num_params = #target_type.params
-
-                        local args_base = sp - num_params
-
-                        if target_def.import then
-                            local import_fn = instance.import_funcs[target_idx]
-                            if not import_fn then
-                                fail(string.format("Unresolved import: %s.%s", target_def.module, target_def.name))
-                            end
-
-                            local args_start = args_base + 1
-                            if type(import_fn) == "table" and import_fn.blocking then
-                                sp = args_base
-                                state.sp = sp; state.pc = pc; state.locals = loc
-                                state.code = code; state.block_stack = block_stack
-                                state.block_sp = block_sp; state.block_map = block_map
-                                local handler_result = import_fn.handler(unpack(stack, args_start, args_start + num_params - 1))
-                                exec.waiting_input = true
-                                exec.blocking_return_arity = #target_type.results
-                                exec.state = state; exec.call_stack = call_stack
-                                exec.call_sp = call_sp; exec.func_idx = func_idx
-                                exec._blocking_result = handler_result
-                                return
-                            end
-
-                            local result = import_fn(unpack(stack, args_start, args_start + num_params - 1))
-                            sp = args_base
-                            if #target_type.results > 0 and result ~= nil then
-                                sp = sp + 1; stack[sp] = result
-                            end
-                            mem_len = memory.byte_length
-                        else
-                            call_sp = call_sp + 1
-                            if call_sp > 1000 then fail("call stack exhaustion") end
-                            local frame = call_stack[call_sp]
-                            if not frame then frame = {}; call_stack[call_sp] = frame end
-                            frame.locals = loc; frame.pc = pc; frame.code = code
-                            frame.block_stack = block_stack; frame.block_sp = block_sp
-                            frame.block_map = block_map; frame.stack_base = args_base
-                            frame.return_arity = #target_type.results
-                            frame.func_idx = func_idx
-                            frame.compiled_resume = nil
-                            frame.__sbs = ctx.__sbs
-
-                            func_idx = target_idx
-                            loc = {}
-                            for i = 0, num_params - 1 do
-                                loc[i] = stack[args_base + 1 + i]
-                            end
-                            sp = args_base
-                            local new_local_offset = num_params
-                            for _, decl in ipairs(target_def.code.locals) do
-                                local def_val = default_value(decl.type)
-                                for _ = 1, decl.count do
-                                    loc[new_local_offset] = def_val
-                                    new_local_offset = new_local_offset + 1
-                                end
-                            end
-
-                            pc = 1
-                            code = target_def.code.code
-                            block_map = target_def.code.block_map
-                            block_stack = {}
-                            block_sp = 1
-                            block_stack[1] = {
-                                opcode = 0x02,
-                                arity = #target_type.results,
-                                stack_height = sp,
-                            }
-                            entry_point = 0
-                            break -- exit inner loop to check compiled version
-                        end
-                    end
-
-                elseif op == 0x20 then -- local.get (24.3%)
+                if op == 0x20 then -- local.get (24.3%)
                     local b = code[pc]; pc = pc + 1
                     local idx = b
                     if b >= 128 then

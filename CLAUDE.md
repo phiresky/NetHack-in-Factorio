@@ -87,7 +87,7 @@ comparisons) is implemented manually using bit32.
 - **Full pipeline**: `./build/run_tests.sh` (clones test suite, converts, runs all)
   - `--unit-only`: just unit tests
   - `--spec-only`: just spec tests
-- Unit tests: `lua5.2 build/test_wasm.lua` (53 tests)
+- Unit tests: `lua5.2 build/test_wasm.lua` (56 tests)
 - Spec tests: `lua5.2 build/run_spec_tests.lua build/tests/spec/`
 - Single spec test: `lua5.2 build/run_spec_tests.lua build/tests/spec/<name>.json`
 - Spec test suite: `build/tests/testsuite/` (cloned from wasm-spec-testsuite)
@@ -97,8 +97,7 @@ comparisons) is implemented manually using bit32.
 ## File Structure
 ```
 scripts/wasm/init.lua       — WASM binary parser (incl. tag section)
-scripts/wasm/interp.lua     — Interpreter core (state machine, instantiate, call, run)
-scripts/wasm/opcodes.lua    — Opcode dispatch (~175 instructions, incl. EH)
+scripts/wasm/interp.lua     — Interpreter core + opcode dispatch (state machine, ~175 opcodes, EH)
 scripts/wasm/memory.lua     — Linear memory implementation
 scripts/wasm/wasi.lua       — WASI snapshot preview1 runtime (VFS, clock, args, preopen)
 scripts/bridge.lua          — WASM imports -> Factorio API (NetHack-specific)
@@ -123,6 +122,7 @@ build/convert_tiles.py      — Parse NetHack tile text files -> sprite sheets +
 build/test_wasm.lua         — Unit test suite
 build/run_spec_tests.lua    — Spec test runner
 build/run_tests.sh          — Full test pipeline (clones spec suite, converts, runs all)
+build/test_util.lua         — Shared test utilities (load_wasm, spectest imports, error checking)
 build/test_values.lua       — Value conversion helpers for spec tests
 build/test_instantiate.lua  — End-to-end test: parse+instantiate+run NetHack WASM
 build/test_play.lua         — Play-through test + benchmark (--quiet --no-compile --no-inline --aot)

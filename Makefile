@@ -30,6 +30,7 @@ TARGET   := --target=wasm32-wasi --sysroot=$(SYSROOT)
 
 CFLAGS  := -Os -g0
 CFLAGS  += $(TARGET)
+CFLAGS  += -mbulk-memory -msign-ext -mnontrapping-fptoint
 CFLAGS  += -I$(NETHACK)/include
 CFLAGS  += -Ibuild
 
@@ -45,6 +46,7 @@ CFLAGS  += -Wno-parentheses
 CFLAGS  += -Wno-deprecated-non-prototype
 
 LDFLAGS := $(TARGET)
+LDFLAGS += -mbulk-memory -msign-ext -mnontrapping-fptoint
 LDFLAGS += -Wl,--allow-undefined
 LDFLAGS += -Wl,--initial-memory=4194304
 LDFLAGS += -Wl,--export=memory

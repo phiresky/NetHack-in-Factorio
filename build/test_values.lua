@@ -2,12 +2,21 @@
 -- Converts between wast2json string representations and Lua WASM interpreter values.
 
 local bit32 = bit32
-local Opcodes = require("scripts.wasm.opcodes")
-local nan_mt = Opcodes.nan_mt
 
 local M = {}
 
 local NAN = 0/0
+local nan_mt = {
+    __add = function() return NAN end,
+    __sub = function() return NAN end,
+    __mul = function() return NAN end,
+    __div = function() return NAN end,
+    __mod = function() return NAN end,
+    __pow = function() return NAN end,
+    __unm = function() return NAN end,
+    __lt = function() return false end,
+    __le = function() return false end,
+}
 
 -- Convert string decimal to unsigned 32-bit number
 function M.str_to_u32(s)

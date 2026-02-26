@@ -70,9 +70,9 @@ local function plsel_find_in_frame(frame, target_name)
   return nil
 end
 
--- Validate and auto-fix a button-style list (race or role).
--- Returns the updated allow mask for the selected entry.
-local function plsel_validate_list(frame, data_table, sel_key, sel, prefix, elem_name, validate_fn)
+-- Validate and auto-fix a selection group (list buttons or checkboxes).
+-- update_elem(elem, is_selected, is_valid) applies element-specific styling.
+local function plsel_validate_group(frame, data_table, sel_key, sel, prefix, elem_name, validate_fn, update_elem)
   local container = plsel_find_in_frame(frame, elem_name)
   if not container then return end
 
@@ -81,54 +81,21 @@ local function plsel_validate_list(frame, data_table, sel_key, sel, prefix, elem
 
   for _, idx in ipairs(indices) do
     local entry = data_table[idx]
-    local btn = container[prefix .. idx]
-    if btn then
+    local elem = container[prefix .. idx]
+    if elem then
       local valid = validate_fn(entry.allow)
-      btn.enabled = valid
+      elem.enabled = valid
       if valid and not first_valid then first_valid = idx end
       if idx == sel[sel_key] and valid then current_valid = true end
-      btn.style = (idx == sel[sel_key] and valid) and "nh_plsel_list_button_selected"
-                                                    or "nh_plsel_list_button"
+      update_elem(elem, idx == sel[sel_key], valid)
     end
   end
 
   if not current_valid and first_valid then
     sel[sel_key] = first_valid
     for _, idx in ipairs(indices) do
-      local btn = container[prefix .. idx]
-      if btn then
-        btn.style = (idx == sel[sel_key]) and "nh_plsel_list_button_selected"
-                                             or "nh_plsel_list_button"
-      end
-    end
-  end
-end
-
--- Validate and auto-fix a checkbox group (gender or alignment).
-local function plsel_validate_checkboxes(frame, data_table, sel_key, sel, prefix, elem_name, validate_fn)
-  local container = plsel_find_in_frame(frame, elem_name)
-  if not container then return end
-
-  local indices = sorted_keys(data_table)
-  local first_valid, current_valid = nil, false
-
-  for _, idx in ipairs(indices) do
-    local entry = data_table[idx]
-    local cb = container[prefix .. idx]
-    if cb then
-      local valid = validate_fn(entry.allow)
-      cb.enabled = valid
-      if valid and not first_valid then first_valid = idx end
-      if idx == sel[sel_key] and valid then current_valid = true end
-      cb.state = (idx == sel[sel_key])
-    end
-  end
-
-  if not current_valid and first_valid then
-    sel[sel_key] = first_valid
-    for _, idx in ipairs(indices) do
-      local cb = container[prefix .. idx]
-      if cb then cb.state = (idx == sel[sel_key]) end
+      local elem = container[prefix .. idx]
+      if elem then update_elem(elem, idx == sel[sel_key], true) end
     end
   end
 end
@@ -156,27 +123,34 @@ local function plsel_update_validity(player)
   local role_allow = get_allow(plsel.roles, sel.selected_role)
   local race_allow = get_allow(plsel.races, sel.selected_race)
 
-  plsel_validate_list(frame, plsel.races, "selected_race", sel,
+  local function update_list_btn(e, sel, valid)
+    e.style = (sel and valid) and "nh_plsel_list_button_selected" or "nh_plsel_list_button"
+  end
+  local function update_checkbox(e, sel, _valid)
+    e.state = sel
+  end
+
+  plsel_validate_group(frame, plsel.races, "selected_race", sel,
     "nh_plsel_race_", "nh_plsel_race_scroll",
-    function(allow) return validrace(role_allow, allow) end)
+    function(allow) return validrace(role_allow, allow) end, update_list_btn)
 
   -- Re-read after potential auto-fix
   race_allow = get_allow(plsel.races, sel.selected_race)
 
-  plsel_validate_list(frame, plsel.roles, "selected_role", sel,
+  plsel_validate_group(frame, plsel.roles, "selected_role", sel,
     "nh_plsel_role_", "nh_plsel_role_scroll",
-    function(allow) return validrace(allow, race_allow) end)
+    function(allow) return validrace(allow, race_allow) end, update_list_btn)
 
   -- Re-read after potential auto-fix
   role_allow = get_allow(plsel.roles, sel.selected_role)
 
-  plsel_validate_checkboxes(frame, plsel.genders, "selected_gend", sel,
+  plsel_validate_group(frame, plsel.genders, "selected_gend", sel,
     "nh_plsel_gend_", "nh_plsel_gend_flow",
-    function(allow) return validgend(role_allow, race_allow, allow) end)
+    function(allow) return validgend(role_allow, race_allow, allow) end, update_checkbox)
 
-  plsel_validate_checkboxes(frame, plsel.aligns, "selected_align", sel,
+  plsel_validate_group(frame, plsel.aligns, "selected_align", sel,
     "nh_plsel_align_", "nh_plsel_align_flow",
-    function(allow) return validalign(role_allow, race_allow, allow) end)
+    function(allow) return validalign(role_allow, race_allow, allow) end, update_checkbox)
 end
 
 function Plsel.show_plsel_dialog(player)
