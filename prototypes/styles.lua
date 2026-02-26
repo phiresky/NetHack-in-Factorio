@@ -222,11 +222,13 @@ default_gui["nh_menu_scroll"] = {
 default_gui["nh_menu_item_button_style"] = {
   type = "button_style",
   font = "default",
-  left_padding = 4,
-  right_padding = 4,
+  left_padding = 8,
+  right_padding = 8,
   top_padding = 2,
   bottom_padding = 2,
-  minimal_width = 300,
+  horizontal_align = "left",
+  horizontally_stretchable = "on",
+  rich_text_setting = "enabled",
 }
 
 default_gui["nh_menu_header_label"] = {
@@ -441,35 +443,12 @@ default_gui["nh_engine_count_label"] = {
 }
 
 -----------------------------------------------------
--- Hover Tooltip (bottom-right corner)
+-- Hover Info (in menu bar, after engine state)
 -----------------------------------------------------
-
-default_gui["nh_hover_frame"] = {
-  type = "frame_style",
-  top_padding = 2,
-  bottom_padding = 2,
-  left_padding = 8,
-  right_padding = 8,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.7,
-    },
-  },
-}
 
 default_gui["nh_hover_label"] = {
   type = "label_style",
-  font = "default-small-bold",
-  font_color = {r = 1, g = 1, b = 1},
-}
-
-default_gui["nh_hover_long_label"] = {
-  type = "label_style",
   font = "default-small",
   font_color = {r = 0.9, g = 0.9, b = 0.8},
-  single_line = false,
-  maximal_width = 300,
-  top_padding = 4,
+  left_padding = 12,
 }

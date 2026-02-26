@@ -210,13 +210,11 @@ function Bridge.create_imports(memory_ref, instance_ref)
     Gui.add_message(query, 0)
     if not storage.nh_bridge then storage.nh_bridge = {} end
 
-    if resp ~= "" then
-      -- Specific valid responses (y/n/q etc.) — show yn prompt dialog
-      storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
-    elseif query:match("%[.*%?.*%]") then
-      -- Inventory-style prompt with no resp restriction (getobj passes resp=NULL).
+    if query:match("%[.*%?.*%]") then
+      -- Inventory-style prompt (has '?' inside brackets, e.g. "[a-e or ?*]").
       -- Auto-feed '?' to trigger NetHack's built-in inventory menu,
       -- which provides a proper item-name selection UI via select_menu.
+      -- This applies whether resp is provided (specific letters) or empty (NULL).
       -- Only do this ONCE per prompt cycle to prevent infinite loops:
       -- if display_inventory returns without blocking (empty inventory),
       -- getobj loops and calls yn_function again — without this guard,
@@ -228,6 +226,9 @@ function Bridge.create_imports(memory_ref, instance_ref)
           main_state.input_queue[#main_state.input_queue + 1] = string.byte("?")
         end
       end
+    elseif resp ~= "" then
+      -- Simple y/n/q prompt (no '?' in brackets) — show yn prompt dialog
+      storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
     end
     -- Otherwise (empty resp, no brackets): no pending_yn set,
     -- nhgetch will be treated as regular getch.

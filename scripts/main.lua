@@ -517,11 +517,26 @@ local function on_player_changed_position(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
   if not state.awaiting_input then return end
-  if state.input_type ~= "getch" then return end
   if Input.is_processing() then return end
 
   local player = game.get_player(event.player_index)
   if not player then return end
+
+  -- For non-getch prompts (yn, menu, getlin, plsel), block movement
+  if state.input_type ~= "getch" then
+    if player.character then
+      player.walking_state = {walking = false, direction = defines.direction.north}
+    end
+    local nh_pos = Display.get_player_pos()
+    local surface = Display.get_current_surface()
+    if nh_pos and surface then
+      local eps = 0.05
+      local tx = math.max(nh_pos.x + eps, math.min(nh_pos.x + 1 - eps, player.position.x))
+      local ty = math.max(nh_pos.y + eps, math.min(nh_pos.y + 1 - eps, player.position.y))
+      player.teleport({x = tx, y = ty}, surface)
+    end
+    return
+  end
 
   local nh_pos = Display.get_player_pos()
   if not nh_pos then return end
@@ -738,7 +753,9 @@ local function on_tick(event)
 
   -- Continue running if not waiting for input (e.g., level generation)
   if state.running and not state.awaiting_input then
-    run_and_process(MAX_INSTRUCTIONS_PER_TICK)
+    local budget = MAX_INSTRUCTIONS_PER_TICK
+    if state.travel_active then budget = budget * 4 end
+    run_and_process(budget)
     update_engine_gui()
     update_player_position()
   end

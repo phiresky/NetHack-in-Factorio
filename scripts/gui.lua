@@ -111,7 +111,7 @@ local MENU_BAR = {
     {label = "Version",       key = string.byte("v")},
     {label = "History",       key = string.byte("V")},
     {label = "Options",       key = string.byte("O")},
-    {label = "Explore mode",  key = string.byte("X")},
+    {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
     {separator = true},
     {label = "Save",          key = string.byte("S")},
     {label = "Quit",          key = string.byte("#"), ext = "quit"},
@@ -468,32 +468,11 @@ function Gui.create_player_gui(player)
     caption = "",
     style = "nh_engine_count_label",
   }
-
-  -------------------------------------------------
-  -- Hover tooltip (screen-based, right side)
-  -------------------------------------------------
-  if screen.nh_hover_frame then
-    screen.nh_hover_frame.destroy()
-  end
-  local hover_frame = screen.add{
-    type = "frame",
-    name = "nh_hover_frame",
-    direction = "vertical",
-    style = "nh_hover_frame",
-  }
-  hover_frame.visible = false
-  hover_frame.location = {x = player.display_resolution.width - 350, y = 50}
-  hover_frame.add{
+  menubar.add{
     type = "label",
     name = "nh_hover_label",
     caption = "",
     style = "nh_hover_label",
-  }
-  hover_frame.add{
-    type = "label",
-    name = "nh_hover_long_label",
-    caption = "",
-    style = "nh_hover_long_label",
   }
 
   gui_data.player_frames[player.index] = true
@@ -518,10 +497,6 @@ function Gui.destroy_player_gui(player)
     if screen[name] then
       screen[name].destroy()
     end
-  end
-
-  if screen.nh_hover_frame then
-    screen.nh_hover_frame.destroy()
   end
 
   gui_data.player_frames[player.index] = nil
@@ -1265,15 +1240,10 @@ function Gui.show_yn_prompt(player, query, resp, def)
     player_index = player.index,
   }
 
-  -- For simple prompts (short resp string), show inline in messages.
-  -- The user responds via keyboard or action panel buttons.
-  if resp and #resp > 0 and #resp <= 10 then
-    -- Inline: add the question as a bold message
-    Gui.add_message(query, 1)
-    return
-  end
+  -- Always show query in message log for history
+  Gui.add_message(query, 1)
 
-  -- For complex prompts or empty resp, show popup dialog
+  -- Show popup dialog
   local screen = player.gui.screen
   if screen.nh_yn_frame then
     screen.nh_yn_frame.destroy()
@@ -1645,33 +1615,27 @@ function Gui.set_cancel_visible(visible)
 end
 
 -----------------------------------------------------
--- Hover Tooltip
+-- Hover Info (in menu bar)
 -----------------------------------------------------
 
 function Gui.update_hover_info(player, info)
-  local frame = player.gui.screen.nh_hover_frame
-  if not frame then return end
+  local top = player.gui.screen.nh_top_panel
+  if not top then return end
+  local menubar = top.nh_menubar
+  if not menubar then return end
+  local label = menubar.nh_hover_label
+  if not label then return end
 
   if not info then
-    frame.visible = false
+    label.caption = ""
     return
   end
 
-  local label = frame.nh_hover_label
-  local long_label = frame.nh_hover_long_label
-  if label then
-    label.caption = info.short or ""
+  local text = info.short or ""
+  if info.long and info.long ~= "" then
+    text = text .. "  --  " .. info.long
   end
-  if long_label then
-    if info.long and info.long ~= "" then
-      long_label.caption = info.long
-      long_label.visible = true
-    else
-      long_label.caption = ""
-      long_label.visible = false
-    end
-  end
-  frame.visible = true
+  label.caption = text
 end
 
 -----------------------------------------------------
