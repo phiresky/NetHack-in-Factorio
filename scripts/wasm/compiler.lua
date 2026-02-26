@@ -1443,7 +1443,6 @@ end
 function Compiler.load_source(source, func_idx)
     local fn, err = load(source, "=wasm_func_" .. func_idx)
     if not fn then
-        log(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
         return nil
     end
     return fn()
