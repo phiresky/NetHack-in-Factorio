@@ -1345,7 +1345,24 @@ function Interp.run(instance, max_instructions)
                         local target_def_ci = module.funcs[target_idx]
                         if not target_def_ci then fail("Unknown function index") end
                         if target_def_ci.type_idx ~= type_idx then
-                            fail("indirect call type mismatch")
+                            -- Structural type check
+                            local expected = module.types[type_idx + 1]
+                            local actual = module.types[target_def_ci.type_idx + 1]
+                            if not expected or not actual
+                                or #expected.params ~= #actual.params
+                                or #expected.results ~= #actual.results then
+                                fail("indirect call type mismatch")
+                            end
+                            for ci = 1, #expected.params do
+                                if expected.params[ci] ~= actual.params[ci] then
+                                    fail("indirect call type mismatch")
+                                end
+                            end
+                            for ci = 1, #expected.results do
+                                if expected.results[ci] ~= actual.results[ci] then
+                                    fail("indirect call type mismatch")
+                                end
+                            end
                         end
                     elseif target == -3 then
                         -- throw: create exception and propagate
