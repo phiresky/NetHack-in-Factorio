@@ -351,7 +351,7 @@ end
 Bridge._long_cache = {}
 
 -- Pending describe continuation state (non-serializable, lives in module local)
--- Fields: exec, saved_sp, saved_exec, full, entity_name, cached_long
+-- Fields: saved (from instance:save_state()), full, entity_name, cached_long
 Bridge._pending_describe = nil
 
 -- Extract description results from storage and return {short=..., long=...} or nil.
@@ -422,10 +422,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
     if not Bridge._describe_idx then return nil end
   end
 
-  -- Save current execution state and __stack_pointer global.
-  local saved_exec = instance.exec
-  local saved_sp = instance.globals[0]
-  local saved_sbs = instance.ctx and instance.ctx.__sbs
+  local saved = instance:save_state()
 
   -- Clear any previous result; enable capture mode only when fetching full desc
   if not storage.nh_bridge then storage.nh_bridge = {} end
@@ -442,32 +439,25 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
 
   if not ok then
     -- Error: restore and discard
-    instance.exec = saved_exec
-    instance.globals[0] = saved_sp
-    if instance.ctx then instance.ctx.__sbs = saved_sbs end
+    instance:restore_state(saved)
     storage.nh_bridge.describe_capture = nil
     return nil
   end
 
   -- Check if the describe call finished
-  local describe_exec = instance.exec
-  local finished = describe_exec.finished
-
-  -- Restore game exec state
-  instance.exec = saved_exec
-  instance.globals[0] = saved_sp
-  if instance.ctx then instance.ctx.__sbs = saved_sbs end
+  local finished = instance.exec.finished
 
   if finished then
+    instance:restore_state(saved)
     return collect_describe_result(full, entity_name, cached_long)
   end
 
-  -- Not finished: save continuation for tick-based resumption
+  -- Not finished: save describe state, then restore game state
+  local describe_saved = instance:save_state()
+  instance:restore_state(saved)
+
   Bridge._pending_describe = {
-    exec = describe_exec,
-    saved_sp = saved_sp,
-    saved_exec = saved_exec,
-    saved_sbs = saved_sbs,
+    saved = describe_saved,
     full = full,
     entity_name = entity_name,
     cached_long = cached_long,
@@ -486,22 +476,15 @@ function Bridge.continue_describe(instance, max_instructions)
   end
 
   -- Swap in the describe exec state
-  local saved_exec = instance.exec
-  local saved_sp = instance.globals[0]
-  local saved_sbs = instance.ctx and instance.ctx.__sbs
-  instance.exec = pending.exec
-  instance.globals[0] = pending.saved_sp
-  if instance.ctx and pending.saved_sbs then instance.ctx.__sbs = pending.saved_sbs end
+  local saved = instance:save_state()
+  instance:restore_state(pending.saved)
 
   local ok, err = pcall(function()
     WasmInterp.run(instance, max_instructions or 20000)
   end)
 
   if not ok then
-    -- Error: discard pending, restore game state
-    instance.exec = saved_exec
-    instance.globals[0] = saved_sp
-    if instance.ctx then instance.ctx.__sbs = saved_sbs end
+    instance:restore_state(saved)
     Bridge._pending_describe = nil
     storage.nh_bridge.describe_capture = nil
     return false
@@ -509,12 +492,9 @@ function Bridge.continue_describe(instance, max_instructions)
 
   local finished = instance.exec.finished
 
-  -- Update pending exec (it may have progressed) then restore game state
-  pending.exec = instance.exec
-  if instance.ctx then pending.saved_sbs = instance.ctx.__sbs end
-  instance.exec = saved_exec
-  instance.globals[0] = saved_sp
-  if instance.ctx then instance.ctx.__sbs = saved_sbs end
+  -- Save progressed describe state, then restore game state
+  pending.saved = instance:save_state()
+  instance:restore_state(saved)
 
   if finished then
     Bridge._pending_describe = nil

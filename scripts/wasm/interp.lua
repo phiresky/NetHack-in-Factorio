@@ -1070,6 +1070,20 @@ function Interp.instantiate(module, imports, compiled_sources)
         end
     end
 
+    -- Save/restore for reentrant WASM calls (e.g. describe_pos)
+    function instance:save_state()
+        return {
+            exec = self.exec,
+            sp = self.globals[0],
+            sbs = self.ctx and self.ctx.__sbs,
+        }
+    end
+    function instance:restore_state(saved)
+        self.exec = saved.exec
+        self.globals[0] = saved.sp
+        if self.ctx then self.ctx.__sbs = saved.sbs end
+    end
+
     -- Run start function if present
     if module.start_func then
         Interp.call(instance, module.start_func, {})
