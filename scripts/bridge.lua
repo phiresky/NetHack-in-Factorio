@@ -347,16 +347,8 @@ function Bridge.init()
   end
 end
 
--- Description caches (not in storage — transient, rebuilt as needed)
--- Position cache: short descriptions keyed by "x,y", cleared each turn
-Bridge._pos_cache = {}
 -- Long description cache: keyed by entity name, persists across game session
 Bridge._long_cache = {}
-
--- Clear position cache (call after each turn advance).
-function Bridge.clear_pos_cache(instance)
-  Bridge._pos_cache = {}
-end
 
 -- Describe a map position by calling nh_describe_pos in WASM.
 -- Safe to call while paused at nhgetch: saves/restores exec state.
@@ -366,29 +358,13 @@ end
 function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
   if not instance or not instance.exec then return nil end
 
-  local pos_key = x .. "," .. y
-
-  -- Check caches first
-  local cached_short = Bridge._pos_cache[pos_key]
-  if not full then
-    if cached_short ~= nil then
-      if cached_short == false then return nil end
-      return {short = cached_short}
-    end
-  else
-    -- Full requested — check long cache by entity name
-    local cached_long = entity_name and Bridge._long_cache[entity_name]
+  -- Check long cache by entity name
+  local cached_long = nil
+  if full and entity_name then
+    cached_long = Bridge._long_cache[entity_name]
     if cached_long ~= nil then
-      -- Still need short desc (may or may not be cached)
-      local short = cached_short
-      if short == nil then
-        -- Fall through to WASM call below for short, but skip checkfile
-        full = false
-      elseif short == false then
-        return cached_long ~= false and {long = cached_long} or nil
-      else
-        return {short = short, long = cached_long or nil}
-      end
+      -- Have long desc cached, but still need short from WASM
+      full = false
     end
   end
 
@@ -398,8 +374,12 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
     if not Bridge._describe_idx then return nil end
   end
 
-  -- Save current execution state
+  -- Save current execution state and __stack_pointer global.
+  -- The describe call shares WASM linear memory with the game; if it doesn't
+  -- complete (budget exceeded or error), __stack_pointer would be left pointing
+  -- into the describe call's stack frames, corrupting the game's stack on resume.
   local saved_exec = instance.exec
+  local saved_sp = instance.globals[0]
 
   -- Clear any previous result; enable capture mode only when fetching full desc
   if not storage.nh_bridge then storage.nh_bridge = {} end
@@ -419,8 +399,9 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   local captured = full and storage.nh_bridge.describe_capture or nil
   storage.nh_bridge.describe_capture = nil
 
-  -- Restore execution state (even on error)
+  -- Restore execution state and __stack_pointer (even on error)
   instance.exec = saved_exec
+  instance.globals[0] = saved_sp
 
   if not ok then return nil end
 
@@ -437,9 +418,6 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
     if #parts > 0 then short_desc = table.concat(parts, "  ") end
   end
 
-  -- Cache short description (false = no description)
-  Bridge._pos_cache[pos_key] = short_desc or false
-
   -- Build long description from checkfile capture
   local long_desc = nil
   if captured and #captured > 0 then
@@ -449,6 +427,11 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   -- Cache long description keyed by entity name (persists across session)
   if full and entity_name then
     Bridge._long_cache[entity_name] = long_desc or false
+  end
+
+  -- Use cached long desc if we skipped checkfile
+  if not long_desc and cached_long then
+    long_desc = cached_long ~= false and cached_long or nil
   end
 
   if not short_desc and not long_desc then return nil end

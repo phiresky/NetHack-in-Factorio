@@ -286,6 +286,26 @@ function Gui.create_player_gui(player)
     }
   end
 
+  -- Hover info row (below menu bar, short + long descriptions)
+  local hover_flow = top_panel.add{
+    type = "flow",
+    name = "nh_hover_flow",
+    direction = "vertical",
+  }
+  hover_flow.visible = false
+  hover_flow.add{
+    type = "label",
+    name = "nh_hover_short",
+    caption = "",
+    style = "nh_hover_label",
+  }
+  hover_flow.add{
+    type = "label",
+    name = "nh_hover_long",
+    caption = "",
+    style = "nh_hover_label",
+  }
+
   -- Toolbar row (quick-access buttons)
   local toolbar = top_panel.add{
     type = "flow",
@@ -467,12 +487,6 @@ function Gui.create_player_gui(player)
     name = "nh_engine_count",
     caption = "",
     style = "nh_engine_count_label",
-  }
-  menubar.add{
-    type = "label",
-    name = "nh_hover_label",
-    caption = "",
-    style = "nh_hover_label",
   }
 
   gui_data.player_frames[player.index] = true
@@ -829,6 +843,17 @@ end
 
 function Gui.destroy_window(winid)
   local gui_data = storage.nh_gui
+  local win = gui_data.windows[winid]
+
+  -- If a text window is currently visible, leave the GUI element for the user
+  -- to dismiss via the OK button. The C code calls display_nhwindow(TEXT, TRUE)
+  -- expecting it to block, then immediately calls destroy_nhwindow. Since our
+  -- display is non-blocking, we defer GUI destruction to the nh_close_text_
+  -- click handler.
+  if win and win.visible and win.type == NHW_TEXT then
+    gui_data.windows[winid] = nil
+    return
+  end
 
   for _, player in pairs(game.connected_players) do
     local screen = player.gui.screen
@@ -1623,21 +1648,29 @@ end
 function Gui.update_hover_info(player, info)
   local top = player.gui.screen.nh_top_panel
   if not top then return end
-  local menubar = top.nh_menubar
-  if not menubar then return end
-  local label = menubar.nh_hover_label
-  if not label then return end
+  local hover = top.nh_hover_flow
+  if not hover then return end
 
   if not info then
-    label.caption = ""
+    hover.visible = false
     return
   end
 
-  local text = info.short or ""
+  local short_label = hover.nh_hover_short
+  local long_label = hover.nh_hover_long
+
+  short_label.caption = info.short or ""
+  short_label.visible = (info.short ~= nil and info.short ~= "")
+
   if info.long and info.long ~= "" then
-    text = text .. "  --  " .. info.long
+    long_label.caption = info.long
+    long_label.visible = true
+  else
+    long_label.caption = ""
+    long_label.visible = false
   end
-  label.caption = text
+
+  hover.visible = short_label.visible or long_label.visible
 end
 
 -----------------------------------------------------

@@ -358,7 +358,6 @@ local function advance_turn(key_code)
   if not state.awaiting_input or not wasm_instance then return end
 
   state.last_advance_tick = game.tick
-  Bridge.clear_pos_cache(wasm_instance)
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
@@ -617,11 +616,15 @@ local function on_gui_click(event)
   -- Text window close: works in any state so it can't block other dialogs
   if element.name:match("^nh_close_text_") then
     local winid = tonumber(element.name:match("nh_close_text_(%d+)"))
+    -- Check if the window data still exists (destroy_nhwindow not yet called by C).
+    -- If it does, nhgetch is waiting to dismiss this window — advance with space.
+    -- If nil, the C code already called destroy_nhwindow (display_file pattern) and
+    -- the current nhgetch is for the next game command — don't auto-advance.
+    local win_exists = winid and storage.nh_gui and storage.nh_gui.windows[winid]
     if winid then
       Gui.destroy_window(winid)
     end
-    -- If waiting for a simple key press (--More--), advance with space
-    if state.input_type == "getch" then
+    if win_exists and state.input_type == "getch" then
       advance_turn(string.byte(" "))
     end
     return
@@ -872,7 +875,6 @@ local function on_click_move(event)
   state.travel_active = true
 
   -- Clear state like advance_turn does, but don't execute yet
-  Bridge.clear_pos_cache(wasm_instance)
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
@@ -938,6 +940,40 @@ script.on_event("nh-click-move", on_click_move)
 for _, input_name in ipairs(Input.get_custom_input_names()) do
   script.on_event(input_name, on_custom_input)
 end
+
+---------------------------------------------------------------------------
+-- Console command: /nethack <chars>
+-- Usage: /nethack * or /nethack abc to send characters to NetHack
+---------------------------------------------------------------------------
+
+commands.add_command("nethack", "Send character(s) to NetHack. Usage: /nethack *", function(cmd)
+  local str = cmd.parameter
+  local state = storage.nh_main
+  if not state or not state.game_started then
+    game.print("NetHack not running")
+    return
+  end
+  if not wasm_instance then
+    game.print("No WASM instance")
+    return
+  end
+  if not state.awaiting_input then
+    game.print("NetHack not waiting for input")
+    return
+  end
+
+  if not str or #str == 0 then
+    game.print("Usage: /feed <char>  (e.g. /feed * or /feed abc)")
+    return
+  end
+
+  -- Queue all characters, advance with the first
+  local queue = state.input_queue
+  for i = 2, #str do
+    queue[#queue + 1] = string.byte(str, i)
+  end
+  advance_turn(string.byte(str, 1))
+end)
 
 ---------------------------------------------------------------------------
 -- Public API (for bridge callbacks)

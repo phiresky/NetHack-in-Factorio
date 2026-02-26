@@ -242,6 +242,20 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   1269..1511=other. The C port passes `glyph2tile[glyph]` as `tile_idx` to Lua.
   Entity prototypes use sprite sheet regions (`x`/`y` offsets within sheet PNGs).
   Entity names derived from tile names (nh-mon-giant-ant, nh-obj-arrow, etc.).
+- **Save/restore `__stack_pointer` on reentrant WASM calls**: `describe_pos` calls
+  `nh_describe_pos` as a secondary WASM call while the game is paused at nhgetch.
+  It saves/restores `instance.exec`, but `instance.globals[0]` (`__stack_pointer`)
+  is shared instance state, NOT part of exec. If the describe call doesn't complete
+  (budget exceeded), SP is left pointing into the abandoned call's stack frames.
+  The game resumes with corrupted SP, causing "'data' file in wrong format" and other
+  intermittent corruption. Fix: save/restore `instance.globals[0]` alongside exec.
+- **Non-blocking `display_nhwindow` causes text windows to vanish**: The C code
+  pattern `display_nhwindow(TEXT, TRUE); destroy_nhwindow(win);` expects display to
+  block until user dismisses. Our `host_display_nhwindow` is non-blocking, so destroy
+  fires immediately, removing the GUI before the user sees it. Fix: `destroy_window`
+  skips GUI destruction for visible NHW_TEXT windows, deferring to the OK button click
+  handler. The close handler checks if window data still exists to decide whether to
+  advance the turn (exists = nhgetch waiting for dismissal; nil = next game command).
 - **Compiled/interpreter resume mismatch**: When budget expires mid-interpretation
   of a function that also has a compiled version, the outer loop must NOT dispatch
   to the compiled version on resume. The compiled path starts at entry_point=0
