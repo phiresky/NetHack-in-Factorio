@@ -380,6 +380,46 @@ default_gui["nh_plsel_info_label"] = {
 }
 
 -----------------------------------------------------
+-- Tips Popup (shown on first game start)
+-----------------------------------------------------
+
+default_gui["nh_tips_frame"] = {
+  type = "frame_style",
+  top_padding = 12,
+  bottom_padding = 12,
+  left_padding = 20,
+  right_padding = 20,
+  minimal_width = 400,
+  maximal_width = 480,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.95,
+    },
+  },
+}
+
+default_gui["nh_tips_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 0.95, g = 0.95, b = 0.9},
+  single_line = false,
+  left_padding = 2,
+  right_padding = 2,
+  bottom_padding = 4,
+}
+
+default_gui["nh_tips_heading_label"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 1, g = 0.9, b = 0.5},
+  single_line = false,
+  top_padding = 6,
+  bottom_padding = 2,
+}
+
+-----------------------------------------------------
 -- Text Windows (help, info popups)
 -----------------------------------------------------
 

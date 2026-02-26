@@ -595,7 +595,7 @@ end
 
 -- Flying text at player position, staggered to avoid overlap
 -- Tracks recent flying texts and offsets Y so multiple messages don't pile up
-local FLYING_TEXT_STAGGER_TICKS = 60  -- ~500ms window for staggering
+local FLYING_TEXT_STAGGER_TICKS = 60  -- ~1000ms window for staggering
 local FLYING_TEXT_Y_OFFSET = 0.4      -- vertical spacing between stacked texts
 
 function Gui.show_flying_text(player, text)
@@ -1569,6 +1569,61 @@ function Gui.destroy_loading_bar()
     if screen.nh_loading_frame then
       screen.nh_loading_frame.destroy()
     end
+  end
+end
+
+-----------------------------------------------------
+-- Tips Popup (shown once on first game start)
+-----------------------------------------------------
+
+function Gui.show_tips_popup(player)
+  local screen = player.gui.screen
+  if screen.nh_tips_frame then return end
+
+  local frame = screen.add{
+    type = "frame",
+    name = "nh_tips_frame",
+    direction = "vertical",
+    caption = "Never played NetHack?",
+    style = "nh_tips_frame",
+  }
+  frame.auto_center = true
+
+  local tips = {
+    {heading = "Movement", text = "Some things interact by walking into them: monsters to fight, doors to open, items to pick up. Others need an Action - 'Down' to descend, 'Read' to understand text."},
+    {heading = "Search", text = "Some actions need to be repeated to work. If a corridor seems to suspiciously end, try Search (Alt+S)"},
+
+    {heading = "Controls", text = "WASD to move. You can pass obstacles diagonally. Click distant tiles to auto-travel. Press Esc to cancel an action."},
+    {heading = "Items", text = "Auto-pickup is enabled by default. Open Inventory (Alt+i) to see what you carry."},
+    {heading = "Survival", text = "Eat food before you starve (Eat button). Read scrolls, quaff potions, zap wands -- experiment!"},
+    {heading = "Death", text = "You will die. A lot. That's normal. Each run teaches you something new."},
+  }
+
+  for _, tip in ipairs(tips) do
+    frame.add{
+      type = "label",
+      caption = tip.heading,
+      style = "nh_tips_heading_label",
+    }
+    frame.add{
+      type = "label",
+      caption = tip.text,
+      style = "nh_tips_label",
+    }
+  end
+
+  frame.add{
+    type = "button",
+    name = "nh_tips_ok",
+    caption = "Got it!",
+    style = "nh_plsel_play_button",
+  }
+end
+
+function Gui.destroy_tips_popup(player)
+  local screen = player.gui.screen
+  if screen.nh_tips_frame then
+    screen.nh_tips_frame.destroy()
   end
 end
 

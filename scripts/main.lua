@@ -147,6 +147,17 @@ local function update_engine_gui()
     if not state.first_input_received and state.input_type ~= "plsel" then
       state.first_input_received = true
       Gui.destroy_loading_bar()
+      -- Track getch count to show tips after the intro "--More--" is dismissed
+      state.getch_count = 1
+    elseif state.getch_count and state.input_type == "getch" then
+      state.getch_count = state.getch_count + 1
+      if state.getch_count == 2 then
+        state.getch_count = nil  -- done tracking
+        local player = game.connected_players[1]
+        if player then
+          Gui.show_tips_popup(player)
+        end
+      end
     end
     local sub = state.input_type
     if sub == "getch" then engine_state = "Waiting for command"
@@ -188,6 +199,9 @@ end
 local function run_and_process(max_instructions)
   local state = storage.nh_main
   if not wasm_instance or not state.running then return end
+
+  -- Cancel any pending hover describe — game execution will clobber shared WASM memory
+  Bridge.cancel_describe(wasm_instance)
 
   local auto_feed_count = 0
   while true do
@@ -644,6 +658,12 @@ local function on_gui_click(event)
   local element = event.element
   if not element or not element.valid then return end
 
+  -- Tips popup dismiss
+  if element.name == "nh_tips_ok" then
+    Gui.destroy_tips_popup(player)
+    return
+  end
+
   -- Text window close: works in any state so it can't block other dialogs
   if element.name:match("^nh_close_text_") then
     local winid = tonumber(element.name:match("nh_close_text_(%d+)"))
@@ -758,6 +778,18 @@ local function on_tick(event)
     run_and_process(budget)
     update_engine_gui()
     update_player_position()
+  end
+
+  -- Continue pending hover describe (runs alongside game, 20k budget per tick)
+  if Bridge._pending_describe and wasm_instance then
+    local player_index = Bridge._pending_describe.player_index
+    local result = Bridge.continue_describe(wasm_instance, 20000)
+    if result and player_index then
+      local player = game.get_player(player_index)
+      if player then
+        Gui.update_hover_info(player, result)
+      end
+    end
   end
 
 end
@@ -956,8 +988,12 @@ local function on_selected_entity_changed(event)
   local gx = math.floor(entity.position.x)
   local gy = math.floor(entity.position.y)
 
-  local description = Bridge.describe_pos(wasm_instance, gx, gy, true, entity.name)
+  local description = Bridge.describe_pos(wasm_instance, gx, gy, true, entity.name, 20000)
   Gui.update_hover_info(player, description)
+  -- If describe didn't finish, store player index for tick-based continuation
+  if not description and Bridge._pending_describe then
+    Bridge._pending_describe.player_index = event.player_index
+  end
 end
 
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)

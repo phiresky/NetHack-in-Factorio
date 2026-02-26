@@ -350,60 +350,15 @@ end
 -- Long description cache: keyed by entity name, persists across game session
 Bridge._long_cache = {}
 
--- Describe a map position by calling nh_describe_pos in WASM.
--- Safe to call while paused at nhgetch: saves/restores exec state.
--- entity_name: Factorio prototype name (e.g. "nh-mon-little-dog"), used as long desc cache key.
--- Returns {short=..., long=...} or nil on failure.
--- short = lookat() one-liner, long = checkfile() encyclopedia entry (only when full=true).
-function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
-  if not instance or not instance.exec then return nil end
+-- Pending describe continuation state (non-serializable, lives in module local)
+-- Fields: exec, saved_sp, saved_exec, full, entity_name, cached_long
+Bridge._pending_describe = nil
 
-  -- Check long cache by entity name
-  local cached_long = nil
-  if full and entity_name then
-    cached_long = Bridge._long_cache[entity_name]
-    if cached_long ~= nil then
-      -- Have long desc cached, but still need short from WASM
-      full = false
-    end
-  end
-
-  -- Cache the export index
-  if not Bridge._describe_idx then
-    Bridge._describe_idx = WasmInterp.get_export(instance, "nh_describe_pos")
-    if not Bridge._describe_idx then return nil end
-  end
-
-  -- Save current execution state and __stack_pointer global.
-  -- The describe call shares WASM linear memory with the game; if it doesn't
-  -- complete (budget exceeded or error), __stack_pointer would be left pointing
-  -- into the describe call's stack frames, corrupting the game's stack on resume.
-  local saved_exec = instance.exec
-  local saved_sp = instance.globals[0]
-
-  -- Clear any previous result; enable capture mode only when fetching full desc
-  if not storage.nh_bridge then storage.nh_bridge = {} end
-  storage.nh_bridge.describe_result = nil
-  if full then
-    storage.nh_bridge.describe_capture = {}
-  end
-
-  -- Call nh_describe_pos(x, y, full) and run to completion.
-  -- checkfile() with without_asking=TRUE is non-blocking, so a single run suffices.
-  local ok, err = pcall(function()
-    WasmInterp.call(instance, Bridge._describe_idx, {x, y, full and 1 or 0})
-    WasmInterp.run(instance, max_instructions or 500000)
-  end)
-
-  -- Read captured checkfile text before cleanup
+-- Extract description results from storage and return {short=..., long=...} or nil.
+local function collect_describe_result(full, entity_name, cached_long)
+  -- Read captured checkfile text
   local captured = full and storage.nh_bridge.describe_capture or nil
   storage.nh_bridge.describe_capture = nil
-
-  -- Restore execution state and __stack_pointer (even on error)
-  instance.exec = saved_exec
-  instance.globals[0] = saved_sp
-
-  if not ok then return nil end
 
   -- Read lookat result
   local result = storage.nh_bridge.describe_result
@@ -436,6 +391,139 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
 
   if not short_desc and not long_desc then return nil end
   return {short = short_desc, long = long_desc}
+end
+
+-- Describe a map position by calling nh_describe_pos in WASM.
+-- Safe to call while paused at nhgetch: saves/restores exec state.
+-- entity_name: Factorio prototype name (e.g. "nh-mon-little-dog"), used as long desc cache key.
+-- Returns {short=..., long=...}, or nil if not yet complete.
+-- If budget is exceeded, saves continuation state in Bridge._pending_describe
+-- for resumption via Bridge.continue_describe().
+-- short = lookat() one-liner, long = checkfile() encyclopedia entry (only when full=true).
+function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
+  if not instance or not instance.exec then return nil end
+
+  -- Cancel any existing pending describe
+  Bridge.cancel_describe(instance)
+
+  -- Check long cache by entity name
+  local cached_long = nil
+  if full and entity_name then
+    cached_long = Bridge._long_cache[entity_name]
+    if cached_long ~= nil then
+      -- Have long desc cached, but still need short from WASM
+      full = false
+    end
+  end
+
+  -- Cache the export index
+  if not Bridge._describe_idx then
+    Bridge._describe_idx = WasmInterp.get_export(instance, "nh_describe_pos")
+    if not Bridge._describe_idx then return nil end
+  end
+
+  -- Save current execution state and __stack_pointer global.
+  local saved_exec = instance.exec
+  local saved_sp = instance.globals[0]
+
+  -- Clear any previous result; enable capture mode only when fetching full desc
+  if not storage.nh_bridge then storage.nh_bridge = {} end
+  storage.nh_bridge.describe_result = nil
+  if full then
+    storage.nh_bridge.describe_capture = {}
+  end
+
+  -- Call nh_describe_pos(x, y, full) and run with budget.
+  local ok, err = pcall(function()
+    WasmInterp.call(instance, Bridge._describe_idx, {x, y, full and 1 or 0})
+    WasmInterp.run(instance, max_instructions or 500000)
+  end)
+
+  if not ok then
+    -- Error: restore and discard
+    instance.exec = saved_exec
+    instance.globals[0] = saved_sp
+    storage.nh_bridge.describe_capture = nil
+    return nil
+  end
+
+  -- Check if the describe call finished
+  local describe_exec = instance.exec
+  local finished = describe_exec.finished
+
+  -- Restore game exec state
+  instance.exec = saved_exec
+  instance.globals[0] = saved_sp
+
+  if finished then
+    return collect_describe_result(full, entity_name, cached_long)
+  end
+
+  -- Not finished: save continuation for tick-based resumption
+  Bridge._pending_describe = {
+    exec = describe_exec,
+    saved_sp = saved_sp,
+    saved_exec = saved_exec,
+    full = full,
+    entity_name = entity_name,
+    cached_long = cached_long,
+  }
+  return nil
+end
+
+-- Continue a pending describe_pos call. Returns {short=..., long=...} when done,
+-- nil if still running, or false if there's nothing pending.
+function Bridge.continue_describe(instance, max_instructions)
+  local pending = Bridge._pending_describe
+  if not pending then return false end
+  if not instance or not instance.exec then
+    Bridge._pending_describe = nil
+    return false
+  end
+
+  -- Swap in the describe exec state
+  local saved_exec = instance.exec
+  local saved_sp = instance.globals[0]
+  instance.exec = pending.exec
+  instance.globals[0] = pending.saved_sp
+
+  local ok, err = pcall(function()
+    WasmInterp.run(instance, max_instructions or 20000)
+  end)
+
+  if not ok then
+    -- Error: discard pending, restore game state
+    instance.exec = saved_exec
+    instance.globals[0] = saved_sp
+    Bridge._pending_describe = nil
+    storage.nh_bridge.describe_capture = nil
+    return false
+  end
+
+  local finished = instance.exec.finished
+
+  -- Update pending exec (it may have progressed) then restore game state
+  pending.exec = instance.exec
+  instance.exec = saved_exec
+  instance.globals[0] = saved_sp
+
+  if finished then
+    Bridge._pending_describe = nil
+    return collect_describe_result(pending.full, pending.entity_name, pending.cached_long)
+  end
+
+  return nil -- still running
+end
+
+-- Cancel any pending describe continuation, restoring clean state.
+function Bridge.cancel_describe(instance)
+  if Bridge._pending_describe then
+    Bridge._pending_describe = nil
+    if storage.nh_bridge then
+      storage.nh_bridge.describe_capture = nil
+      storage.nh_bridge.describe_result = nil
+    end
+  end
 end
 
 return Bridge
