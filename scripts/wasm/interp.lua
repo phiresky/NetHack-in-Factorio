@@ -1048,28 +1048,6 @@ function Interp.instantiate(module, imports, compiled_sources)
 
     instance.ctx = create_ctx(instance)
 
-    -- Build exports convenience map
-    -- Each exported function becomes a synchronous wrapper (for tests / simple use)
-    instance.exports = {}
-    for _, exp in ipairs(module.exports) do
-        if exp.kind == WasmParser.EXT_FUNC then
-            local eidx = exp.index
-            instance.exports[exp.name] = function(...)
-                local results = Interp.execute(instance, eidx, {...})
-                if results then return unpack(results) end
-            end
-        elseif exp.kind == WasmParser.EXT_MEMORY then
-            instance.exports[exp.name] = instance.memory
-        elseif exp.kind == WasmParser.EXT_GLOBAL then
-            instance.exports[exp.name] = {
-                get = function() return instance.globals[exp.index] end,
-                set = function(v) instance.globals[exp.index] = v end,
-            }
-        elseif exp.kind == WasmParser.EXT_TABLE then
-            instance.exports[exp.name] = instance.tables[exp.index] or instance.tables[0]
-        end
-    end
-
     -- Save/restore for reentrant WASM calls (e.g. describe_pos)
     function instance:save_state()
         return {

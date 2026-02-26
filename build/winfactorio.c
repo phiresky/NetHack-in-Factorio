@@ -920,4 +920,70 @@ nh_describe_pos(int x, int y, int full)
     }
 }
 
+/* ================================================================
+ * Exported cheat: reveal entire dungeon level
+ * Called from Lua via WASM as a secondary call while paused at nhgetch.
+ * Uses do_mapping() which reveals map structure + traps, then redraws.
+ * ================================================================ */
+
+extern void NDECL(do_mapping);
+
+__attribute__((export_name("nh_reveal_all")))
+void
+nh_reveal_all(void)
+{
+    do_mapping();
+}
+
+/* ================================================================
+ * Exported cheat: full omniscient reveal of the dungeon level.
+ * Reveals map structure, secret doors/corridors, traps, ALL monsters,
+ * and ALL objects — even those normally hidden from the player.
+ * ================================================================ */
+
+__attribute__((export_name("nh_reveal_all_full")))
+void
+nh_reveal_all_full(void)
+{
+    int x, y;
+    struct monst *mtmp;
+    struct obj *otmp;
+    struct trap *ttmp;
+
+    /* Phase 1: Reveal map structure — set seenv and update glyphs */
+    for (x = 1; x < COLNO; x++) {
+        for (y = 0; y < ROWNO; y++) {
+            levl[x][y].seenv = SVALL;
+            magic_map_background(x, y, 0);
+        }
+    }
+
+    /* Phase 2: Reveal all traps */
+    for (ttmp = ftrap; ttmp; ttmp = ttmp->ntrap) {
+        ttmp->tseen = 1;
+        map_trap(ttmp, TRUE);
+    }
+
+    /* Phase 3: Redraw the base map from updated glyph data */
+    docrt();
+
+    /* Phase 4: Overlay all monsters (after docrt so they're on top) */
+    for (mtmp = fmon; mtmp; mtmp = mtmp->nmon) {
+        if (!DEADMONSTER(mtmp)) {
+            show_glyph(mtmp->mx, mtmp->my,
+                       mtmp->mtame ? pet_to_glyph(mtmp, rn2)
+                                   : mon_to_glyph(mtmp, rn2));
+        }
+    }
+
+    /* Phase 5: Overlay objects where no monster is standing */
+    for (otmp = fobj; otmp; otmp = otmp->nobj) {
+        if (!MON_AT(otmp->ox, otmp->oy) && !u_at(otmp->ox, otmp->oy)) {
+            show_glyph(otmp->ox, otmp->oy, obj_to_glyph(otmp, rn2));
+        }
+    }
+
+    flush_screen(1);
+}
+
 /* winfactorio.c */
