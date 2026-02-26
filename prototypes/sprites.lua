@@ -27,90 +27,43 @@ local function tile_sprite(name, sheet, sheet_idx, cols)
   }
 end
 
--- Monsters: global tile_idx 0..n_monsters-1, sheet index = tile_idx
-for i = 0, TC.n_monsters - 1 do
-  sprites[#sprites + 1] = tile_sprite("nh-sprite-" .. i, SHEET_MONSTERS, i)
-end
-
--- Objects: global tile_idx n_monsters..n_monsters+n_objects-1, sheet index 0-based
-for i = 0, TC.n_objects - 1 do
-  local tile_idx = TC.n_monsters + i
-  sprites[#sprites + 1] = tile_sprite("nh-sprite-" .. tile_idx, SHEET_OBJECTS, i)
-end
-
--- Other: global tile_idx n_monsters+n_objects..total-1, sheet index 0-based
-for i = 0, TC.n_other - 1 do
-  local tile_idx = TC.n_monsters + TC.n_objects + i
-  sprites[#sprites + 1] = tile_sprite("nh-sprite-" .. tile_idx, SHEET_OTHER, i)
+-- Generate tile sprites for all sheets, tracking cumulative global offset
+local tile_offset = 0
+for _, batch in ipairs({
+  {SHEET_MONSTERS, TC.n_monsters},
+  {SHEET_OBJECTS,  TC.n_objects},
+  {SHEET_OTHER,    TC.n_other},
+}) do
+  local sheet, count = batch[1], batch[2]
+  for i = 0, count - 1 do
+    sprites[#sprites + 1] = tile_sprite("nh-sprite-" .. (tile_offset + i), sheet, i)
+  end
+  tile_offset = tile_offset + count
 end
 
 -- GUI icons (generated from NetHack Qt XPM data by build/generate_icons.py)
 local ICON_DIR = "__nethack-factorio__/graphics/icons/"
 
--- Stat icons (40x40)
-local stat_icons = {"str", "dex", "con", "int", "wis", "cha"}
-for _, name in ipairs(stat_icons) do
-  sprites[#sprites + 1] = {
-    type = "sprite",
-    name = "nh-icon-" .. name,
-    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
-    width = 40, height = 40,
-    scale = 0.5,
-    flags = {"icon"},
-  }
+local function add_icon_batch(names, width, height, scale)
+  for _, name in ipairs(names) do
+    local icon = {
+      type = "sprite",
+      name = "nh-icon-" .. name,
+      filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
+      width = width, height = height,
+      flags = {"icon"},
+    }
+    if scale then icon.scale = scale end
+    sprites[#sprites + 1] = icon
+  end
 end
 
--- Alignment icons (40x40)
-local align_icons = {"lawful", "neutral", "chaotic"}
-for _, name in ipairs(align_icons) do
-  sprites[#sprites + 1] = {
-    type = "sprite",
-    name = "nh-icon-" .. name,
-    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
-    width = 40, height = 40,
-    scale = 0.5,
-    flags = {"icon"},
-  }
-end
-
--- Condition icons (40x40)
-local cond_icons = {"hungry", "satiated", "confused", "blind", "stunned", "hallu",
-                    "sick-fp", "sick-il"}
-for _, name in ipairs(cond_icons) do
-  sprites[#sprites + 1] = {
-    type = "sprite",
-    name = "nh-icon-" .. name,
-    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
-    width = 40, height = 40,
-    scale = 0.5,
-    flags = {"icon"},
-  }
-end
-
--- Encumbrance icons (40x40)
-local enc_icons = {"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}
-for _, name in ipairs(enc_icons) do
-  sprites[#sprites + 1] = {
-    type = "sprite",
-    name = "nh-icon-" .. name,
-    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
-    width = 40, height = 40,
-    scale = 0.5,
-    flags = {"icon"},
-  }
-end
-
--- Toolbar icons (12x13)
-local tb_icons = {"tb-again", "tb-get", "tb-kick", "tb-throw",
-                  "tb-fire", "tb-drop", "tb-eat", "tb-rest"}
-for _, name in ipairs(tb_icons) do
-  sprites[#sprites + 1] = {
-    type = "sprite",
-    name = "nh-icon-" .. name,
-    filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
-    width = 12, height = 13,
-    flags = {"icon"},
-  }
-end
+add_icon_batch({"str", "dex", "con", "int", "wis", "cha"}, 40, 40, 0.5)
+add_icon_batch({"lawful", "neutral", "chaotic"}, 40, 40, 0.5)
+add_icon_batch({"hungry", "satiated", "confused", "blind", "stunned", "hallu",
+                "sick-fp", "sick-il"}, 40, 40, 0.5)
+add_icon_batch({"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}, 40, 40, 0.5)
+add_icon_batch({"tb-again", "tb-get", "tb-kick", "tb-throw",
+                "tb-fire", "tb-drop", "tb-eat", "tb-rest"}, 12, 13)
 
 data:extend(sprites)

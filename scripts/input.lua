@@ -96,51 +96,13 @@ function Input.get_custom_input_names()
   return names
 end
 
--- Store the player's last known tile position for delta calculation
 function Input.init()
   if not storage.nh_input then
     storage.nh_input = {
-      last_tile_pos = {},  -- player_index -> {x, y}
       processing = false,  -- flag to prevent re-entrant movement handling
-      last_move_dir = nil,  -- "dx,dy" string of last movement attempt
-      last_move_tick = nil, -- tick of last movement attempt
     }
   end
 end
-
--- Record the player's current tile position
-function Input.record_position(player_index, x, y)
-  local inp = storage.nh_input
-  inp.last_tile_pos[player_index] = {x = x, y = y}
-end
-
--- Get the movement delta for a player and update last position
--- Returns dx, dy (tile delta) or nil if no valid movement
-function Input.get_movement_delta(player_index, new_x, new_y)
-  local inp = storage.nh_input
-  local last = inp.last_tile_pos[player_index]
-  if not last then
-    inp.last_tile_pos[player_index] = {x = new_x, y = new_y}
-    return nil
-  end
-
-  local dx = new_x - last.x
-  local dy = new_y - last.y
-
-  -- Only process single-tile movements
-  if math.abs(dx) > 1 or math.abs(dy) > 1 then
-    return nil
-  end
-
-  -- No movement
-  if dx == 0 and dy == 0 then
-    return nil
-  end
-
-  return dx, dy
-end
-
--- Check if we're currently processing a turn (prevent re-entrant calls)
 function Input.is_processing()
   return storage.nh_input.processing
 end

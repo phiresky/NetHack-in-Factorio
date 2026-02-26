@@ -228,9 +228,7 @@ local function update_player_position()
     ty = pos.y + 0.5
   else
     -- Clamp to nearest edge for walking (feels natural)
-    local eps = 0.05
-    tx = math.max(pos.x + eps, math.min(pos.x + 1 - eps, player.position.x))
-    ty = math.max(pos.y + eps, math.min(pos.y + 1 - eps, player.position.y))
+    tx, ty = clamp_to_tile(player.position, pos.x, pos.y)
   end
   player.teleport({x = tx, y = ty}, surface)
 end
@@ -477,18 +475,13 @@ end
 -- Input Handling
 ---------------------------------------------------------------------------
 
--- Provide a key input to the interpreter and resume execution.
--- Used for getch (direction/command) and yn (single key answer).
-local function advance_turn(key_code)
+-- Clear all pending input/prompt state. Called by all advance_turn* functions
+-- and on_click_move to reset for the next interpreter run.
+local function clear_input_state()
   local state = storage.nh_main
-  if not state.awaiting_input or not wasm_instance then return end
-
-  state.last_advance_tick = game.tick
   state.awaiting_input = false
   state.input_type = nil
   state.input_info = nil
-
-  -- Clear any pending prompt state (yn_function or getlin already consumed)
   if storage.nh_bridge then
     storage.nh_bridge.pending_yn = nil
     storage.nh_bridge.pending_getlin = nil
@@ -497,6 +490,24 @@ local function advance_turn(key_code)
   if storage.nh_gui then
     storage.nh_gui.pending_yn = nil
   end
+end
+
+-- Clamp a position to within a tile's boundaries (for blocking movement).
+local function clamp_to_tile(player_pos, tile_x, tile_y)
+  local eps = 0.05
+  local tx = math.max(tile_x + eps, math.min(tile_x + 1 - eps, player_pos.x))
+  local ty = math.max(tile_y + eps, math.min(tile_y + 1 - eps, player_pos.y))
+  return tx, ty
+end
+
+-- Provide a key input to the interpreter and resume execution.
+-- Used for getch (direction/command) and yn (single key answer).
+local function advance_turn(key_code)
+  local state = storage.nh_main
+  if not state.awaiting_input or not wasm_instance then return end
+
+  state.last_advance_tick = game.tick
+  clear_input_state()
 
   WasmInterp.provide_input(wasm_instance, key_code)
   run_and_process(MAX_INSTRUCTIONS_PER_RUN)
@@ -511,11 +522,6 @@ local function advance_turn_string(text)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
 
-  -- Clear pending getlin state
-  if storage.nh_bridge then
-    storage.nh_bridge.pending_getlin = nil
-  end
-
   -- Queue characters for nhgetch to consume one-by-one
   -- First char goes via provide_input, rest via queue
   local queue = state.input_queue
@@ -529,9 +535,7 @@ local function advance_turn_string(text)
   end
   queue[#queue + 1] = 0  -- null terminator ends the getlin loop
 
-  state.awaiting_input = false
-  state.input_type = nil
-  state.input_info = nil
+  clear_input_state()
 
   -- Feed first character, run_and_process drains the rest
   local first = table.remove(state.input_queue, 1)
@@ -561,9 +565,7 @@ local function advance_turn_menu(result)
     count = 0
   end
 
-  state.awaiting_input = false
-  state.input_type = nil
-  state.input_info = nil
+  clear_input_state()
 
   -- Provide count to resume from select_menu; run_and_process feeds IDs via queue
   WasmInterp.provide_input(wasm_instance, count)
@@ -581,9 +583,7 @@ local function advance_turn_plsel(result)
 
   if result.action == "quit" then
     -- Provide -1 status; C code will call clearlocks + exit
-    state.awaiting_input = false
-    state.input_type = nil
-    state.input_info = nil
+    clear_input_state()
     WasmInterp.provide_input(wasm_instance, -1)
     run_and_process(MAX_INSTRUCTIONS_PER_RUN)
     update_engine_gui()
@@ -604,9 +604,7 @@ local function advance_turn_plsel(result)
   queue[#queue + 1] = result.gend >= 0 and result.gend or -1
   queue[#queue + 1] = result.align >= 0 and result.align or -1
 
-  state.awaiting_input = false
-  state.input_type = nil
-  state.input_info = nil
+  clear_input_state()
 
   -- Provide status 0 (play) to resume from host_plsel_show
   WasmInterp.provide_input(wasm_instance, 0)
@@ -703,9 +701,7 @@ local function on_player_changed_position(event)
     local nh_pos = Display.get_player_pos()
     local surface = Display.get_current_surface()
     if nh_pos and surface then
-      local eps = 0.05
-      local tx = math.max(nh_pos.x + eps, math.min(nh_pos.x + 1 - eps, player.position.x))
-      local ty = math.max(nh_pos.y + eps, math.min(nh_pos.y + 1 - eps, player.position.y))
+      local tx, ty = clamp_to_tile(player.position, nh_pos.x, nh_pos.y)
       player.teleport({x = tx, y = ty}, surface)
     end
     return
@@ -717,9 +713,7 @@ local function on_player_changed_position(event)
     local nh_pos = Display.get_player_pos()
     local surface = Display.get_current_surface()
     if nh_pos and surface then
-      local eps = 0.05
-      local tx = math.max(nh_pos.x + eps, math.min(nh_pos.x + 1 - eps, player.position.x))
-      local ty = math.max(nh_pos.y + eps, math.min(nh_pos.y + 1 - eps, player.position.y))
+      local tx, ty = clamp_to_tile(player.position, nh_pos.x, nh_pos.y)
       player.teleport({x = tx, y = ty}, surface)
     end
     return
@@ -791,17 +785,11 @@ local function on_custom_input(event)
   -- ESC cancels menus and getlin prompts
   if key == 27 then
     if state.input_type == "menu" then
-      if player and player.gui.screen.nh_menu_frame then
-        player.gui.screen.nh_menu_frame.destroy()
-      end
-      if storage.nh_gui then storage.nh_gui.pending_menu = nil end
+      Gui.destroy_modal(player, "nh_menu_frame", "pending_menu")
       advance_turn_menu({cancelled = true, selections = {}})
       return
     elseif state.input_type == "getlin" then
-      if player and player.gui.screen.nh_getlin_frame then
-        player.gui.screen.nh_getlin_frame.destroy()
-      end
-      if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
+      Gui.destroy_modal(player, "nh_getlin_frame", "pending_getlin")
       advance_turn_string("\027")
       return
     end
@@ -821,9 +809,7 @@ local function on_custom_input(event)
 
   -- For yn prompts, close the GUI before advancing
   if state.input_type == "yn" then
-    if player and player.gui.screen.nh_yn_frame then
-      player.gui.screen.nh_yn_frame.destroy()
-    end
+    Gui.destroy_modal(player, "nh_yn_frame")
   end
 
   advance_turn(key)
@@ -866,21 +852,13 @@ local function on_gui_click(event)
   -- Cancel button -> ESC (same as pressing Escape key)
   if element.name == "nh_cancel" then
     if state.input_type == "menu" then
-      if player.gui.screen.nh_menu_frame then
-        player.gui.screen.nh_menu_frame.destroy()
-      end
-      if storage.nh_gui then storage.nh_gui.pending_menu = nil end
+      Gui.destroy_modal(player, "nh_menu_frame", "pending_menu")
       advance_turn_menu({cancelled = true, selections = {}})
     elseif state.input_type == "getlin" then
-      if player.gui.screen.nh_getlin_frame then
-        player.gui.screen.nh_getlin_frame.destroy()
-      end
-      if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
+      Gui.destroy_modal(player, "nh_getlin_frame", "pending_getlin")
       advance_turn_string("\027")
     elseif state.input_type == "yn" then
-      if player.gui.screen.nh_yn_frame then
-        player.gui.screen.nh_yn_frame.destroy()
-      end
+      Gui.destroy_modal(player, "nh_yn_frame")
       advance_turn(27)
     else
       advance_turn(27)
@@ -901,8 +879,8 @@ local function on_gui_click(event)
   local tb_key = Gui.handle_toolbar_click(element.name)
   if tb_key then
     if state.input_type == "getch" or state.input_type == "yn" then
-      if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
-        player.gui.screen.nh_yn_frame.destroy()
+      if state.input_type == "yn" then
+        Gui.destroy_modal(player, "nh_yn_frame")
       end
       advance_turn(tb_key)
     end
@@ -1037,10 +1015,7 @@ local function on_gui_confirmed(event)
   if not player then return end
 
   local text = element.text or ""
-  if storage.nh_gui then storage.nh_gui.pending_getlin = nil end
-  if player.gui.screen.nh_getlin_frame then
-    player.gui.screen.nh_getlin_frame.destroy()
-  end
+  Gui.destroy_modal(player, "nh_getlin_frame", "pending_getlin")
   advance_turn_string(text)
 end
 
@@ -1066,8 +1041,8 @@ local function on_gui_selection_state_changed(event)
 
   if btn_key then
     if state.input_type == "getch" or state.input_type == "yn" then
-      if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
-        player.gui.screen.nh_yn_frame.destroy()
+      if state.input_type == "yn" then
+        Gui.destroy_modal(player, "nh_yn_frame")
       end
       if ext_cmd then
         state.pending_ext_command = ext_cmd
@@ -1136,23 +1111,12 @@ local function on_click_move(event)
   end
 
   -- Store click data for the C-side nh_poskey to read
-  if not storage.nh_bridge then storage.nh_bridge = {} end
-  storage.nh_bridge.pending_click = {x = gx, y = gy, mod = 1}  -- CLICK_1 = 1
+  Bridge.get_state().pending_click = {x = gx, y = gy, mod = 1}  -- CLICK_1 = 1
 
   -- Flag travel mode so update_player_position snaps to center each tick
   state.travel_active = true
 
-  -- Clear state like advance_turn does, but don't execute yet
-  state.awaiting_input = false
-  state.input_type = nil
-  state.input_info = nil
-  if storage.nh_bridge then
-    storage.nh_bridge.pending_yn = nil
-    storage.nh_bridge.pending_getlin = nil
-  end
-  if storage.nh_gui then
-    storage.nh_gui.pending_yn = nil
-  end
+  clear_input_state()
 
   -- Provide input 0 (click signal) — on_tick will run the interpreter
   WasmInterp.provide_input(wasm_instance, 0)

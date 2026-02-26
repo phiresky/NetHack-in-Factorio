@@ -17,6 +17,25 @@ local MAX_MESSAGES = 50
 -- Estimated instructions for NetHack startup (first input prompt)
 local ESTIMATED_STARTUP_INSTRUCTIONS = 1770000
 
+-- Destroy a modal GUI frame and optionally clear associated pending state.
+function Gui.destroy_modal(player, frame_name, pending_key)
+  if player then
+    local frame = player.gui.screen[frame_name]
+    if frame then frame.destroy() end
+  end
+  if pending_key and storage.nh_gui then
+    storage.nh_gui[pending_key] = nil
+  end
+end
+
+-- Return sorted numeric keys from a table (for plsel index lists).
+local function sorted_keys(tbl)
+  local keys = {}
+  for k, _ in pairs(tbl) do keys[#keys + 1] = k end
+  table.sort(keys)
+  return keys
+end
+
 -- Format a number with commas: 1234567 -> "1,234,567"
 local function format_number(n)
   local s = tostring(math.floor(n))
@@ -1601,8 +1620,7 @@ function Gui.show_tips_popup(player)
 
     {heading = "Controls", text = "WASD to move. You can pass obstacles diagonally. Click distant tiles to auto-travel. Press Esc to cancel an action."},
     {heading = "Items", text = "Auto-pickup is enabled by default. Open Inventory (Alt+i) to see what you carry."},
-    {heading = "Survival", text = "Eat food before you starve (Eat button). Read scrolls, quaff potions, zap wands -- experiment!"},
-    {heading = "Death", text = "You will die. A lot. That's normal. Each run teaches you something new."},
+    {heading = "Survival", text = "Eat food before you starve (Eat button). Read scrolls, quaff potions, zap wands -- experiment! You will die a lot, that's normal."},
   }
 
   for _, tip in ipairs(tips) do
@@ -1769,6 +1787,77 @@ local function plsel_find_in_frame(frame, target_name)
   return nil
 end
 
+-- Validate and auto-fix a button-style list (race or role).
+-- Returns the updated allow mask for the selected entry.
+local function plsel_validate_list(frame, data_table, sel_key, sel, prefix, elem_name, validate_fn)
+  local container = plsel_find_in_frame(frame, elem_name)
+  if not container then return end
+
+  local indices = sorted_keys(data_table)
+  local first_valid, current_valid = nil, false
+
+  for _, idx in ipairs(indices) do
+    local entry = data_table[idx]
+    local btn = container[prefix .. idx]
+    if btn then
+      local valid = validate_fn(entry.allow)
+      btn.enabled = valid
+      if valid and not first_valid then first_valid = idx end
+      if idx == sel[sel_key] and valid then current_valid = true end
+      btn.style = (idx == sel[sel_key] and valid) and "nh_plsel_list_button_selected"
+                                                    or "nh_plsel_list_button"
+    end
+  end
+
+  if not current_valid and first_valid then
+    sel[sel_key] = first_valid
+    for _, idx in ipairs(indices) do
+      local btn = container[prefix .. idx]
+      if btn then
+        btn.style = (idx == sel[sel_key]) and "nh_plsel_list_button_selected"
+                                             or "nh_plsel_list_button"
+      end
+    end
+  end
+end
+
+-- Validate and auto-fix a checkbox group (gender or alignment).
+local function plsel_validate_checkboxes(frame, data_table, sel_key, sel, prefix, elem_name, validate_fn)
+  local container = plsel_find_in_frame(frame, elem_name)
+  if not container then return end
+
+  local indices = sorted_keys(data_table)
+  local first_valid, current_valid = nil, false
+
+  for _, idx in ipairs(indices) do
+    local entry = data_table[idx]
+    local cb = container[prefix .. idx]
+    if cb then
+      local valid = validate_fn(entry.allow)
+      cb.enabled = valid
+      if valid and not first_valid then first_valid = idx end
+      if idx == sel[sel_key] and valid then current_valid = true end
+      cb.state = (idx == sel[sel_key])
+    end
+  end
+
+  if not current_valid and first_valid then
+    sel[sel_key] = first_valid
+    for _, idx in ipairs(indices) do
+      local cb = container[prefix .. idx]
+      if cb then cb.state = (idx == sel[sel_key]) end
+    end
+  end
+end
+
+-- Helper to read the current allow mask for a selection.
+local function get_allow(data_table, selected_idx)
+  if selected_idx >= 0 and data_table[selected_idx] then
+    return data_table[selected_idx].allow
+  end
+  return 0xFFFF
+end
+
 -- Update enabled/disabled states and auto-fix invalid selections.
 -- Uses BFS to find nested scroll panes since Factorio GUI elements
 -- are only accessible by name on their direct parent.
@@ -1781,147 +1870,30 @@ local function plsel_update_validity(player)
   local frame = screen.nh_plsel_frame
   if not frame then return end
 
-  local role_allow = 0xFFFF
-  if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
-    role_allow = plsel.roles[sel.selected_role].allow
-  end
+  local role_allow = get_allow(plsel.roles, sel.selected_role)
+  local race_allow = get_allow(plsel.races, sel.selected_race)
 
-  local race_allow = 0xFFFF
-  if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
-    race_allow = plsel.races[sel.selected_race].allow
-  end
+  plsel_validate_list(frame, plsel.races, "selected_race", sel,
+    "nh_plsel_race_", "nh_plsel_race_scroll",
+    function(allow) return validrace(role_allow, allow) end)
 
-  local race_scroll = plsel_find_in_frame(frame, "nh_plsel_race_scroll")
-  if race_scroll then
-    local first_valid_race = nil
-    local current_race_valid = false
-    local race_indices = {}
-    for idx, _ in pairs(plsel.races) do race_indices[#race_indices + 1] = idx end
-    table.sort(race_indices)
+  -- Re-read after potential auto-fix
+  race_allow = get_allow(plsel.races, sel.selected_race)
 
-    for _, idx in ipairs(race_indices) do
-      local race = plsel.races[idx]
-      local btn = race_scroll["nh_plsel_race_" .. idx]
-      if btn then
-        local valid = validrace(role_allow, race.allow)
-        btn.enabled = valid
-        if valid and not first_valid_race then first_valid_race = idx end
-        if idx == sel.selected_race and valid then current_race_valid = true end
-        btn.style = (idx == sel.selected_race and valid) and "nh_plsel_list_button_selected"
-                                                          or "nh_plsel_list_button"
-      end
-    end
-    if not current_race_valid and first_valid_race then
-      sel.selected_race = first_valid_race
-      race_allow = plsel.races[first_valid_race].allow
-      for _, idx in ipairs(race_indices) do
-        local btn = race_scroll["nh_plsel_race_" .. idx]
-        if btn then
-          btn.style = (idx == sel.selected_race) and "nh_plsel_list_button_selected"
-                                                   or "nh_plsel_list_button"
-        end
-      end
-    end
-  end
+  plsel_validate_list(frame, plsel.roles, "selected_role", sel,
+    "nh_plsel_role_", "nh_plsel_role_scroll",
+    function(allow) return validrace(allow, race_allow) end)
 
-  -- Re-read race_allow after potential auto-fix
-  if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
-    race_allow = plsel.races[sel.selected_race].allow
-  end
+  -- Re-read after potential auto-fix
+  role_allow = get_allow(plsel.roles, sel.selected_role)
 
-  local role_scroll = plsel_find_in_frame(frame, "nh_plsel_role_scroll")
-  if role_scroll then
-    local first_valid_role = nil
-    local current_role_valid = false
-    local role_indices = {}
-    for idx, _ in pairs(plsel.roles) do role_indices[#role_indices + 1] = idx end
-    table.sort(role_indices)
+  plsel_validate_checkboxes(frame, plsel.genders, "selected_gend", sel,
+    "nh_plsel_gend_", "nh_plsel_gend_flow",
+    function(allow) return validgend(role_allow, race_allow, allow) end)
 
-    for _, idx in ipairs(role_indices) do
-      local role = plsel.roles[idx]
-      local btn = role_scroll["nh_plsel_role_" .. idx]
-      if btn then
-        local valid = validrace(role.allow, race_allow)
-        btn.enabled = valid
-        if valid and not first_valid_role then first_valid_role = idx end
-        if idx == sel.selected_role and valid then current_role_valid = true end
-        btn.style = (idx == sel.selected_role and valid) and "nh_plsel_list_button_selected"
-                                                          or "nh_plsel_list_button"
-      end
-    end
-    if not current_role_valid and first_valid_role then
-      sel.selected_role = first_valid_role
-      role_allow = plsel.roles[first_valid_role].allow
-      for _, idx in ipairs(role_indices) do
-        local btn = role_scroll["nh_plsel_role_" .. idx]
-        if btn then
-          btn.style = (idx == sel.selected_role) and "nh_plsel_list_button_selected"
-                                                   or "nh_plsel_list_button"
-        end
-      end
-    end
-  end
-
-  -- Re-read role_allow after potential auto-fix
-  if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
-    role_allow = plsel.roles[sel.selected_role].allow
-  end
-
-  local gend_flow = plsel_find_in_frame(frame, "nh_plsel_gend_flow")
-  if gend_flow then
-    local first_valid_gend = nil
-    local current_gend_valid = false
-    local gend_indices = {}
-    for idx, _ in pairs(plsel.genders) do gend_indices[#gend_indices + 1] = idx end
-    table.sort(gend_indices)
-
-    for _, idx in ipairs(gend_indices) do
-      local gend = plsel.genders[idx]
-      local cb = gend_flow["nh_plsel_gend_" .. idx]
-      if cb then
-        local valid = validgend(role_allow, race_allow, gend.allow)
-        cb.enabled = valid
-        if valid and not first_valid_gend then first_valid_gend = idx end
-        if idx == sel.selected_gend and valid then current_gend_valid = true end
-        cb.state = (idx == sel.selected_gend)
-      end
-    end
-    if not current_gend_valid and first_valid_gend then
-      sel.selected_gend = first_valid_gend
-      for _, idx in ipairs(gend_indices) do
-        local cb = gend_flow["nh_plsel_gend_" .. idx]
-        if cb then cb.state = (idx == sel.selected_gend) end
-      end
-    end
-  end
-
-  local align_flow = plsel_find_in_frame(frame, "nh_plsel_align_flow")
-  if align_flow then
-    local first_valid_align = nil
-    local current_align_valid = false
-    local align_indices = {}
-    for idx, _ in pairs(plsel.aligns) do align_indices[#align_indices + 1] = idx end
-    table.sort(align_indices)
-
-    for _, idx in ipairs(align_indices) do
-      local al = plsel.aligns[idx]
-      local cb = align_flow["nh_plsel_align_" .. idx]
-      if cb then
-        local valid = validalign(role_allow, race_allow, al.allow)
-        cb.enabled = valid
-        if valid and not first_valid_align then first_valid_align = idx end
-        if idx == sel.selected_align and valid then current_align_valid = true end
-        cb.state = (idx == sel.selected_align)
-      end
-    end
-    if not current_align_valid and first_valid_align then
-      sel.selected_align = first_valid_align
-      for _, idx in ipairs(align_indices) do
-        local cb = align_flow["nh_plsel_align_" .. idx]
-        if cb then cb.state = (idx == sel.selected_align) end
-      end
-    end
-  end
+  plsel_validate_checkboxes(frame, plsel.aligns, "selected_align", sel,
+    "nh_plsel_align_", "nh_plsel_align_flow",
+    function(allow) return validalign(role_allow, race_allow, allow) end)
 end
 
 function Gui.show_plsel_dialog(player)
@@ -1983,14 +1955,7 @@ function Gui.show_plsel_dialog(player)
     vertical_scroll_policy = "auto-and-reserve-space",
     style = "nh_plsel_list_scroll",
   }
-  -- Sort race indices
-  local race_indices = {}
-  for idx, _ in pairs(plsel.races) do
-    race_indices[#race_indices + 1] = idx
-  end
-  table.sort(race_indices)
-
-  for _, idx in ipairs(race_indices) do
+  for _, idx in ipairs(sorted_keys(plsel.races)) do
     local race = plsel.races[idx]
     race_scroll.add{
       type = "button",
@@ -2015,13 +1980,7 @@ function Gui.show_plsel_dialog(player)
     style = "nh_plsel_list_scroll",
   }
 
-  local role_indices = {}
-  for idx, _ in pairs(plsel.roles) do
-    role_indices[#role_indices + 1] = idx
-  end
-  table.sort(role_indices)
-
-  for _, idx in ipairs(role_indices) do
+  for _, idx in ipairs(sorted_keys(plsel.roles)) do
     local role = plsel.roles[idx]
     role_scroll.add{
       type = "button",
@@ -2051,13 +2010,7 @@ function Gui.show_plsel_dialog(player)
     style = "nh_plsel_radio_flow",
   }
 
-  local gend_indices = {}
-  for idx, _ in pairs(plsel.genders) do
-    gend_indices[#gend_indices + 1] = idx
-  end
-  table.sort(gend_indices)
-
-  for _, idx in ipairs(gend_indices) do
+  for _, idx in ipairs(sorted_keys(plsel.genders)) do
     local gend = plsel.genders[idx]
     gend_flow.add{
       type = "checkbox",
@@ -2081,13 +2034,7 @@ function Gui.show_plsel_dialog(player)
     style = "nh_plsel_radio_flow",
   }
 
-  local align_indices = {}
-  for idx, _ in pairs(plsel.aligns) do
-    align_indices[#align_indices + 1] = idx
-  end
-  table.sort(align_indices)
-
-  for _, idx in ipairs(align_indices) do
+  for _, idx in ipairs(sorted_keys(plsel.aligns)) do
     local al = plsel.aligns[idx]
     align_flow.add{
       type = "checkbox",
@@ -2177,35 +2124,26 @@ function Gui.handle_plsel_click(player, element_name)
   -- Random button
   if element_name == "nh_plsel_random" then
     -- Pick random valid combo
-    local valid_roles = {}
-    for idx, _ in pairs(plsel.roles) do valid_roles[#valid_roles + 1] = idx end
-    if #valid_roles > 0 then
-      sel.selected_role = valid_roles[math.random(#valid_roles)]
+    local all_roles = sorted_keys(plsel.roles)
+    if #all_roles > 0 then
+      sel.selected_role = all_roles[math.random(#all_roles)]
     end
-
-    local role_allow = 0xFFFF
-    if sel.selected_role >= 0 and plsel.roles[sel.selected_role] then
-      role_allow = plsel.roles[sel.selected_role].allow
-    end
+    local role_allow = get_allow(plsel.roles, sel.selected_role)
 
     local valid_races = {}
-    for idx, race in pairs(plsel.races) do
-      if validrace(role_allow, race.allow) then
+    for _, idx in ipairs(sorted_keys(plsel.races)) do
+      if validrace(role_allow, plsel.races[idx].allow) then
         valid_races[#valid_races + 1] = idx
       end
     end
     if #valid_races > 0 then
       sel.selected_race = valid_races[math.random(#valid_races)]
     end
-
-    local race_allow = 0xFFFF
-    if sel.selected_race >= 0 and plsel.races[sel.selected_race] then
-      race_allow = plsel.races[sel.selected_race].allow
-    end
+    local race_allow = get_allow(plsel.races, sel.selected_race)
 
     local valid_gends = {}
-    for idx, gend in pairs(plsel.genders) do
-      if validgend(role_allow, race_allow, gend.allow) then
+    for _, idx in ipairs(sorted_keys(plsel.genders)) do
+      if validgend(role_allow, race_allow, plsel.genders[idx].allow) then
         valid_gends[#valid_gends + 1] = idx
       end
     end
@@ -2214,8 +2152,8 @@ function Gui.handle_plsel_click(player, element_name)
     end
 
     local valid_aligns = {}
-    for idx, al in pairs(plsel.aligns) do
-      if validalign(role_allow, race_allow, al.allow) then
+    for _, idx in ipairs(sorted_keys(plsel.aligns)) do
+      if validalign(role_allow, race_allow, plsel.aligns[idx].allow) then
         valid_aligns[#valid_aligns + 1] = idx
       end
     end

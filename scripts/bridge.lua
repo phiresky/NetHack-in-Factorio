@@ -10,6 +10,13 @@ local WasmInterp = require("scripts.wasm.interp")
 
 local Bridge = {}
 
+-- Ensure storage.nh_bridge exists and return it.
+local function get_bridge_state()
+  if not storage.nh_bridge then storage.nh_bridge = {} end
+  return storage.nh_bridge
+end
+Bridge.get_state = get_bridge_state
+
 -- Window type constants (from NetHack)
 local NHW_MESSAGE = 1
 local NHW_STATUS  = 2
@@ -38,6 +45,12 @@ function Bridge.read_string_len(memory, ptr, len)
     chars[#chars + 1] = string.char(b)
   end
   return table.concat(chars)
+end
+
+-- Helper: read a string from WASM memory, returning "" for null/empty pointers
+local function read_string_safe(memory, ptr, len)
+  if ptr == 0 or len <= 0 then return "" end
+  return Bridge.read_string_len(memory, ptr, len)
 end
 
 -- Helper: write a string into WASM memory (null-terminated)
@@ -130,11 +143,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   end
 
   imports["env.host_exit_nhwindows"] = function(str_ptr, len)
-    local memory = memory_ref()
-    local text = ""
-    if str_ptr ~= 0 and len > 0 then
-      text = Bridge.read_string_len(memory, str_ptr, len)
-    end
+    local text = read_string_safe(memory_ref(), str_ptr, len)
     if text ~= "" then
       Gui.add_message("NetHack: " .. text, 0)
     end
@@ -143,8 +152,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   imports["env.host_curs"] = function(winid, x, y)
     -- Cursor positioning - used by the display system
     -- We track this for map window cursor
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    storage.nh_bridge.cursor = {winid = winid, x = x, y = y}
+    get_bridge_state().cursor = {winid = winid, x = x, y = y}
   end
 
   imports["env.host_cliparound"] = function(x, y)
@@ -153,17 +161,11 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
     Display.set_hero_pos(x, y)
   end
 
-  imports["env.host_delay_output"] = function()
-    -- No-op in Factorio - we don't need display delays
-  end
-
-  imports["env.host_update_inventory"] = function()
-    -- Could trigger inventory GUI refresh
-  end
-
-  imports["env.host_mark_synch"] = function()
-    -- Synchronization point - flush any pending display updates
-  end
+  -- Stub imports: called by NetHack but not needed in Factorio
+  local function noop() end
+  imports["env.host_delay_output"] = noop
+  imports["env.host_update_inventory"] = noop
+  imports["env.host_mark_synch"] = noop
 
   imports["env.host_start_menu"] = function(winid)
     Gui.start_menu(winid)
@@ -176,12 +178,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   end
 
   imports["env.host_end_menu"] = function(winid, prompt_ptr, prompt_len)
-    local memory = memory_ref()
-    local prompt = ""
-    if prompt_ptr ~= 0 and prompt_len > 0 then
-      prompt = Bridge.read_string_len(memory, prompt_ptr, prompt_len)
-    end
-    Gui.end_menu(winid, prompt)
+    Gui.end_menu(winid, read_string_safe(memory_ref(), prompt_ptr, prompt_len))
   end
 
   -- Blocking imports: these return a special table that tells the interpreter to pause.
@@ -204,24 +201,21 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   imports["env.host_yn_function"] = function(query_ptr, qlen, resp_ptr, rlen, def)
     local memory = memory_ref()
     local query = Bridge.read_string_len(memory, query_ptr, qlen)
-    local resp = ""
-    if resp_ptr ~= 0 and rlen > 0 then
-      resp = Bridge.read_string_len(memory, resp_ptr, rlen)
-    end
+    local resp = read_string_safe(memory, resp_ptr, rlen)
     Gui.add_message(query, 0)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
+    local bridge = get_bridge_state()
 
     -- Check for inventory-style prompt (brackets with ? or *)
     local has_help = query:match("%[.*%?.*%]") or query:match("%[.*%*.*%]")
 
-    if has_help and not storage.nh_bridge.auto_fed_inventory then
+    if has_help and not bridge.auto_fed_inventory then
       -- First time: auto-feed '?' (or '*') to trigger NetHack's built-in
       -- inventory menu, which provides item-name selection via select_menu.
       -- Only do this ONCE per prompt cycle: after the inventory is dismissed,
       -- getobj loops and calls yn_function again — the second call falls
       -- through to the yn popup below.
-      storage.nh_bridge.auto_fed_inventory = true
-      storage.nh_bridge.inventory_prompt = query
+      bridge.auto_fed_inventory = true
+      bridge.inventory_prompt = query
       local help_char = query:match("%[.*%?.*%]") and string.byte("?") or string.byte("*")
       local main_state = storage.nh_main
       if main_state then
@@ -230,7 +224,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
     elseif resp ~= "" then
       -- Show yn prompt popup: either a simple y/n/q prompt, or the re-prompt
       -- after auto-fed inventory was dismissed (user picks item by letter).
-      storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
+      bridge.pending_yn = {query = query, resp = resp, def = def}
     end
     -- Otherwise (empty resp, no brackets): no pending_yn set,
     -- nhgetch will be treated as regular getch.
@@ -240,8 +234,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   imports["env.host_getlin"] = function(prompt_ptr, len)
     local memory = memory_ref()
     local prompt = Bridge.read_string_len(memory, prompt_ptr, len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    storage.nh_bridge.pending_getlin = {prompt = prompt}
+    get_bridge_state().pending_getlin = {prompt = prompt}
   end
 
   -- BLOCKING: select_menu - show menu and get selection count
@@ -255,45 +248,22 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
 
   -- Player selection dialog imports (non-blocking setup + blocking show)
 
-  imports["env.host_plsel_setup_role"] = function(idx, name_ptr, len, allow)
-    local memory = memory_ref()
-    local name = Bridge.read_string_len(memory, name_ptr, len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    if not storage.nh_bridge.plsel then
-      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+  local function plsel_setup(field)
+    return function(idx, ptr, len, allow)
+      local memory = memory_ref()
+      local name = Bridge.read_string_len(memory, ptr, len)
+      local bridge = get_bridge_state()
+      if not bridge.plsel then
+        bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
+      end
+      bridge.plsel[field][idx] = {name = name, allow = allow}
     end
-    storage.nh_bridge.plsel.roles[idx] = {name = name, allow = allow}
   end
 
-  imports["env.host_plsel_setup_race"] = function(idx, noun_ptr, len, allow)
-    local memory = memory_ref()
-    local noun = Bridge.read_string_len(memory, noun_ptr, len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    if not storage.nh_bridge.plsel then
-      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
-    end
-    storage.nh_bridge.plsel.races[idx] = {name = noun, allow = allow}
-  end
-
-  imports["env.host_plsel_setup_gend"] = function(idx, adj_ptr, len, allow)
-    local memory = memory_ref()
-    local adj = Bridge.read_string_len(memory, adj_ptr, len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    if not storage.nh_bridge.plsel then
-      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
-    end
-    storage.nh_bridge.plsel.genders[idx] = {name = adj, allow = allow}
-  end
-
-  imports["env.host_plsel_setup_align"] = function(idx, adj_ptr, len, allow)
-    local memory = memory_ref()
-    local adj = Bridge.read_string_len(memory, adj_ptr, len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    if not storage.nh_bridge.plsel then
-      storage.nh_bridge.plsel = {roles = {}, races = {}, genders = {}, aligns = {}}
-    end
-    storage.nh_bridge.plsel.aligns[idx] = {name = adj, allow = allow}
-  end
+  imports["env.host_plsel_setup_role"]  = plsel_setup("roles")
+  imports["env.host_plsel_setup_race"]  = plsel_setup("races")
+  imports["env.host_plsel_setup_gend"]  = plsel_setup("genders")
+  imports["env.host_plsel_setup_align"] = plsel_setup("aligns")
 
   -- BLOCKING: show the player selection dialog
   imports["env.host_plsel_show"] = {
@@ -308,8 +278,7 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
     local memory = memory_ref()
     local buf = Bridge.read_string_len(memory, buf_ptr, buf_len)
     local monbuf = Bridge.read_string_len(memory, monbuf_ptr, monbuf_len)
-    if not storage.nh_bridge then storage.nh_bridge = {} end
-    storage.nh_bridge.describe_result = {buf = buf, monbuf = monbuf}
+    get_bridge_state().describe_result = {buf = buf, monbuf = monbuf}
   end
 
   -- Click-to-travel: non-blocking imports to read click coordinates.
@@ -426,10 +395,10 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   local saved = instance:save_state()
 
   -- Clear any previous result; enable capture mode only when fetching full desc
-  if not storage.nh_bridge then storage.nh_bridge = {} end
-  storage.nh_bridge.describe_result = nil
+  local bridge = get_bridge_state()
+  bridge.describe_result = nil
   if full then
-    storage.nh_bridge.describe_capture = {}
+    bridge.describe_capture = {}
   end
 
   -- Call nh_describe_pos(x, y, full) and run with budget.

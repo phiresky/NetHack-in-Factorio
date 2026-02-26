@@ -8,35 +8,30 @@ local function next_order()
   return string.format("nethack-%03d", order_counter)
 end
 
--- Helper to define a boolean NetHack option
-local function bool_opt(nh_name, default, description)
-  return {
-    type = "bool-setting",
-    name = "nethack-" .. nh_name:gsub("_", "-"),
-    setting_type = "startup",
-    default_value = default,
-    order = next_order(),
-    localised_name = {"", "NetHack: " .. nh_name},
-    localised_description = {"", description},
-  }
-end
-
--- Helper to define a string NetHack option
-local function string_opt(nh_name, default, description, allowed)
+-- Helper to define a NetHack option setting
+local function make_opt(opt_type, nh_name, default, description, extra)
   local s = {
-    type = "string-setting",
+    type = opt_type .. "-setting",
     name = "nethack-" .. nh_name:gsub("_", "-"),
     setting_type = "startup",
     default_value = default,
     order = next_order(),
     localised_name = {"", "NetHack: " .. nh_name},
     localised_description = {"", description},
-    allow_blank = true,
   }
-  if allowed then
-    s.allowed_values = allowed
+  if extra then
+    for k, v in pairs(extra) do s[k] = v end
   end
   return s
+end
+
+local function bool_opt(nh_name, default, description)
+  return make_opt("bool", nh_name, default, description)
+end
+
+local function string_opt(nh_name, default, description, allowed)
+  return make_opt("string", nh_name, default, description,
+    {allow_blank = true, allowed_values = allowed})
 end
 
 data:extend{

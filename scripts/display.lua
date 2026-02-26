@@ -53,6 +53,11 @@ function Display.tile_entity_name(tile_idx)
   end
 end
 
+-- Check if a glyph special flag is set
+local function has_flag(special, flag)
+  return special and bit32.band(special, flag) ~= 0
+end
+
 -- Pet tint color (slight green)
 local PET_TINT = {r=0.5, g=1.0, b=0.5, a=1}
 -- Detected monster tint (slight cyan)
@@ -192,17 +197,20 @@ end
 -- Resolve a bk_tile_idx to a Factorio base tile name.
 -- bk_tile_idx comes from glyph2tile[bkglyph] where bkglyph encodes the
 -- ground type (room, corridor, pool, lava, etc.) underneath entities.
+-- Map tile names to Factorio base tiles
+local TILE_NAME_MAP = {
+  pool = "nh-water",
+  water = "nh-water",
+  ["molten-lava"] = "nh-lava",
+  ice = "nh-water",  -- ice over water
+}
+
 local function resolve_base_tile(bk_tile_idx)
   if bk_tile_idx and bk_tile_idx >= 0 then
     local other_base = TC.n_monsters + TC.n_objects
     if bk_tile_idx >= other_base then
-      local other_idx = bk_tile_idx - other_base + 1
-      local name = TC.other_names[other_idx]
-      if name then
-        if name == "pool" or name == "water" then return "nh-water" end
-        if name == "molten-lava" then return "nh-lava" end
-        if name == "ice" then return "nh-water" end  -- ice over water
-      end
+      local name = TC.other_names[bk_tile_idx - other_base + 1]
+      if name then return TILE_NAME_MAP[name] or "nh-floor" end
     end
   end
   return "nh-floor"
@@ -232,42 +240,26 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
     return
   end
 
-  local is_monster = (special and bit32.band(special, MG_MONSTER) ~= 0)
-  local is_pet = (special and bit32.band(special, MG_PET) ~= 0)
-  local is_detect = (special and bit32.band(special, MG_DETECT) ~= 0)
-
   -- Determine entity name from tile index
   local ent_name = Display.tile_entity_name(tile_idx)
 
   -- Determine tint for special effects
   local tint = nil
-  if is_pet then
+  if has_flag(special, MG_PET) then
     tint = PET_TINT
-  elseif is_detect then
+  elseif has_flag(special, MG_DETECT) then
     tint = DETECT_TINT
   end
 
-  -- Resolve base tile from bkglyph when available
-  local base_tile = resolve_base_tile(bk_tile_idx)
+  -- Resolve base tile: stone/rock uses void, everything else uses bkglyph
+  local base_tile = ch == string.byte(" ") and "nh-void" or resolve_base_tile(bk_tile_idx)
+  surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
 
   -- In factorio player mode, suppress the hero entity so the engineer is visible.
   -- Uses hero position from the last cliparound call (accurate for current frame).
   local at_hero = disp.player_mode ~= "nethack" and disp.player_pos
     and x == disp.player_pos.x and y == disp.player_pos.y
 
-  -- Stone/rock (space character): void tile + stone entity
-  if ch == string.byte(" ") then
-    surface.set_tiles({{name = "nh-void", position = {x = x, y = y}}})
-    if at_hero then
-      destroy_entity_at(level_name, x, y)
-    else
-      place_entity(surface, level_name, x, y, ent_name, tint)
-    end
-    return
-  end
-
-  -- Everything else: set base tile from bkglyph, place foreground entity
-  surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
   if at_hero then
     destroy_entity_at(level_name, x, y)
   else

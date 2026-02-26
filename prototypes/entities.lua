@@ -51,46 +51,29 @@ local door_open_set = {}
 for _, idx in ipairs(TC.door_open_indices) do door_open_set[idx] = true end
 
 ---------------------------------------------------------------------------
--- Monster entities (nh-mon-giant-ant, nh-mon-killer-bee, etc.)
+-- Monster & Object entities
 ---------------------------------------------------------------------------
 
-for i = 0, TC.n_monsters - 1 do
-  local mname = TC.monster_names[i + 1]
-  entities[#entities + 1] = {
-    type = "simple-entity",
-    name = "nh-mon-" .. mname,
-    localised_name = mname:gsub("-", " "),
-    icon = shared_icon,
-    icon_size = 32,
-    flags = nh_flags,
-    collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-    collision_mask = no_collision,
-    selection_box = {{-0.4, -0.4}, {0.4, 0.4}},
-    pictures = { sheet_sprite(SHEET_MONSTERS, i) },
-    render_layer = "object",
-  }
+local function make_entity_batch(prefix, sheet, names, selection_size, render_layer)
+  for i, n in ipairs(names) do
+    entities[#entities + 1] = {
+      type = "simple-entity",
+      name = prefix .. n,
+      localised_name = n:gsub("-", " "),
+      icon = shared_icon,
+      icon_size = 32,
+      flags = nh_flags,
+      collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
+      collision_mask = no_collision,
+      selection_box = {{-selection_size, -selection_size}, {selection_size, selection_size}},
+      pictures = { sheet_sprite(sheet, i - 1) },
+      render_layer = render_layer,
+    }
+  end
 end
 
----------------------------------------------------------------------------
--- Object entities (nh-obj-arrow, nh-obj-long-sword, etc.)
----------------------------------------------------------------------------
-
-for i = 0, TC.n_objects - 1 do
-  local oname = TC.object_names[i + 1]
-  entities[#entities + 1] = {
-    type = "simple-entity",
-    name = "nh-obj-" .. oname,
-    localised_name = oname:gsub("-", " "),
-    icon = shared_icon,
-    icon_size = 32,
-    flags = nh_flags,
-    collision_box = {{-0.01, -0.01}, {0.01, 0.01}},
-    collision_mask = no_collision,
-    selection_box = {{-0.3, -0.3}, {0.3, 0.3}},
-    pictures = { sheet_sprite(SHEET_OBJECTS, i) },
-    render_layer = "lower-object",
-  }
-end
+make_entity_batch("nh-mon-", SHEET_MONSTERS, TC.monster_names, 0.4, "object")
+make_entity_batch("nh-obj-", SHEET_OBJECTS, TC.object_names, 0.3, "lower-object")
 
 ---------------------------------------------------------------------------
 -- Dungeon feature entities (nh-other-vertical-wall, nh-other-floor-of-a-room, etc.)
