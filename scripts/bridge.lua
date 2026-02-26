@@ -425,6 +425,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   -- Save current execution state and __stack_pointer global.
   local saved_exec = instance.exec
   local saved_sp = instance.globals[0]
+  local saved_sbs = instance.ctx and instance.ctx.__sbs
 
   -- Clear any previous result; enable capture mode only when fetching full desc
   if not storage.nh_bridge then storage.nh_bridge = {} end
@@ -443,6 +444,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
     -- Error: restore and discard
     instance.exec = saved_exec
     instance.globals[0] = saved_sp
+    if instance.ctx then instance.ctx.__sbs = saved_sbs end
     storage.nh_bridge.describe_capture = nil
     return nil
   end
@@ -454,6 +456,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   -- Restore game exec state
   instance.exec = saved_exec
   instance.globals[0] = saved_sp
+  if instance.ctx then instance.ctx.__sbs = saved_sbs end
 
   if finished then
     return collect_describe_result(full, entity_name, cached_long)
@@ -464,6 +467,7 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
     exec = describe_exec,
     saved_sp = saved_sp,
     saved_exec = saved_exec,
+    saved_sbs = saved_sbs,
     full = full,
     entity_name = entity_name,
     cached_long = cached_long,
@@ -484,8 +488,10 @@ function Bridge.continue_describe(instance, max_instructions)
   -- Swap in the describe exec state
   local saved_exec = instance.exec
   local saved_sp = instance.globals[0]
+  local saved_sbs = instance.ctx and instance.ctx.__sbs
   instance.exec = pending.exec
   instance.globals[0] = pending.saved_sp
+  if instance.ctx and pending.saved_sbs then instance.ctx.__sbs = pending.saved_sbs end
 
   local ok, err = pcall(function()
     WasmInterp.run(instance, max_instructions or 20000)
@@ -495,6 +501,7 @@ function Bridge.continue_describe(instance, max_instructions)
     -- Error: discard pending, restore game state
     instance.exec = saved_exec
     instance.globals[0] = saved_sp
+    if instance.ctx then instance.ctx.__sbs = saved_sbs end
     Bridge._pending_describe = nil
     storage.nh_bridge.describe_capture = nil
     return false
@@ -504,8 +511,10 @@ function Bridge.continue_describe(instance, max_instructions)
 
   -- Update pending exec (it may have progressed) then restore game state
   pending.exec = instance.exec
+  if instance.ctx then pending.saved_sbs = instance.ctx.__sbs end
   instance.exec = saved_exec
   instance.globals[0] = saved_sp
+  if instance.ctx then instance.ctx.__sbs = saved_sbs end
 
   if finished then
     Bridge._pending_describe = nil
