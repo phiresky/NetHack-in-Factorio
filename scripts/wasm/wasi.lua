@@ -208,7 +208,8 @@ end
 -- Add all WASI imports to the imports table.
 -- memory_ref: function() returning the Memory object
 -- instance_ref: table {inst = <instance>} (populated after instantiation)
-function Wasi.add_imports(imports, memory_ref, instance_ref)
+-- opts: optional table { environ = {"KEY=VALUE", ...} }
+function Wasi.add_imports(imports, memory_ref, instance_ref, opts)
 
     -- Shared VFS instance (created lazily, stored on WASM instance)
     local function get_vfs()
@@ -256,14 +257,32 @@ function Wasi.add_imports(imports, memory_ref, instance_ref)
     -- Environment variables
     -------------------------------------------------------------------
 
+    local environ = (opts and opts.environ) or {}
+
     imports["wasi_snapshot_preview1.environ_sizes_get"] = function(count_ptr, buf_size_ptr)
         local memory = memory_ref()
-        memory:store_i32(count_ptr, 0)
-        memory:store_i32(buf_size_ptr, 0)
+        local buf_size = 0
+        for _, entry in ipairs(environ) do
+            buf_size = buf_size + #entry + 1  -- +1 for null terminator
+        end
+        memory:store_i32(count_ptr, #environ)
+        memory:store_i32(buf_size_ptr, buf_size)
         return WASI_ESUCCESS
     end
 
     imports["wasi_snapshot_preview1.environ_get"] = function(environ_ptr, buf_ptr)
+        local memory = memory_ref()
+        local buf_offset = buf_ptr
+        for idx, entry in ipairs(environ) do
+            -- Write pointer to this entry
+            memory:store_i32(environ_ptr + (idx - 1) * 4, buf_offset)
+            -- Write entry string + null terminator
+            for i = 1, #entry do
+                memory:store_byte(buf_offset + i - 1, string.byte(entry, i))
+            end
+            memory:store_byte(buf_offset + #entry, 0)
+            buf_offset = buf_offset + #entry + 1
+        end
         return WASI_ESUCCESS
     end
 

@@ -27,6 +27,98 @@ local MAX_INSTRUCTIONS_PER_RUN = 50000
 local MAX_INSTRUCTIONS_PER_TICK = 20000
 
 ---------------------------------------------------------------------------
+-- NetHack Options (from Factorio mod startup settings)
+---------------------------------------------------------------------------
+
+-- Map of Factorio setting name -> {nh_name, default_value}
+-- Boolean options: default is true/false
+-- String options: default is string (empty string means "skip if blank")
+local OPTION_MAP = {
+  -- Boolean options
+  ["nethack-acoustics"]         = {"acoustics", true},
+  ["nethack-autodig"]           = {"autodig", false},
+  ["nethack-autoopen"]          = {"autoopen", true},
+  ["nethack-autopickup"]        = {"autopickup", true},
+  ["nethack-autoquiver"]        = {"autoquiver", false},
+  ["nethack-bones"]             = {"bones", true},
+  ["nethack-checkpoint"]        = {"checkpoint", true},
+  ["nethack-cmdassist"]         = {"cmdassist", true},
+  ["nethack-confirm"]           = {"confirm", true},
+  ["nethack-dark-room"]         = {"dark_room", true},
+  ["nethack-fixinv"]            = {"fixinv", true},
+  ["nethack-force-invmenu"]     = {"force_invmenu", false},
+  ["nethack-help"]              = {"help", true},
+  ["nethack-hilite-pet"]        = {"hilite_pet", false},
+  ["nethack-hilite-pile"]       = {"hilite_pile", false},
+  ["nethack-implicit-uncursed"] = {"implicit_uncursed", true},
+  ["nethack-legacy"]            = {"legacy", true},
+  ["nethack-lit-corridor"]      = {"lit_corridor", false},
+  ["nethack-lootabc"]           = {"lootabc", false},
+  ["nethack-mention-walls"]     = {"mention_walls", false},
+  ["nethack-pickup-thrown"]     = {"pickup_thrown", true},
+  ["nethack-pushweapon"]        = {"pushweapon", false},
+  ["nethack-rest-on-space"]     = {"rest_on_space", false},
+  ["nethack-safe-pet"]          = {"safe_pet", true},
+  ["nethack-showexp"]           = {"showexp", false},
+  ["nethack-showrace"]          = {"showrace", false},
+  ["nethack-silent"]            = {"silent", true},
+  ["nethack-sortpack"]          = {"sortpack", true},
+  ["nethack-sparkle"]           = {"sparkle", true},
+  ["nethack-time"]              = {"time", false},
+  ["nethack-tombstone"]         = {"tombstone", true},
+  ["nethack-travel"]            = {"travel", true},
+  ["nethack-verbose"]           = {"verbose", true},
+  -- Compound options (default is the string value; "" means skip if blank)
+  ["nethack-catname"]                 = {"catname", ""},
+  ["nethack-dogname"]                 = {"dogname", ""},
+  ["nethack-horsename"]               = {"horsename", ""},
+  ["nethack-fruit"]                   = {"fruit", "slime mold"},
+  ["nethack-pettype"]                 = {"pettype", ""},
+  ["nethack-menustyle"]               = {"menustyle", "full"},
+  ["nethack-pickup-burden"]           = {"pickup_burden", "stressed"},
+  ["nethack-pickup-types"]            = {"pickup_types", ""},
+  ["nethack-runmode"]                 = {"runmode", "run"},
+  ["nethack-sortloot"]                = {"sortloot", "loot"},
+  ["nethack-pile-limit"]              = {"pile_limit", "5"},
+  ["nethack-packorder"]               = {"packorder", ""},
+  ["nethack-paranoid-confirmation"]   = {"paranoid_confirmation", "pray"},
+  ["nethack-disclose"]                = {"disclose", ""},
+  ["nethack-msghistory"]              = {"msghistory", "20"},
+  ["nethack-statushilites"]           = {"statushilites", "0"},
+}
+
+-- Build the NETHACKOPTIONS environment variable from startup settings.
+-- Only includes options that differ from NetHack's defaults.
+local function build_nethack_environ()
+  local parts = {}
+  for setting_name, info in pairs(OPTION_MAP) do
+    local nh_name, default = info[1], info[2]
+    local value = settings.startup[setting_name].value
+    if type(default) == "boolean" then
+      if value ~= default then
+        if value then
+          parts[#parts + 1] = nh_name
+        else
+          parts[#parts + 1] = "!" .. nh_name
+        end
+      end
+    else
+      if value ~= default and value ~= "" then
+        parts[#parts + 1] = nh_name .. ":" .. value
+      elseif value == "" and default ~= "" then
+        parts[#parts + 1] = nh_name .. ":"
+      end
+    end
+  end
+
+  local environ = {}
+  if #parts > 0 then
+    environ[1] = "NETHACKOPTIONS=" .. table.concat(parts, ",")
+  end
+  return environ
+end
+
+---------------------------------------------------------------------------
 -- Initialization
 ---------------------------------------------------------------------------
 
@@ -70,7 +162,8 @@ local function load_wasm_nethack()
   end
 
   -- Create host import functions (pass instance_ref for invoke_* re-entrancy)
-  local imports = Bridge.create_imports(memory_ref, instance_ref)
+  local opts = {environ = build_nethack_environ()}
+  local imports = Bridge.create_imports(memory_ref, instance_ref, opts)
 
   -- Instantiate the WASM module
   local instance = WasmInterp.instantiate(module, imports, compiled_sources)
@@ -521,11 +614,23 @@ end
 local function on_player_changed_position(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
-  if not state.awaiting_input then return end
   if Input.is_processing() then return end
 
   local player = game.get_player(event.player_index)
   if not player then return end
+
+  -- While game is processing a turn, clamp player to current @ tile
+  if not state.awaiting_input then
+    local nh_pos = Display.get_player_pos()
+    local surface = Display.get_current_surface()
+    if nh_pos and surface then
+      local eps = 0.05
+      local tx = math.max(nh_pos.x + eps, math.min(nh_pos.x + 1 - eps, player.position.x))
+      local ty = math.max(nh_pos.y + eps, math.min(nh_pos.y + 1 - eps, player.position.y))
+      player.teleport({x = tx, y = ty}, surface)
+    end
+    return
+  end
 
   -- For non-getch prompts (yn, menu, getlin, plsel), block movement
   if state.input_type ~= "getch" then
@@ -793,6 +898,18 @@ local function on_tick(event)
   end
 
 end
+
+---------------------------------------------------------------------------
+-- Remote Interface (for console/MCP debugging)
+---------------------------------------------------------------------------
+
+remote.add_interface("nethack", {
+  get_storage = function() return storage end,
+  get_display = function() return storage.nh_display end,
+  get_bridge = function() return storage.nh_bridge end,
+  get_main = function() return storage.nh_main end,
+  get_input = function() return storage.nh_input end,
+})
 
 ---------------------------------------------------------------------------
 -- Lifecycle Events

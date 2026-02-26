@@ -236,7 +236,7 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
   -- NetHack 3.6.7's mapglyph() does NOT set MG_MONSTER in special flags,
   -- so we detect the player by character alone. The player's @ is always
   -- drawn last, so the final @ position is correct.
-  if ch == string.byte("@") then
+  if ch == string.byte("@") and not is_monster then
     disp.player_pos = {x = x, y = y}
     surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
     destroy_entity_at(level_name, x, y)

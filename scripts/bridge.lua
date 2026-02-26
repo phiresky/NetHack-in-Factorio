@@ -51,7 +51,7 @@ end
 -- Create the import table for the WASM instance
 -- Returns a table of { module.name = function(...) }
 -- Blocking imports return a special sentinel that tells the interpreter to pause
-function Bridge.create_imports(memory_ref, instance_ref)
+function Bridge.create_imports(memory_ref, instance_ref, opts)
   local imports = {}
 
   -- Immediate imports (execute and continue)
@@ -333,7 +333,7 @@ function Bridge.create_imports(memory_ref, instance_ref)
   end
 
   -- Add WASI runtime imports (filesystem, clock, environment)
-  Wasi.add_imports(imports, memory_ref, instance_ref)
+  Wasi.add_imports(imports, memory_ref, instance_ref, opts)
 
   return imports
 end
