@@ -290,14 +290,6 @@ end
 -- Code generator: walk decoded instructions, emit Lua source
 ---------------------------------------------------------------------------
 
--- Format a number literal for Lua source
-local function num_lit(v)
-    if v == 0 then return "0"
-    elseif v < 0 then return string.format("(%d)", v)
-    else return tostring(v)
-    end
-end
-
 -- Format u32 as hex if large, else decimal
 local function u32_lit(v)
     if v == 0 then return "0"
@@ -305,6 +297,215 @@ local function u32_lit(v)
     else return tostring(v)
     end
 end
+
+---------------------------------------------------------------------------
+-- Peephole: i32.const C + op → fold constant into single emit
+---------------------------------------------------------------------------
+local function nop0_u32(C) if C == 0 then return nil end; return u32_lit(C) end
+local function always_u32(C) return u32_lit(C) end
+local function shift31(C) local s = bit32.band(C, 31); if s == 0 then return nil end; return s end
+local function always_shift31(C) return bit32.band(C, 31) end
+local function signed_i32_lit(C)
+    local Cu = bit32.band(C, 0xFFFFFFFF)
+    if Cu >= 0x80000000 then return tostring(Cu - 0x100000000)
+    else return u32_lit(Cu) end
+end
+
+local const_fold = {
+    [0x6A] = {"stack[sp] = band(stack[sp] + %s, 0xFFFFFFFF)", nop0_u32},   -- i32.add
+    [0x6B] = {"stack[sp] = band(stack[sp] - %s, 0xFFFFFFFF)", nop0_u32},   -- i32.sub
+    [0x71] = {"stack[sp] = band(stack[sp], %s)", always_u32},               -- i32.and
+    [0x72] = {"stack[sp] = bor(stack[sp], %s)", nop0_u32},                  -- i32.or
+    [0x73] = {"stack[sp] = bxor(stack[sp], %s)", nop0_u32},                 -- i32.xor
+    [0x74] = {"stack[sp] = lshift(stack[sp], %d)", shift31},                -- i32.shl
+    [0x75] = {"stack[sp] = arshift(stack[sp], %d)", shift31},               -- i32.shr_s
+    [0x76] = {"stack[sp] = rshift(stack[sp], %d)", shift31},                -- i32.shr_u
+    [0x46] = {"stack[sp] = stack[sp] == %s and 1 or 0", always_u32},       -- i32.eq
+    [0x47] = {"stack[sp] = stack[sp] ~= %s and 1 or 0", always_u32},       -- i32.ne
+    [0x49] = {"stack[sp] = stack[sp] < %s and 1 or 0", always_u32},        -- i32.lt_u
+    [0x4B] = {"stack[sp] = stack[sp] > %s and 1 or 0", always_u32},        -- i32.gt_u
+    [0x4D] = {"stack[sp] = stack[sp] <= %s and 1 or 0", always_u32},       -- i32.le_u
+    [0x4F] = {"stack[sp] = stack[sp] >= %s and 1 or 0", always_u32},       -- i32.ge_u
+    [0x48] = {"do local __a = stack[sp]; stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) < %s) and 1 or 0 end", signed_i32_lit},   -- i32.lt_s
+    [0x4A] = {"do local __a = stack[sp]; stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) > %s) and 1 or 0 end", signed_i32_lit},   -- i32.gt_s
+    [0x4C] = {"do local __a = stack[sp]; stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) <= %s) and 1 or 0 end", signed_i32_lit},  -- i32.le_s
+    [0x4E] = {"do local __a = stack[sp]; stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) >= %s) and 1 or 0 end", signed_i32_lit},  -- i32.ge_s
+}
+
+-- Group 2: local.get X + i32.const C + binary op → fold into single push
+local local_const_fold = {
+    [0x6A] = {"sp = sp + 1; stack[sp] = band(loc[%d] + %s, 0xFFFFFFFF)", always_u32},   -- i32.add
+    [0x6B] = {"sp = sp + 1; stack[sp] = band(loc[%d] - %s, 0xFFFFFFFF)", always_u32},   -- i32.sub
+    [0x71] = {"sp = sp + 1; stack[sp] = band(loc[%d], %s)", always_u32},                 -- i32.and
+    [0x72] = {"sp = sp + 1; stack[sp] = bor(loc[%d], %s)", always_u32},                  -- i32.or
+    [0x74] = {"sp = sp + 1; stack[sp] = lshift(loc[%d], %d)", always_shift31},            -- i32.shl
+    [0x76] = {"sp = sp + 1; stack[sp] = rshift(loc[%d], %d)", always_shift31},            -- i32.shr_u
+    [0x46] = {"sp = sp + 1; stack[sp] = loc[%d] == %s and 1 or 0", always_u32},          -- i32.eq
+    [0x47] = {"sp = sp + 1; stack[sp] = loc[%d] ~= %s and 1 or 0", always_u32},          -- i32.ne
+}
+
+-- Group 4: i32.const C + cmp + br_if → fused conditional branch
+local cmp_branch_fold = {
+    [0x46] = {"__c == %s", always_u32},   -- i32.eq
+    [0x47] = {"__c ~= %s", always_u32},   -- i32.ne
+    [0x49] = {"__c < %s", always_u32},    -- i32.lt_u
+    [0x4B] = {"__c > %s", always_u32},    -- i32.gt_u
+    [0x4D] = {"__c <= %s", always_u32},   -- i32.le_u
+    [0x4F] = {"__c >= %s", always_u32},   -- i32.ge_u
+    [0x48] = {"((__c >= 0x80000000 and __c - 0x100000000 or __c) < %s)", signed_i32_lit},   -- i32.lt_s
+    [0x4A] = {"((__c >= 0x80000000 and __c - 0x100000000 or __c) > %s)", signed_i32_lit},   -- i32.gt_s
+    [0x4C] = {"((__c >= 0x80000000 and __c - 0x100000000 or __c) <= %s)", signed_i32_lit},  -- i32.le_s
+    [0x4E] = {"((__c >= 0x80000000 and __c - 0x100000000 or __c) >= %s)", signed_i32_lit},  -- i32.ge_s
+}
+
+---------------------------------------------------------------------------
+-- Table-driven opcode emission
+-- One flat map: opcode -> {type, param}, plus emitters: type -> function.
+-- Single lookup dispatches ~100 formulaic opcodes; the rest use custom logic.
+---------------------------------------------------------------------------
+
+local op_templates = {
+    unary     = "stack[sp] = %s(stack[sp])",
+    cmp_u     = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] %s __b and 1 or 0 end",
+    cmp_s     = "do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) %s (__b >= 0x80000000 and __b - 0x100000000 or __b)) and 1 or 0 end",
+    i64_cmp   = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.%s(stack[sp], __b) and 1 or 0 end",
+    float_eq  = "do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a == __b and 1 or 0) end",
+    float_ne  = "do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 1 or (__a ~= __b and 1 or 0) end",
+    float_ord = "do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a %s __b and 1 or 0) end",
+    binop_ctx = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.%s(stack[sp], __b) end",
+    f32_arith = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_trunc_val(stack[sp] %s __b) end",
+    f64_arith = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] %s __b end",
+    i32_bit   = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = %s(stack[sp], __b) end",
+    i32_shift = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = %s(stack[sp], band(__b, 31)) end",
+    i64_bit   = "do local __b = stack[sp]; sp = sp - 1; stack[sp] = {%s(stack[sp][1], __b[1]), %s(stack[sp][2], __b[2])} end",
+    i64_shift = "do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.%s(stack[sp], __s) end",
+    -- Locals/globals (param from instruction)
+    local_get  = "sp = sp + 1; stack[sp] = loc[%d]",
+    local_set  = "loc[%d] = stack[sp]; sp = sp - 1",
+    local_tee  = "loc[%d] = stack[sp]",
+    global_get = "sp = sp + 1; stack[sp] = globals[%d]",
+    global_set = "globals[%d] = stack[sp]; sp = sp - 1",
+    -- Constants (param from instruction)
+    i32_const  = "sp = sp + 1; stack[sp] = %s",
+    i64_const  = "sp = sp + 1; stack[sp] = {%s, %s}",
+    f32_const  = "sp = sp + 1; stack[sp] = ctx.f32_reinterpret(%s)",
+    f64_const  = "sp = sp + 1; stack[sp] = ctx.f64_reinterpret({%s, %s})",
+    -- Stack/misc (no param)
+    drop       = "sp = sp - 1",
+    select_op  = "do local __c = stack[sp]; sp = sp - 1; local __b = stack[sp]; sp = sp - 1; if __c == 0 then stack[sp] = __b end end",
+    i32_eqz    = "stack[sp] = stack[sp] == 0 and 1 or 0",
+    i64_eqz    = "stack[sp] = ctx.i64_eqz(stack[sp]) and 1 or 0",
+    mem_size   = "sp = sp + 1; stack[sp] = mem:size()",
+    mem_grow   = "stack[sp] = mem:grow(stack[sp])",
+    -- Conversions (no param, unique patterns)
+    i32_wrap      = "do local __v = stack[sp]; stack[sp] = type(__v) == 'table' and __v[1] or band(__v, 0xFFFFFFFF) end",
+    i64_extend_s  = "do local __v = stack[sp]; __v = type(__v) == 'table' and __v[1] or __v; stack[sp] = {__v, bit32.btest(__v, 0x80000000) and 0xFFFFFFFF or 0} end",
+    i64_extend_u  = "do local __v = stack[sp]; __v = type(__v) == 'table' and __v[1] or __v; stack[sp] = {__v, 0} end",
+    f64_conv_s    = "do local __v = stack[sp]; __v = __v >= 0x80000000 and __v - 0x100000000 or __v; stack[sp] = __v + 0.0 end",
+    f64_conv_u    = "stack[sp] = stack[sp] + 0.0",
+    f64_promote   = "do local __v = stack[sp]; if ctx.isnan(__v) then stack[sp] = 0/0 end end",
+    i32_ext8_s    = "do local __v = band(stack[sp], 0xFF); if __v >= 0x80 then __v = __v - 0x100 end; if __v < 0 then __v = __v + 0x100000000 end; stack[sp] = __v end",
+    i32_ext16_s   = "do local __v = band(stack[sp], 0xFFFF); if __v >= 0x8000 then __v = __v - 0x10000 end; if __v < 0 then __v = __v + 0x100000000 end; stack[sp] = __v end",
+}
+
+local op_table = {
+    -- Locals/globals (param from instruction)
+    [0x20] = {"local_get", function(i) return i.idx end},
+    [0x21] = {"local_set", function(i) return i.idx end},
+    [0x22] = {"local_tee", function(i) return i.idx end},
+    [0x23] = {"global_get", function(i) return i.idx end},
+    [0x24] = {"global_set", function(i) return i.idx end},
+    -- Constants (param from instruction)
+    [0x41] = {"i32_const", function(i) return u32_lit(i.value) end},
+    [0x42] = {"i64_const", function(i) return u32_lit(i.lo), u32_lit(i.hi) end},
+    [0x43] = {"f32_const", function(i) return u32_lit(i.bits) end},
+    [0x44] = {"f64_const", function(i) return u32_lit(i.lo), u32_lit(i.hi) end},
+    -- Stack/misc
+    [0x1A] = {"drop"}, [0x1B] = {"select_op"},
+    [0x45] = {"i32_eqz"}, [0x50] = {"i64_eqz"},
+    [0x3F] = {"mem_size"}, [0x40] = {"mem_grow"},
+    -- Conversions (unique patterns, no param)
+    [0xA7] = {"i32_wrap"},
+    [0xAC] = {"i64_extend_s"}, [0xAD] = {"i64_extend_u"},
+    [0xB7] = {"f64_conv_s"}, [0xB8] = {"f64_conv_u"},
+    [0xBB] = {"f64_promote"},
+    [0xC0] = {"i32_ext8_s"}, [0xC1] = {"i32_ext16_s"},
+    -- i32 comparison
+    [0x46] = {"cmp_u", "=="}, [0x47] = {"cmp_u", "~="},
+    [0x48] = {"cmp_s", "<"},  [0x49] = {"cmp_u", "<"},
+    [0x4A] = {"cmp_s", ">"},  [0x4B] = {"cmp_u", ">"},
+    [0x4C] = {"cmp_s", "<="}, [0x4D] = {"cmp_u", "<="},
+    [0x4E] = {"cmp_s", ">="}, [0x4F] = {"cmp_u", ">="},
+    -- i64 comparison
+    [0x51] = {"i64_cmp", "i64_eq"},   [0x52] = {"i64_cmp", "i64_ne"},
+    [0x53] = {"i64_cmp", "i64_lt_s"}, [0x54] = {"i64_cmp", "i64_lt_u"},
+    [0x55] = {"i64_cmp", "i64_gt_s"}, [0x56] = {"i64_cmp", "i64_gt_u"},
+    [0x57] = {"i64_cmp", "i64_le_s"}, [0x58] = {"i64_cmp", "i64_le_u"},
+    [0x59] = {"i64_cmp", "i64_ge_s"}, [0x5A] = {"i64_cmp", "i64_ge_u"},
+    -- f32 comparison
+    [0x5B] = {"float_eq"}, [0x5C] = {"float_ne"},
+    [0x5D] = {"cmp_u", "<"},          [0x5E] = {"cmp_u", ">"},
+    [0x5F] = {"float_ord", "<="},     [0x60] = {"float_ord", ">="},
+    -- f64 comparison
+    [0x61] = {"float_eq"}, [0x62] = {"float_ne"},
+    [0x63] = {"cmp_u", "<"},          [0x64] = {"cmp_u", ">"},
+    [0x65] = {"float_ord", "<="},     [0x66] = {"float_ord", ">="},
+    -- i32 unary
+    [0x67] = {"unary", "ctx.i32_clz"}, [0x68] = {"unary", "ctx.i32_ctz"},
+    [0x69] = {"unary", "ctx.i32_popcnt"},
+    -- i32 bitwise / shift
+    [0x71] = {"i32_bit", "band"}, [0x72] = {"i32_bit", "bor"}, [0x73] = {"i32_bit", "bxor"},
+    [0x74] = {"i32_shift", "lshift"}, [0x75] = {"i32_shift", "arshift"},
+    [0x76] = {"i32_shift", "rshift"},
+    [0x77] = {"i32_shift", "bit32.lrotate"}, [0x78] = {"i32_shift", "bit32.rrotate"},
+    -- i64 unary
+    [0x79] = {"unary", "ctx.i64_clz"}, [0x7A] = {"unary", "ctx.i64_ctz"},
+    [0x7B] = {"unary", "ctx.i64_popcnt"},
+    -- i64 arithmetic
+    [0x7C] = {"binop_ctx", "i64_add"}, [0x7D] = {"binop_ctx", "i64_sub"},
+    [0x7E] = {"binop_ctx", "i64_mul"}, [0x7F] = {"binop_ctx", "i64_div_s"},
+    [0x80] = {"binop_ctx", "i64_div_u"}, [0x81] = {"binop_ctx", "i64_rem_s"},
+    [0x82] = {"binop_ctx", "i64_rem_u"},
+    -- i64 bitwise / shift
+    [0x83] = {"i64_bit", "band"}, [0x84] = {"i64_bit", "bor"}, [0x85] = {"i64_bit", "bxor"},
+    [0x86] = {"i64_shift", "i64_shl"}, [0x87] = {"i64_shift", "i64_shr_s"},
+    [0x88] = {"i64_shift", "i64_shr_u"},
+    [0x89] = {"i64_shift", "i64_rotl"}, [0x8A] = {"i64_shift", "i64_rotr"},
+    -- f32 unary
+    [0x8B] = {"unary", "ctx.f32_abs"},  [0x8C] = {"unary", "ctx.f32_neg"},
+    [0x8D] = {"unary", "ctx.f32_ceil"}, [0x8E] = {"unary", "ctx.f32_floor"},
+    [0x8F] = {"unary", "ctx.f32_trunc"}, [0x90] = {"unary", "ctx.f32_nearest"},
+    [0x91] = {"unary", "ctx.f32_sqrt"},
+    -- f32 arithmetic
+    [0x92] = {"f32_arith", "+"}, [0x93] = {"f32_arith", "-"},
+    [0x94] = {"f32_arith", "*"}, [0x95] = {"f32_arith", "/"},
+    [0x96] = {"binop_ctx", "f32_min"}, [0x97] = {"binop_ctx", "f32_max"},
+    [0x98] = {"binop_ctx", "f32_copysign"},
+    -- f64 unary
+    [0x99] = {"unary", "ctx.f64_abs"},  [0x9A] = {"unary", "ctx.f64_neg"},
+    [0x9B] = {"unary", "ctx.f64_ceil"}, [0x9C] = {"unary", "ctx.f64_floor"},
+    [0x9D] = {"unary", "ctx.f64_trunc"}, [0x9E] = {"unary", "ctx.f64_nearest"},
+    [0x9F] = {"unary", "ctx.f64_sqrt"},
+    -- f64 arithmetic
+    [0xA0] = {"f64_arith", "+"}, [0xA1] = {"f64_arith", "-"},
+    [0xA2] = {"f64_arith", "*"}, [0xA3] = {"f64_arith", "/"},
+    [0xA4] = {"binop_ctx", "f64_min"}, [0xA5] = {"binop_ctx", "f64_max"},
+    [0xA6] = {"binop_ctx", "f64_copysign"},
+    -- conversions (simple delegates)
+    [0xA8] = {"unary", "ctx.i32_trunc_f32_s"}, [0xA9] = {"unary", "ctx.i32_trunc_f32_u"},
+    [0xAA] = {"unary", "ctx.i32_trunc_f64_s"}, [0xAB] = {"unary", "ctx.i32_trunc_f64_u"},
+    [0xAE] = {"unary", "ctx.i64_trunc_f32_s"}, [0xAF] = {"unary", "ctx.i64_trunc_f32_u"},
+    [0xB0] = {"unary", "ctx.i64_trunc_f64_s"}, [0xB1] = {"unary", "ctx.i64_trunc_f64_u"},
+    [0xB2] = {"unary", "ctx.f32_convert_i32_s"}, [0xB3] = {"unary", "ctx.f32_convert_i32_u"},
+    [0xB4] = {"unary", "ctx.f32_convert_i64_s"}, [0xB5] = {"unary", "ctx.f32_convert_i64_u"},
+    [0xB6] = {"unary", "ctx.f32_demote_f64"},
+    [0xB9] = {"unary", "ctx.f64_convert_i64_s"}, [0xBA] = {"unary", "ctx.f64_convert_i64_u"},
+    [0xBC] = {"unary", "ctx.i32_reinterpret_f32"}, [0xBD] = {"unary", "ctx.i64_reinterpret_f64"},
+    [0xBE] = {"unary", "ctx.f32_reinterpret"}, [0xBF] = {"unary", "ctx.f64_reinterpret"},
+    -- sign extension (i64 delegates)
+    [0xC2] = {"unary", "ctx.i64_extend8_s"}, [0xC3] = {"unary", "ctx.i64_extend16_s"},
+    [0xC4] = {"unary", "ctx.i64_extend32_s"},
+}
 
 -- The source generator
 -- Emits Lua source code for a single WASM function.
@@ -445,28 +646,43 @@ local function generate_source(func_idx, func_def, module)
         end
     end
 
-    -- Helper: emit conditional branch (shared by br_if and peephole fusions)
+    -- Helper: emit the branch-to-target part (goto/return), shared by branch emitters
+    -- cond_expr: Lua condition string, indent: prefix for lines inside the if
+    local function emit_branch_body(target, cond_expr, indent)
+        indent = indent or "  "
+        if target.type == "func" then
+            emit(indent .. "if " .. cond_expr .. " then ctx.call_target = nil; return sp end")
+        else
+            local arity = target.branch_arity or target.n_results or 0
+            emit(indent .. "if " .. cond_expr .. " then")
+            if target.stack_base_var then
+                emit_branch_adjust(target.stack_base_var, arity)
+            end
+            if target.type == "loop" then
+                emit(indent .. "  goto L_" .. target.label_id)
+            else
+                emit(indent .. "  goto B_" .. target.label_id)
+            end
+            emit(indent .. "end")
+        end
+    end
+
+    -- Helper: emit conditional branch that pops stack (br_if and peephole fusions)
     -- cond_expr: Lua expression string referencing __c (e.g. "__c ~= 0", "__c == 0")
     local function emit_cond_branch(depth, cond_expr)
         local target = get_branch_target(depth)
         if not target then return end
         emit("do local __c = stack[sp]; sp = sp - 1")
-        if target.type == "func" then
-            emit("  if " .. cond_expr .. " then ctx.call_target = nil; return sp end")
-        else
-            local arity = target.branch_arity or target.n_results or 0
-            emit("  if " .. cond_expr .. " then")
-            if target.stack_base_var then
-                emit_branch_adjust(target.stack_base_var, arity)
-            end
-            if target.type == "loop" then
-                emit("    goto L_" .. target.label_id)
-            else
-                emit("    goto B_" .. target.label_id)
-            end
-            emit("  end")
-        end
+        emit_branch_body(target, cond_expr, "  ")
         emit("end")
+    end
+
+    -- Helper: emit conditional branch WITHOUT popping stack (for fused patterns
+    -- where push+pop cancel out, e.g. local.get + eqz + br_if)
+    local function emit_cond_branch_nopop(depth, cond_expr)
+        local target = get_branch_target(depth)
+        if not target then return end
+        emit_branch_body(target, cond_expr, "")
     end
 
     -- Process each instruction
@@ -485,50 +701,10 @@ local function generate_source(func_idx, func_def, module)
             local ni = instrs[i+1]
             local nop = ni.op
 
-            if nop == 0x6A then -- i32.const C + i32.add
-                if C ~= 0 then emit(string.format("stack[sp] = band(stack[sp] + %s, 0xFFFFFFFF)", u32_lit(C))) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x6B then -- i32.const C + i32.sub (A - C)
-                if C ~= 0 then emit(string.format("stack[sp] = band(stack[sp] - %s, 0xFFFFFFFF)", u32_lit(C))) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x71 then -- i32.const C + i32.and
-                emit(string.format("stack[sp] = band(stack[sp], %s)", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x72 then -- i32.const C + i32.or
-                if C ~= 0 then emit(string.format("stack[sp] = bor(stack[sp], %s)", u32_lit(C))) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x73 then -- i32.const C + i32.xor
-                if C ~= 0 then emit(string.format("stack[sp] = bxor(stack[sp], %s)", u32_lit(C))) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x74 then -- i32.const C + i32.shl
-                local s = bit32.band(C, 31)
-                if s ~= 0 then emit(string.format("stack[sp] = lshift(stack[sp], %d)", s)) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x75 then -- i32.const C + i32.shr_s
-                local s = bit32.band(C, 31)
-                if s ~= 0 then emit(string.format("stack[sp] = arshift(stack[sp], %d)", s)) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x76 then -- i32.const C + i32.shr_u
-                local s = bit32.band(C, 31)
-                if s ~= 0 then emit(string.format("stack[sp] = rshift(stack[sp], %d)", s)) end
-                i = i + 2; goto continue_loop
-            elseif nop == 0x46 then -- i32.const C + i32.eq
-                emit(string.format("stack[sp] = stack[sp] == %s and 1 or 0", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x47 then -- i32.const C + i32.ne
-                emit(string.format("stack[sp] = stack[sp] ~= %s and 1 or 0", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x49 then -- i32.const C + i32.lt_u
-                emit(string.format("stack[sp] = stack[sp] < %s and 1 or 0", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x4B then -- i32.const C + i32.gt_u
-                emit(string.format("stack[sp] = stack[sp] > %s and 1 or 0", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x4D then -- i32.const C + i32.le_u
-                emit(string.format("stack[sp] = stack[sp] <= %s and 1 or 0", u32_lit(C)))
-                i = i + 2; goto continue_loop
-            elseif nop == 0x4F then -- i32.const C + i32.ge_u
-                emit(string.format("stack[sp] = stack[sp] >= %s and 1 or 0", u32_lit(C)))
+            local fold = const_fold[nop]
+            if fold then
+                local val = fold[2](C)
+                if val ~= nil then emit(string.format(fold[1], val)) end
                 i = i + 2; goto continue_loop
             elseif nop == 0x28 then -- i32.const C + i32.load
                 local addr = C + ni.offset
@@ -550,6 +726,51 @@ local function generate_source(func_idx, func_def, module)
                 emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
                 emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
                 i = i + 2; goto continue_loop
+            elseif nop == 0x2C then -- i32.const C + i32.load8_s
+                local addr = C + ni.offset
+                emit("sp = sp + 1")
+                emit(string.format("do local __addr = %s", u32_lit(addr)))
+                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  local __v = mem:load_i8_s(__addr)")
+                emit("  if __v < 0 then __v = __v + 0x100000000 end")
+                emit("  stack[sp] = __v end")
+                i = i + 2; goto continue_loop
+            elseif nop == 0x6C then -- i32.const C + i32.mul
+                local Cu = bit32.band(C, 0xFFFFFFFF)
+                if Cu == 0 then
+                    emit("stack[sp] = 0")
+                elseif Cu <= 0xFFFF then
+                    emit(string.format("stack[sp] = band(stack[sp] * %d, 0xFFFFFFFF)", Cu))
+                else
+                    local c_lo = bit32.band(Cu, 0xFFFF)
+                    local c_hi = bit32.rshift(Cu, 16)
+                    emit(string.format("do local __a = stack[sp]; local __al = band(__a, 0xFFFF); stack[sp] = band(__al * %d + (__al * %d + rshift(__a, 16) * %d) * 65536, 0xFFFFFFFF) end",
+                        c_lo, c_hi, c_lo))
+                end
+                i = i + 2; goto continue_loop
+            elseif nop == 0x36 then -- i32.const C + i32.store (store constant value)
+                local off = ni.offset
+                local Cv = bit32.band(C, 0xFFFFFFFF)
+                emit(string.format("do local __addr = stack[sp]%s", off ~= 0 and (" + " .. off) or ""))
+                emit("  sp = sp - 1")
+                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit(string.format("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = %s", u32_lit(Cv)))
+                emit(string.format("  else mem:store_i32(__addr, %s) end end", u32_lit(Cv)))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x3A then -- i32.const C + i32.store8 (store constant byte)
+                local off = ni.offset
+                local byte_val = bit32.band(C, 0xFF)
+                emit(string.format("do local __addr = stack[sp]%s", off ~= 0 and (" + " .. off) or ""))
+                emit("  sp = sp - 1")
+                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
+                emit("  local __sh = __bo * 8; local __mask = bnot(lshift(0xFF, __sh))")
+                emit("  local __w = mem.data[__wi] or 0")
+                emit(string.format("  mem.data[__wi] = bor(band(__w, __mask), lshift(%d, __sh)) end", byte_val))
+                i = i + 2; goto continue_loop
+            elseif nop == 0x21 then -- i32.const C + local.set
+                emit(string.format("loc[%d] = %s", ni.idx, u32_lit(bit32.band(C, 0xFFFFFFFF))))
+                i = i + 2; goto continue_loop
             end
         end
 
@@ -560,32 +781,59 @@ local function generate_source(func_idx, func_def, module)
             local n2 = instrs[i+2]
             local nop2 = n2.op
 
-            if nop2 == 0x6A then -- local.get + i32.const + i32.add
-                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d] + %s, 0xFFFFFFFF)", X, u32_lit(C)))
+            local fold = local_const_fold[nop2]
+            if fold then
+                emit(string.format(fold[1], X, fold[2](C)))
                 i = i + 3; goto continue_loop
-            elseif nop2 == 0x6B then -- local.get + i32.const + i32.sub
-                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d] - %s, 0xFFFFFFFF)", X, u32_lit(C)))
-                i = i + 3; goto continue_loop
-            elseif nop2 == 0x71 then -- local.get + i32.const + i32.and
-                emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d], %s)", X, u32_lit(C)))
-                i = i + 3; goto continue_loop
-            elseif nop2 == 0x72 then -- local.get + i32.const + i32.or
-                emit(string.format("sp = sp + 1; stack[sp] = bor(loc[%d], %s)", X, u32_lit(C)))
-                i = i + 3; goto continue_loop
-            elseif nop2 == 0x74 then -- local.get + i32.const + i32.shl
-                emit(string.format("sp = sp + 1; stack[sp] = lshift(loc[%d], %d)", X, bit32.band(C, 31)))
-                i = i + 3; goto continue_loop
-            elseif nop2 == 0x76 then -- local.get + i32.const + i32.shr_u
-                emit(string.format("sp = sp + 1; stack[sp] = rshift(loc[%d], %d)", X, bit32.band(C, 31)))
+            elseif nop2 == 0x6C then -- local.get + i32.const + i32.mul
+                local Cu = bit32.band(C, 0xFFFFFFFF)
+                if Cu == 0 then
+                    emit(string.format("sp = sp + 1; stack[sp] = 0"))
+                elseif Cu <= 0xFFFF then
+                    emit(string.format("sp = sp + 1; stack[sp] = band(loc[%d] * %d, 0xFFFFFFFF)", X, Cu))
+                else
+                    local c_lo = bit32.band(Cu, 0xFFFF)
+                    local c_hi = bit32.rshift(Cu, 16)
+                    emit(string.format("do sp = sp + 1; local __a = loc[%d]; local __al = band(__a, 0xFFFF); stack[sp] = band(__al * %d + (__al * %d + rshift(__a, 16) * %d) * 65536, 0xFFFFFFFF) end",
+                        X, c_lo, c_hi, c_lo))
+                end
                 i = i + 3; goto continue_loop
             end
         end
 
-        -- Group 3: local.get X + memory load → direct load from local
+        -- Group 3: local.get X + ...
         if op == 0x20 and i + 1 <= n_instrs then
             local X = instr.idx
             local ni = instrs[i+1]
             local nop = ni.op
+
+            -- 3-instruction: local.get X + i32.eqz + br_if → direct branch on local
+            if nop == 0x45 and i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
+                emit_cond_branch_nopop(instrs[i+2].depth, string.format("loc[%d] == 0", X))
+                i = i + 3; goto continue_loop
+            end
+
+            -- 3-instruction: local.get A + local.get B + i32.store → direct store
+            if nop == 0x20 and i + 2 <= n_instrs and instrs[i+2].op == 0x36 then
+                local B = ni.idx
+                local off = instrs[i+2].offset
+                if off == 0 then
+                    emit(string.format("do local __addr = loc[%d]", X))
+                else
+                    emit(string.format("do local __addr = loc[%d] + %d", X, off))
+                end
+                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit(string.format("  local __v = band(loc[%d], 0xFFFFFFFF)", B))
+                emit("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = __v")
+                emit("  else mem:store_i32(__addr, __v) end end")
+                i = i + 3; goto continue_loop
+            end
+
+            -- local.get X + local.set Y → direct copy
+            if nop == 0x21 then
+                emit(string.format("loc[%d] = loc[%d]", ni.idx, X))
+                i = i + 2; goto continue_loop
+            end
 
             if nop == 0x28 then -- local.get + i32.load
                 local off = ni.offset
@@ -672,11 +920,9 @@ local function generate_source(func_idx, func_def, module)
             local ni1 = instrs[i+1]
             local ni2 = instrs[i+2]
             if ni2.op == 0x0D then -- ... + br_if
-                if ni1.op == 0x47 then -- i32.const C + i32.ne + br_if
-                    emit_cond_branch(ni2.depth, string.format("__c ~= %s", u32_lit(C)))
-                    i = i + 3; goto continue_loop
-                elseif ni1.op == 0x46 then -- i32.const C + i32.eq + br_if
-                    emit_cond_branch(ni2.depth, string.format("__c == %s", u32_lit(C)))
+                local fold = cmp_branch_fold[ni1.op]
+                if fold then
+                    emit_cond_branch(ni2.depth, string.format(fold[1], fold[2](C)))
                     i = i + 3; goto continue_loop
                 end
             end
@@ -896,93 +1142,16 @@ local function generate_source(func_idx, func_def, module)
                 emit(sb_var .. " = sp")
             end
 
-        -- Locals
-        elseif op == 0x20 then -- local.get
-            emit(string.format("sp = sp + 1; stack[sp] = loc[%d]", instr.idx))
+        -- Table-driven opcode emission
+        elseif op_table[op] then
+            local entry = op_table[op]
+            local tmpl = op_templates[entry[1]]
+            local p = entry[2]
+            if not p then emit(tmpl)
+            elseif type(p) == "function" then emit(string.format(tmpl, p(instr)))
+            else emit(string.format(tmpl, p, p)) end
 
-        elseif op == 0x21 then -- local.set
-            emit(string.format("loc[%d] = stack[sp]; sp = sp - 1", instr.idx))
-
-        elseif op == 0x22 then -- local.tee
-            emit(string.format("loc[%d] = stack[sp]", instr.idx))
-
-        -- Globals
-        elseif op == 0x23 then -- global.get
-            emit(string.format("sp = sp + 1; stack[sp] = globals[%d]", instr.idx))
-
-        elseif op == 0x24 then -- global.set
-            emit(string.format("globals[%d] = stack[sp]; sp = sp - 1", instr.idx))
-
-        -- Constants
-        elseif op == 0x41 then -- i32.const
-            emit(string.format("sp = sp + 1; stack[sp] = %s", u32_lit(instr.value)))
-
-        elseif op == 0x42 then -- i64.const
-            emit(string.format("sp = sp + 1; stack[sp] = {%s, %s}", u32_lit(instr.lo), u32_lit(instr.hi)))
-
-        elseif op == 0x43 then -- f32.const
-            emit(string.format("sp = sp + 1; stack[sp] = ctx.f32_reinterpret(%s)", u32_lit(instr.bits)))
-
-        elseif op == 0x44 then -- f64.const
-            emit(string.format("sp = sp + 1; stack[sp] = ctx.f64_reinterpret({%s, %s})", u32_lit(instr.lo), u32_lit(instr.hi)))
-
-        -- Stack ops
-        elseif op == 0x1A then -- drop
-            emit("sp = sp - 1")
-
-        elseif op == 0x1B then -- select
-            emit("do local __c = stack[sp]; sp = sp - 1; local __b = stack[sp]; sp = sp - 1")
-            emit("  if __c == 0 then stack[sp] = __b end")
-            emit("end")
-
-        -- i32 comparison
-        elseif op == 0x45 then -- i32.eqz
-            emit("stack[sp] = stack[sp] == 0 and 1 or 0")
-
-        elseif op == 0x46 then -- i32.eq
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] == __b and 1 or 0 end")
-
-        elseif op == 0x47 then -- i32.ne
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] ~= __b and 1 or 0 end")
-
-        elseif op == 0x48 then -- i32.lt_s
-            emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]")
-            emit("  stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) < (__b >= 0x80000000 and __b - 0x100000000 or __b)) and 1 or 0 end")
-
-        elseif op == 0x49 then -- i32.lt_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] < __b and 1 or 0 end")
-
-        elseif op == 0x4A then -- i32.gt_s
-            emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]")
-            emit("  stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) > (__b >= 0x80000000 and __b - 0x100000000 or __b)) and 1 or 0 end")
-
-        elseif op == 0x4B then -- i32.gt_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] > __b and 1 or 0 end")
-
-        elseif op == 0x4C then -- i32.le_s
-            emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]")
-            emit("  stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) <= (__b >= 0x80000000 and __b - 0x100000000 or __b)) and 1 or 0 end")
-
-        elseif op == 0x4D then -- i32.le_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] <= __b and 1 or 0 end")
-
-        elseif op == 0x4E then -- i32.ge_s
-            emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]")
-            emit("  stack[sp] = ((__a >= 0x80000000 and __a - 0x100000000 or __a) >= (__b >= 0x80000000 and __b - 0x100000000 or __b)) and 1 or 0 end")
-
-        elseif op == 0x4F then -- i32.ge_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] >= __b and 1 or 0 end")
-
-        -- i32 arithmetic
-        elseif op == 0x67 then -- i32.clz
-            emit("stack[sp] = ctx.i32_clz(stack[sp])")
-
-        elseif op == 0x68 then -- i32.ctz
-            emit("stack[sp] = ctx.i32_ctz(stack[sp])")
-
-        elseif op == 0x69 then -- i32.popcnt
-            emit("stack[sp] = ctx.i32_popcnt(stack[sp])")
-
+        -- Custom opcodes (unique logic, not table-drivable)
         elseif op == 0x6A then -- i32.add
             emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = band(stack[sp] + __b, 0xFFFFFFFF) end")
 
@@ -1024,30 +1193,6 @@ local function generate_source(func_idx, func_def, module)
             emit("do local __b = stack[sp]; sp = sp - 1")
             emit("  if __b == 0 then error({msg='integer divide by zero'}) end")
             emit("  stack[sp] = stack[sp] % __b end")
-
-        elseif op == 0x71 then -- i32.and
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = band(stack[sp], __b) end")
-
-        elseif op == 0x72 then -- i32.or
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = bor(stack[sp], __b) end")
-
-        elseif op == 0x73 then -- i32.xor
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = bxor(stack[sp], __b) end")
-
-        elseif op == 0x74 then -- i32.shl
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = lshift(stack[sp], band(__b, 31)) end")
-
-        elseif op == 0x75 then -- i32.shr_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = arshift(stack[sp], band(__b, 31)) end")
-
-        elseif op == 0x76 then -- i32.shr_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = rshift(stack[sp], band(__b, 31)) end")
-
-        elseif op == 0x77 then -- i32.rotl
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = bit32.lrotate(stack[sp], band(__b, 31)) end")
-
-        elseif op == 0x78 then -- i32.rotr
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = bit32.rrotate(stack[sp], band(__b, 31)) end")
 
         -- Memory load ops
         elseif op == 0x28 then -- i32.load
@@ -1175,166 +1320,6 @@ local function generate_source(func_idx, func_def, module)
         elseif op == 0x3E then -- i64.store32
             emit(string.format("do local __v = stack[sp]; sp = sp - 1; local __addr = stack[sp] + %d; sp = sp - 1", instr.offset))
             emit("  local __wv = type(__v) == 'table' and __v[1] or band(__v, 0xFFFFFFFF); mem:store_i32(__addr, __wv) end")
-
-        -- Memory size/grow
-        elseif op == 0x3F then -- memory.size
-            emit("sp = sp + 1; stack[sp] = mem:size()")
-
-        elseif op == 0x40 then -- memory.grow
-            emit("stack[sp] = mem:grow(stack[sp])")
-
-        -- i64 comparison ops (delegate to ctx helpers)
-        elseif op == 0x50 then -- i64.eqz
-            emit("stack[sp] = ctx.i64_eqz(stack[sp]) and 1 or 0")
-        elseif op == 0x51 then -- i64.eq
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_eq(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x52 then -- i64.ne
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_ne(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x53 then -- i64.lt_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_lt_s(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x54 then -- i64.lt_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_lt_u(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x55 then -- i64.gt_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_gt_s(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x56 then -- i64.gt_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_gt_u(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x57 then -- i64.le_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_le_s(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x58 then -- i64.le_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_le_u(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x59 then -- i64.ge_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_ge_s(stack[sp], __b) and 1 or 0 end")
-        elseif op == 0x5A then -- i64.ge_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_ge_u(stack[sp], __b) and 1 or 0 end")
-
-        -- i64 arithmetic (delegate to ctx helpers)
-        elseif op == 0x79 then emit("stack[sp] = ctx.i64_clz(stack[sp])")
-        elseif op == 0x7A then emit("stack[sp] = ctx.i64_ctz(stack[sp])")
-        elseif op == 0x7B then emit("stack[sp] = ctx.i64_popcnt(stack[sp])")
-        elseif op == 0x7C then -- i64.add
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_add(stack[sp], __b) end")
-        elseif op == 0x7D then -- i64.sub
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_sub(stack[sp], __b) end")
-        elseif op == 0x7E then -- i64.mul
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_mul(stack[sp], __b) end")
-        elseif op == 0x7F then -- i64.div_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_div_s(stack[sp], __b) end")
-        elseif op == 0x80 then -- i64.div_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_div_u(stack[sp], __b) end")
-        elseif op == 0x81 then -- i64.rem_s
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_rem_s(stack[sp], __b) end")
-        elseif op == 0x82 then -- i64.rem_u
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.i64_rem_u(stack[sp], __b) end")
-        elseif op == 0x83 then -- i64.and
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = {band(stack[sp][1], __b[1]), band(stack[sp][2], __b[2])} end")
-        elseif op == 0x84 then -- i64.or
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = {bor(stack[sp][1], __b[1]), bor(stack[sp][2], __b[2])} end")
-        elseif op == 0x85 then -- i64.xor
-            emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = {bxor(stack[sp][1], __b[1]), bxor(stack[sp][2], __b[2])} end")
-        elseif op == 0x86 then -- i64.shl
-            emit("do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.i64_shl(stack[sp], __s) end")
-        elseif op == 0x87 then -- i64.shr_s
-            emit("do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.i64_shr_s(stack[sp], __s) end")
-        elseif op == 0x88 then -- i64.shr_u
-            emit("do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.i64_shr_u(stack[sp], __s) end")
-        elseif op == 0x89 then -- i64.rotl
-            emit("do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.i64_rotl(stack[sp], __s) end")
-        elseif op == 0x8A then -- i64.rotr
-            emit("do local __b = stack[sp]; sp = sp - 1; local __s = type(__b) == 'table' and __b[1] or __b; stack[sp] = ctx.i64_rotr(stack[sp], __s) end")
-
-        -- f32 comparison ops
-        elseif op == 0x5B then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a == __b and 1 or 0) end")
-        elseif op == 0x5C then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 1 or (__a ~= __b and 1 or 0) end")
-        elseif op == 0x5D then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] < __b and 1 or 0 end")
-        elseif op == 0x5E then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] > __b and 1 or 0 end")
-        elseif op == 0x5F then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a <= __b and 1 or 0) end")
-        elseif op == 0x60 then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a >= __b and 1 or 0) end")
-
-        -- f64 comparison ops
-        elseif op == 0x61 then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a == __b and 1 or 0) end")
-        elseif op == 0x62 then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 1 or (__a ~= __b and 1 or 0) end")
-        elseif op == 0x63 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] < __b and 1 or 0 end")
-        elseif op == 0x64 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] > __b and 1 or 0 end")
-        elseif op == 0x65 then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a <= __b and 1 or 0) end")
-        elseif op == 0x66 then emit("do local __b = stack[sp]; sp = sp - 1; local __a = stack[sp]; stack[sp] = (ctx.isnan(__a) or ctx.isnan(__b)) and 0 or (__a >= __b and 1 or 0) end")
-
-        -- f32 arithmetic (delegate to ctx helpers)
-        elseif op == 0x8B then emit("stack[sp] = ctx.f32_abs(stack[sp])")
-        elseif op == 0x8C then emit("stack[sp] = ctx.f32_neg(stack[sp])")
-        elseif op == 0x8D then emit("stack[sp] = ctx.f32_ceil(stack[sp])")
-        elseif op == 0x8E then emit("stack[sp] = ctx.f32_floor(stack[sp])")
-        elseif op == 0x8F then emit("stack[sp] = ctx.f32_trunc(stack[sp])")
-        elseif op == 0x90 then emit("stack[sp] = ctx.f32_nearest(stack[sp])")
-        elseif op == 0x91 then emit("stack[sp] = ctx.f32_sqrt(stack[sp])")
-        elseif op == 0x92 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_trunc_val(stack[sp] + __b) end")
-        elseif op == 0x93 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_trunc_val(stack[sp] - __b) end")
-        elseif op == 0x94 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_trunc_val(stack[sp] * __b) end")
-        elseif op == 0x95 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_trunc_val(stack[sp] / __b) end")
-        elseif op == 0x96 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_min(stack[sp], __b) end")
-        elseif op == 0x97 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_max(stack[sp], __b) end")
-        elseif op == 0x98 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f32_copysign(stack[sp], __b) end")
-
-        -- f64 arithmetic (delegate to ctx helpers)
-        elseif op == 0x99 then emit("stack[sp] = ctx.f64_abs(stack[sp])")
-        elseif op == 0x9A then emit("stack[sp] = ctx.f64_neg(stack[sp])")
-        elseif op == 0x9B then emit("stack[sp] = ctx.f64_ceil(stack[sp])")
-        elseif op == 0x9C then emit("stack[sp] = ctx.f64_floor(stack[sp])")
-        elseif op == 0x9D then emit("stack[sp] = ctx.f64_trunc(stack[sp])")
-        elseif op == 0x9E then emit("stack[sp] = ctx.f64_nearest(stack[sp])")
-        elseif op == 0x9F then emit("stack[sp] = ctx.f64_sqrt(stack[sp])")
-        elseif op == 0xA0 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] + __b end")
-        elseif op == 0xA1 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] - __b end")
-        elseif op == 0xA2 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] * __b end")
-        elseif op == 0xA3 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = stack[sp] / __b end")
-        elseif op == 0xA4 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f64_min(stack[sp], __b) end")
-        elseif op == 0xA5 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f64_max(stack[sp], __b) end")
-        elseif op == 0xA6 then emit("do local __b = stack[sp]; sp = sp - 1; stack[sp] = ctx.f64_copysign(stack[sp], __b) end")
-
-        -- Conversion ops (delegate to ctx helpers)
-        elseif op == 0xA7 then -- i32.wrap_i64
-            emit("do local __v = stack[sp]; stack[sp] = type(__v) == 'table' and __v[1] or band(__v, 0xFFFFFFFF) end")
-        elseif op == 0xA8 then emit("stack[sp] = ctx.i32_trunc_f32_s(stack[sp])")
-        elseif op == 0xA9 then emit("stack[sp] = ctx.i32_trunc_f32_u(stack[sp])")
-        elseif op == 0xAA then emit("stack[sp] = ctx.i32_trunc_f64_s(stack[sp])")
-        elseif op == 0xAB then emit("stack[sp] = ctx.i32_trunc_f64_u(stack[sp])")
-        elseif op == 0xAC then -- i64.extend_i32_s
-            emit("do local __v = stack[sp]; __v = type(__v) == 'table' and __v[1] or __v")
-            emit("  stack[sp] = {__v, bit32.btest(__v, 0x80000000) and 0xFFFFFFFF or 0} end")
-        elseif op == 0xAD then -- i64.extend_i32_u
-            emit("do local __v = stack[sp]; __v = type(__v) == 'table' and __v[1] or __v")
-            emit("  stack[sp] = {__v, 0} end")
-        elseif op == 0xAE then emit("stack[sp] = ctx.i64_trunc_f32_s(stack[sp])")
-        elseif op == 0xAF then emit("stack[sp] = ctx.i64_trunc_f32_u(stack[sp])")
-        elseif op == 0xB0 then emit("stack[sp] = ctx.i64_trunc_f64_s(stack[sp])")
-        elseif op == 0xB1 then emit("stack[sp] = ctx.i64_trunc_f64_u(stack[sp])")
-        elseif op == 0xB2 then emit("stack[sp] = ctx.f32_convert_i32_s(stack[sp])")
-        elseif op == 0xB3 then emit("stack[sp] = ctx.f32_convert_i32_u(stack[sp])")
-        elseif op == 0xB4 then emit("stack[sp] = ctx.f32_convert_i64_s(stack[sp])")
-        elseif op == 0xB5 then emit("stack[sp] = ctx.f32_convert_i64_u(stack[sp])")
-        elseif op == 0xB6 then emit("stack[sp] = ctx.f32_demote_f64(stack[sp])")
-        elseif op == 0xB7 then -- f64.convert_i32_s
-            emit("do local __v = stack[sp]; __v = __v >= 0x80000000 and __v - 0x100000000 or __v; stack[sp] = __v + 0.0 end")
-        elseif op == 0xB8 then -- f64.convert_i32_u
-            emit("stack[sp] = stack[sp] + 0.0")
-        elseif op == 0xB9 then emit("stack[sp] = ctx.f64_convert_i64_s(stack[sp])")
-        elseif op == 0xBA then emit("stack[sp] = ctx.f64_convert_i64_u(stack[sp])")
-        elseif op == 0xBB then -- f64.promote_f32
-            emit("do local __v = stack[sp]; if ctx.isnan(__v) then stack[sp] = 0/0 end end")
-        elseif op == 0xBC then emit("stack[sp] = ctx.i32_reinterpret_f32(stack[sp])")
-        elseif op == 0xBD then emit("stack[sp] = ctx.i64_reinterpret_f64(stack[sp])")
-        elseif op == 0xBE then emit("stack[sp] = ctx.f32_reinterpret(stack[sp])")
-        elseif op == 0xBF then emit("stack[sp] = ctx.f64_reinterpret(stack[sp])")
-
-        -- Sign extension ops
-        elseif op == 0xC0 then -- i32.extend8_s
-            emit("do local __v = band(stack[sp], 0xFF); if __v >= 0x80 then __v = __v - 0x100 end")
-            emit("  if __v < 0 then __v = __v + 0x100000000 end; stack[sp] = __v end")
-        elseif op == 0xC1 then -- i32.extend16_s
-            emit("do local __v = band(stack[sp], 0xFFFF); if __v >= 0x8000 then __v = __v - 0x10000 end")
-            emit("  if __v < 0 then __v = __v + 0x100000000 end; stack[sp] = __v end")
-        elseif op == 0xC2 then emit("stack[sp] = ctx.i64_extend8_s(stack[sp])")
-        elseif op == 0xC3 then emit("stack[sp] = ctx.i64_extend16_s(stack[sp])")
-        elseif op == 0xC4 then emit("stack[sp] = ctx.i64_extend32_s(stack[sp])")
 
         -- Extended ops (0xFC prefix)
         elseif op == 0xFC then
