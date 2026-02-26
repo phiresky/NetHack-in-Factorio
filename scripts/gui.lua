@@ -108,7 +108,7 @@ local TOOLBAR_BUTTONS = {
 -- ext = extended command name (for # commands that need getlin follow-up)
 local MENU_BAR = {
   {name = "game", label = "Game", items = {
-    {label = "Version",       key = string.byte("v")},
+    {label = "Version",       key = string.byte("v"), shortcut = "Alt+v"},
     {label = "History",       key = string.byte("V")},
     {label = "Options",       key = string.byte("O")},
     {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
@@ -117,49 +117,49 @@ local MENU_BAR = {
     -- {label = "Quit",          key = string.byte("#"), ext = "quit"},
   }},
   {name = "gear", label = "Gear", items = {
-    {label = "Wield weapon",      key = string.byte("w")},
-    {label = "Exchange weapons",  key = string.byte("x")},
+    {label = "Wield weapon",      key = string.byte("w"), shortcut = "Alt+w"},
+    {label = "Exchange weapons",  key = string.byte("x"), shortcut = "Alt+x"},
     {label = "Two weapon combat", key = string.byte("#"), ext = "twoweapon"},
     {label = "Load quiver",       key = string.byte("Q")},
     {separator = true},
-    {label = "Wear armour",       key = string.byte("W")},
-    {label = "Take off armour",   key = string.byte("T")},
+    {label = "Wear armour",       key = string.byte("W"), shortcut = "Alt+Shift+w"},
+    {label = "Take off armour",   key = string.byte("T"), shortcut = "Alt+Shift+t"},
     {separator = true},
-    {label = "Put on",            key = string.byte("P")},
-    {label = "Remove",            key = string.byte("R")},
+    {label = "Put on",            key = string.byte("P"), shortcut = "Alt+Shift+p"},
+    {label = "Remove",            key = string.byte("R"), shortcut = "Alt+Shift+r"},
   }},
   {name = "action", label = "Action", items = {
     {label = "Again",            key = 0x01},  -- ^A
-    {label = "Apply",            key = string.byte("a")},
+    {label = "Apply",            key = string.byte("a"), shortcut = "Alt+a"},
     {label = "Chat",             key = string.byte("#"), ext = "chat"},
-    {label = "Close door",       key = string.byte("c")},
-    {label = "Down",             key = string.byte(">")},
-    {label = "Drop",             key = string.byte("d")},
+    {label = "Close door",       key = string.byte("c"), shortcut = "Alt+c"},
+    {label = "Down",             key = string.byte(">"), shortcut = "Shift+."},
+    {label = "Drop",             key = string.byte("d"), shortcut = "Alt+d"},
     {label = "Drop many",        key = string.byte("D")},
-    {label = "Eat",              key = string.byte("e")},
-    {label = "Engrave",          key = string.byte("E")},
-    {label = "Fire from quiver", key = string.byte("f")},
-    {label = "Force",            key = string.byte("#"), ext = "force"},
-    {label = "Get",              key = string.byte(",")},
+    {label = "Eat",              key = string.byte("e"), shortcut = "Alt+e"},
+    {label = "Engrave",          key = string.byte("E"), shortcut = "Alt+Shift+e"},
+    {label = "Fire from quiver", key = string.byte("f"), shortcut = "Alt+f"},
+    {label = "Force",            key = string.byte("#"), ext = "force", shortcut = "Ctrl+f"},
+    {label = "Get",              key = string.byte(","), shortcut = "Alt+,"},
     {label = "Jump",             key = string.byte("#"), ext = "jump"},
-    {label = "Kick",             key = 0x04},  -- ^D
+    {label = "Kick",             key = 0x04, shortcut = "Ctrl+d"},  -- ^D
     {label = "Loot",             key = string.byte("#"), ext = "loot"},
-    {label = "Open door",        key = string.byte("o")},
-    {label = "Pay",              key = string.byte("p")},
-    {label = "Rest",             key = string.byte(".")},
+    {label = "Open door",        key = string.byte("o"), shortcut = "Alt+o"},
+    {label = "Pay",              key = string.byte("p"), shortcut = "Alt+p"},
+    {label = "Rest",             key = string.byte("."), shortcut = "Alt+."},
     {label = "Ride",             key = string.byte("#"), ext = "ride"},
-    {label = "Search",           key = string.byte("s")},
+    {label = "Search",           key = string.byte("s"), shortcut = "Alt+s"},
     {label = "Sit",              key = string.byte("#"), ext = "sit"},
-    {label = "Throw",            key = string.byte("t")},
+    {label = "Throw",            key = string.byte("t"), shortcut = "Alt+t"},
     {label = "Untrap",           key = string.byte("#"), ext = "untrap"},
-    {label = "Up",               key = string.byte("<")},
+    {label = "Up",               key = string.byte("<"), shortcut = "Shift+,"},
     {label = "Wipe face",        key = string.byte("#"), ext = "wipe"},
   }},
   {name = "magic", label = "Magic", items = {
-    {label = "Quaff potion",     key = string.byte("q")},
-    {label = "Read scroll/book", key = string.byte("r")},
-    {label = "Zap wand",         key = string.byte("z")},
-    {label = "Zap spell",        key = string.byte("Z")},
+    {label = "Quaff potion",     key = string.byte("q"), shortcut = "Alt+q"},
+    {label = "Read scroll/book", key = string.byte("r"), shortcut = "Alt+r"},
+    {label = "Zap wand",         key = string.byte("z"), shortcut = "Alt+z"},
+    {label = "Zap spell",        key = string.byte("Z"), shortcut = "Alt+Shift+z"},
     {label = "Dip",              key = string.byte("#"), ext = "dip"},
     {label = "Rub",              key = string.byte("#"), ext = "rub"},
     {label = "Invoke",           key = string.byte("#"), ext = "invoke"},
@@ -172,7 +172,7 @@ local MENU_BAR = {
     {label = "Turn undead",      key = string.byte("#"), ext = "turn"},
   }},
   {name = "info", label = "Info", items = {
-    {label = "Inventory",          key = string.byte("i")},
+    {label = "Inventory",          key = string.byte("i"), shortcut = "Alt+i"},
     {label = "Conduct",            key = string.byte("#"), ext = "conduct"},
     {label = "Discoveries",        key = string.byte("\\")},
     {label = "List/reorder spells",key = string.byte("+")},
@@ -180,14 +180,14 @@ local MENU_BAR = {
     {separator = true},
     {label = "Name object",        key = string.byte("#"), ext = "name"},
     {separator = true},
-    {label = "Skills",             key = string.byte("#"), ext = "enhance"},
+    {label = "Skills",             key = string.byte("#"), ext = "enhance", shortcut = "Ctrl+e"},
   }},
   {name = "help", label = "Help", items = {
     {label = "Help",              key = string.byte("?")},
     {separator = true},
-    {label = "What is here",      key = string.byte(":")},
-    {label = "What is there",     key = string.byte(";")},
-    {label = "What is...",        key = string.byte("/")},
+    {label = "What is here",      key = string.byte(":"), shortcut = "Shift+;"},
+    {label = "What is there",     key = string.byte(";"), shortcut = "Alt+;"},
+    {label = "What is...",        key = string.byte("/"), shortcut = "Alt+/"},
   }},
 }
 
@@ -203,17 +203,11 @@ for _, menu in ipairs(MENU_BAR) do
       items[#items + 1] = "───"
       -- no lookup entry for separators
     else
-      local shortcut = ""
-      if item.ext then
-        shortcut = "  #" .. item.ext
-      elseif item.key then
-        if item.key < 32 then
-          shortcut = "  ^" .. string.char(item.key + 64)
-        else
-          shortcut = "  " .. string.char(item.key)
-        end
+      local display = item.label
+      if item.shortcut then
+        display = display .. "  [color=gray](" .. item.shortcut .. ")[/color]"
       end
-      items[#items + 1] = item.label .. shortcut
+      items[#items + 1] = display
       lookup[#items] = {key = item.key, ext = item.ext}
     end
   end
@@ -306,24 +300,25 @@ function Gui.create_player_gui(player)
     }
   end
 
-  -- Hover info row (below menu bar, short + long descriptions)
-  local hover_flow = top_panel.add{
-    type = "flow",
-    name = "nh_hover_flow",
+  -- Hover info frame (bottom-right of screen, shows tile descriptions)
+  local hover_frame = screen.add{
+    type = "frame",
+    name = "nh_hover_frame",
     direction = "vertical",
+    style = "nh_hover_frame",
   }
-  hover_flow.visible = false
-  hover_flow.add{
+  hover_frame.visible = false
+  hover_frame.add{
     type = "label",
     name = "nh_hover_short",
     caption = "",
-    style = "nh_hover_label",
+    style = "nh_hover_short_label",
   }
-  hover_flow.add{
+  hover_frame.add{
     type = "label",
     name = "nh_hover_long",
     caption = "",
-    style = "nh_hover_label",
+    style = "nh_hover_long_label",
   }
 
   -- Toolbar row (quick-access buttons)
@@ -496,13 +491,18 @@ function Gui.create_player_gui(player)
     style = "nh_engine_spacer",
   }
   engine_spacer.style.horizontally_stretchable = true
-  menubar.add{
+  local engine_vflow = menubar.add{
+    type = "flow",
+    name = "nh_engine_vflow",
+    direction = "vertical",
+  }
+  engine_vflow.add{
     type = "label",
     name = "nh_engine_state",
     caption = "Initializing",
     style = "nh_engine_state_label",
   }
-  menubar.add{
+  engine_vflow.add{
     type = "label",
     name = "nh_engine_count",
     caption = "",
@@ -521,7 +521,7 @@ function Gui.destroy_player_gui(player)
 
   -- Destroy all our top-level screen elements
   local names = {
-    "nh_top_panel",
+    "nh_top_panel", "nh_hover_frame",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
@@ -588,16 +588,42 @@ function Gui.append_message_label(player, text, attr)
   scroll.scroll_to_bottom()
 end
 
--- Flying text at player position
+-- Flying text at player position, staggered to avoid overlap
+-- Tracks recent flying texts and offsets Y so multiple messages don't pile up
+local FLYING_TEXT_STAGGER_TICKS = 30  -- ~500ms window for staggering
+local FLYING_TEXT_Y_OFFSET = 0.8      -- vertical spacing between stacked texts
+
 function Gui.show_flying_text(player, text)
-  if player.character then
-    player.create_local_flying_text{
-      text = text,
-      position = player.character.position,
-      time_to_live = 120,
-      speed = 0.5,
-    }
+  if not player.character then return end
+
+  local gui_data = storage.nh_gui
+  if not gui_data.flying_text_queue then
+    gui_data.flying_text_queue = {}
   end
+
+  -- Clean up expired entries
+  local now = game.tick
+  local queue = gui_data.flying_text_queue
+  local i = 1
+  while i <= #queue do
+    if now - queue[i] >= FLYING_TEXT_STAGGER_TICKS then
+      table.remove(queue, i)
+    else
+      i = i + 1
+    end
+  end
+
+  -- Count how many active flying texts exist (determines Y offset)
+  local offset_index = #queue
+  queue[#queue + 1] = now
+
+  local pos = player.character.position
+  player.create_local_flying_text{
+    text = text,
+    position = {x = pos.x, y = pos.y + offset_index * FLYING_TEXT_Y_OFFSET},
+    time_to_live = 3 * 60,
+    speed = 0.1,
+  }
 end
 
 -----------------------------------------------------
@@ -916,7 +942,7 @@ function Gui.show_text_window(player, winid, win)
     direction = "vertical",
     caption = win.prompt ~= "" and win.prompt or "Information",
   }
-  frame.location = {x = 200, y = 100}
+  frame.auto_center = true
 
   local scroll = frame.add{
     type = "scroll-pane",
@@ -931,6 +957,7 @@ function Gui.show_text_window(player, winid, win)
     scroll.add{
       type = "label",
       caption = item.text or "",
+      style = "nh_text_label",
     }
   end
 
@@ -1003,7 +1030,7 @@ function Gui.show_menu(player, winid, how)
               or "Select",
     style = "nh_menu_frame",
   }
-  frame.location = {x = 200, y = 50}
+  frame.auto_center = true
 
   local scroll = frame.add{
     type = "scroll-pane",
@@ -1302,7 +1329,7 @@ function Gui.show_yn_prompt(player, query, resp, def)
     direction = "vertical",
     caption = "Question",
   }
-  frame.location = {x = 300, y = 200}
+  frame.auto_center = true
 
   frame.add{
     type = "label",
@@ -1371,7 +1398,7 @@ function Gui.show_getlin_prompt(player, prompt)
     direction = "vertical",
     caption = prompt or "Input",
   }
-  frame.location = {x = 300, y = 200}
+  frame.auto_center = true
 
   frame.add{
     type = "textfield",
@@ -1557,7 +1584,8 @@ function Gui.update_engine_state(state_text, instructions, color)
     if top then
       local menubar = top.nh_menubar
       if menubar then
-        local state_label = menubar.nh_engine_state
+        local vflow = menubar.nh_engine_vflow
+        local state_label = vflow and vflow.nh_engine_state
         if state_label then
           state_label.caption = "NH Engine: " .. state_text
           if color then
@@ -1565,7 +1593,7 @@ function Gui.update_engine_state(state_text, instructions, color)
             state_label.style.font_color = color
           end
         end
-        local count_label = menubar.nh_engine_count
+        local count_label = vflow and vflow.nh_engine_count
         if count_label then
           count_label.caption = count_text
         end
@@ -1593,9 +1621,7 @@ end
 -----------------------------------------------------
 
 function Gui.update_hover_info(player, info)
-  local top = player.gui.screen.nh_top_panel
-  if not top then return end
-  local hover = top.nh_hover_flow
+  local hover = player.gui.screen.nh_hover_frame
   if not hover then return end
 
   if not info then
@@ -1617,7 +1643,19 @@ function Gui.update_hover_info(player, info)
     long_label.visible = false
   end
 
-  hover.visible = short_label.visible or long_label.visible
+  local vis = short_label.visible or long_label.visible
+  hover.visible = vis
+
+  if vis then
+    local long_len = info.long and #info.long or 0
+    local long_lines = math.max(1, math.ceil(long_len / 40))
+    local short_lines = info.short and 1 or 0
+    local est_height = (short_lines + long_lines) * 18 + 20
+
+    local ui_w = player.display_resolution.width / player.display_scale
+    local ui_h = player.display_resolution.height / player.display_scale
+    hover.location = {x = ui_w - 310, y = ui_h - 90 - est_height}
+  end
 end
 
 -----------------------------------------------------

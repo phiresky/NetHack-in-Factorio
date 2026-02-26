@@ -327,6 +327,9 @@ local function start_nethack(player)
     player.character.character_running_speed_modifier = -0.4
   end
 
+  -- Zoom in so each NetHack tile is clearly visible
+  player.zoom = 2.0
+
   -- Start NetHack by calling _start (WASI entry point)
   local start_idx = WasmInterp.get_export(wasm_instance, "_start")
 

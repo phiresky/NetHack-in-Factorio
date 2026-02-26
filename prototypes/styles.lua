@@ -380,6 +380,19 @@ default_gui["nh_plsel_info_label"] = {
 }
 
 -----------------------------------------------------
+-- Text Windows (help, info popups)
+-----------------------------------------------------
+
+default_gui["nh_text_label"] = {
+  type = "label_style",
+  font = "nh-mono",
+  font_color = {r = 1, g = 1, b = 1},
+  single_line = false,
+  left_padding = 2,
+  right_padding = 2,
+}
+
+-----------------------------------------------------
 -- Engine State (right-aligned in menu bar)
 -----------------------------------------------------
 
@@ -402,12 +415,38 @@ default_gui["nh_engine_count_label"] = {
 }
 
 -----------------------------------------------------
--- Hover Info (in menu bar, after engine state)
+-- Hover Info (bottom-right tile description frame)
 -----------------------------------------------------
 
-default_gui["nh_hover_label"] = {
+default_gui["nh_hover_frame"] = {
+  type = "frame_style",
+  top_padding = 6,
+  bottom_padding = 6,
+  left_padding = 10,
+  right_padding = 10,
+  maximal_width = 300,
+  vertical_spacing = 2,
+  graphical_set = {
+    base = {
+      position = {0, 0},
+      corner_size = 8,
+      opacity = 0.88,
+    },
+  },
+}
+
+default_gui["nh_hover_short_label"] = {
   type = "label_style",
-  font = "default-small",
-  font_color = {r = 0.9, g = 0.9, b = 0.8},
-  left_padding = 12,
+  font = "default-bold",
+  font_color = {r = 1, g = 1, b = 1},
+  single_line = false,
+  maximal_width = 280,
+}
+
+default_gui["nh_hover_long_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 0.85, g = 0.85, b = 0.75},
+  single_line = false,
+  maximal_width = 280,
 }
