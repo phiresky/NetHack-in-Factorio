@@ -250,27 +250,29 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
   -- Resolve base tile from bkglyph when available
   local base_tile = resolve_base_tile(bk_tile_idx)
 
-  -- Handle the player character '@'
-  -- NetHack 3.6.7's mapglyph() does NOT set MG_MONSTER in special flags,
-  -- so we detect the player by character alone. The player's @ is always
-  -- drawn last, so the final @ position is correct.
-  if ch == string.byte("@") and not is_monster then
-    disp.player_pos = {x = x, y = y}
-    surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
-    destroy_entity_at(level_name, x, y)
-    return
-  end
+  -- In factorio player mode, suppress the hero entity so the engineer is visible.
+  -- Uses hero position from the last cliparound call (accurate for current frame).
+  local at_hero = disp.player_mode ~= "nethack" and disp.player_pos
+    and x == disp.player_pos.x and y == disp.player_pos.y
 
   -- Stone/rock (space character): void tile + stone entity
   if ch == string.byte(" ") then
     surface.set_tiles({{name = "nh-void", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
+    if at_hero then
+      destroy_entity_at(level_name, x, y)
+    else
+      place_entity(surface, level_name, x, y, ent_name, tint)
+    end
     return
   end
 
   -- Everything else: set base tile from bkglyph, place foreground entity
   surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
-  place_entity(surface, level_name, x, y, ent_name, tint)
+  if at_hero then
+    destroy_entity_at(level_name, x, y)
+  else
+    place_entity(surface, level_name, x, y, ent_name, tint)
+  end
 end
 
 -- Clear the entire map display (called on level change)
@@ -307,6 +309,39 @@ function Display.clear_map()
     end
   end
   surface.set_tiles(tiles)
+end
+
+-- Called from host_cliparound after all print_glyph calls.
+-- Updates the hero position so the Factorio player character is teleported there.
+-- In "factorio" player mode, destroys the hero entity so the engineer is visible.
+function Display.set_hero_pos(x, y)
+  local disp = storage.nh_display
+  if not disp then return end
+  disp.player_pos = {x = x, y = y}
+  if disp.player_mode ~= "nethack" and disp.current_level then
+    destroy_entity_at(disp.current_level, x, y)
+  end
+end
+
+-- Set player display mode: "factorio" (engineer visible, NH sprite hidden)
+-- or "nethack" (NH sprite visible, engineer hidden via god mode).
+function Display.set_player_mode(mode)
+  local disp = storage.nh_display
+  if not disp then return end
+  disp.player_mode = mode
+  -- Apply immediately to current hero position
+  if disp.player_pos and disp.current_level then
+    if mode == "factorio" then
+      destroy_entity_at(disp.current_level, disp.player_pos.x, disp.player_pos.y)
+    end
+    -- In "nethack" mode, the entity will be placed by the next print_glyph cycle
+  end
+end
+
+function Display.get_player_mode()
+  local disp = storage.nh_display
+  if not disp then return "factorio" end
+  return disp.player_mode or "factorio"
 end
 
 -- Get the player's expected position from the display

@@ -112,7 +112,8 @@ local MENU_BAR = {
     {label = "History",       key = string.byte("V")},
     {label = "Options",       key = string.byte("O")},
     {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
-    -- {separator = true},
+    {separator = true},
+    {label = "Toggle player mode", action = "toggle_player_mode"},
     -- {label = "Save",          key = string.byte("S")},
     -- {label = "Quit",          key = string.byte("#"), ext = "quit"},
   }},
@@ -208,7 +209,7 @@ for _, menu in ipairs(MENU_BAR) do
         display = display .. "  [color=gray](" .. item.shortcut .. ")[/color]"
       end
       items[#items + 1] = display
-      lookup[#items] = {key = item.key, ext = item.ext}
+      lookup[#items] = {key = item.key, ext = item.ext, action = item.action}
     end
   end
   MENU_DD_ITEMS[menu.name] = items
@@ -1488,8 +1489,9 @@ function Gui.handle_toolbar_click(element_name)
   return nil
 end
 
--- Menu bar dropdown selection -> key code (and optional ext command), or nil
+-- Menu bar dropdown selection -> key code, ext command, action (or nil).
 -- Always resets dropdown to show the menu label (index 1).
+-- For action items (no key), returns nil, nil, action_name.
 function Gui.handle_menubar_selection(element)
   local menu_name = element.name:match("^nh_mb_dd_(.+)$")
   if not menu_name then return nil end
@@ -1502,7 +1504,11 @@ function Gui.handle_menubar_selection(element)
   local lookup = MENU_DD_LOOKUP[menu_name]
   if not lookup or not lookup[idx] then return nil end  -- separator or unknown
 
-  return lookup[idx].key, lookup[idx].ext
+  local entry = lookup[idx]
+  if entry.action then
+    return nil, nil, entry.action
+  end
+  return entry.key, entry.ext
 end
 
 -----------------------------------------------------

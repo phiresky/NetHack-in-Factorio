@@ -148,8 +148,9 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   end
 
   imports["env.host_cliparound"] = function(x, y)
-    -- In Factorio, the camera follows the player naturally
-    -- We could center the view here if needed
+    -- Called by flush_screen after all print_glyph calls with the hero's position.
+    -- This is the authoritative source of the player's map coordinates.
+    Display.set_hero_pos(x, y)
   end
 
   imports["env.host_delay_output"] = function()

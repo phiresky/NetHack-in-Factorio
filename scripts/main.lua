@@ -21,10 +21,10 @@ local compiled_sources = require("scripts.nethack_compiled")
 local M = {}
 
 -- Maximum WASM instructions to execute per run() call
-local MAX_INSTRUCTIONS_PER_RUN = 100000
+local MAX_INSTRUCTIONS_PER_RUN = 10000000
 
 -- Maximum instructions per tick (for background processing like level gen)
-local MAX_INSTRUCTIONS_PER_TICK = 500000
+local MAX_INSTRUCTIONS_PER_TICK = 200000
 
 ---------------------------------------------------------------------------
 -- NetHack Options (from Factorio mod startup settings)
@@ -180,6 +180,18 @@ local wasm_instance = nil
 ---------------------------------------------------------------------------
 -- Interpreter Execution
 ---------------------------------------------------------------------------
+
+-- Factorio direction enum → NH vi-key codes
+local GOD_DIR_TO_KEY = {
+  [defines.direction.north]     = string.byte("k"),
+  [defines.direction.northeast] = string.byte("u"),
+  [defines.direction.east]      = string.byte("l"),
+  [defines.direction.southeast] = string.byte("n"),
+  [defines.direction.south]     = string.byte("j"),
+  [defines.direction.southwest] = string.byte("b"),
+  [defines.direction.west]      = string.byte("h"),
+  [defines.direction.northwest] = string.byte("y"),
+}
 
 -- Correct Factorio player position if it doesn't match NetHack's @ position.
 -- During travel (state.travel_active), snaps to tile center every tick.
@@ -603,6 +615,62 @@ local function advance_turn_plsel(result)
   update_player_position()
 end
 
+-- God mode movement: called from on_tick. Reads walking_state direction
+-- and sends NH commands with a cooldown (~10 ticks = ~6 moves/sec).
+local function god_mode_movement()
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input then return end
+  if state.input_type ~= "getch" then return end
+
+  local player = game.connected_players[1]
+  if not player or player.character then return end  -- only in god mode
+
+  local ws = player.walking_state
+  if not ws or not ws.walking then return end
+
+  local inp = storage.nh_input
+  if inp.god_move_cooldown and game.tick < inp.god_move_cooldown then return end
+
+  local key = GOD_DIR_TO_KEY[ws.direction]
+  if not key then return end
+
+  inp.god_move_cooldown = game.tick + 10
+
+  Input.set_processing(true)
+  advance_turn(key)
+  Input.set_processing(false)
+end
+
+-- Toggle between Factorio character mode and NH sprite mode.
+-- Factorio mode: engineer visible, NH hero entity hidden.
+-- NH sprite mode: god mode (no body), NH hero entity visible.
+local function toggle_player_mode(player)
+  local mode = Display.get_player_mode()
+  if mode == "factorio" then
+    -- Switch to NH sprite mode: save character, enter god mode
+    local char = player.character
+    player.set_controller{type = defines.controllers.god}
+    if char and char.valid then
+      -- Teleport detached character far off-screen so it's not visible
+      char.teleport({x = -1000, y = -1000})
+    end
+    storage.nh_main.saved_character = char
+    Display.set_player_mode("nethack")
+  else
+    -- Switch back to Factorio character mode
+    local pos = Display.get_player_pos()
+    local surface = Display.get_current_surface()
+    local char = storage.nh_main.saved_character
+    if char and char.valid and pos and surface then
+      char.teleport({x = pos.x + 0.5, y = pos.y + 0.5}, surface)
+      player.set_controller{type = defines.controllers.character, character = char}
+    end
+    storage.nh_main.saved_character = nil
+    Display.set_player_mode("factorio")
+  end
+end
+
 ---------------------------------------------------------------------------
 -- Event Handlers
 ---------------------------------------------------------------------------
@@ -619,6 +687,17 @@ local function on_player_changed_position(event)
   local player = game.get_player(event.player_index)
   if not player then return end
 
+  -- God mode: lock camera to hero position, use walking_state for direction.
+  -- Movement is handled in on_tick via god_mode_movement() instead.
+  if not player.character then
+    local nh_pos = Display.get_player_pos()
+    local surface = Display.get_current_surface()
+    if nh_pos and surface then
+      player.teleport({x = nh_pos.x + 0.5, y = nh_pos.y + 0.5}, surface)
+    end
+    return
+  end
+
   -- While game is processing a turn, clamp player to current @ tile
   if not state.awaiting_input then
     local nh_pos = Display.get_player_pos()
@@ -634,9 +713,7 @@ local function on_player_changed_position(event)
 
   -- For non-getch prompts (yn, menu, getlin, plsel), block movement
   if state.input_type ~= "getch" then
-    if player.character then
-      player.walking_state = {walking = false, direction = defines.direction.north}
-    end
+    player.walking_state = {walking = false, direction = defines.direction.north}
     local nh_pos = Display.get_player_pos()
     local surface = Display.get_current_surface()
     if nh_pos and surface then
@@ -885,6 +962,9 @@ local function on_tick(event)
     update_player_position()
   end
 
+  -- God mode: poll walking_state for movement input
+  god_mode_movement()
+
   -- Continue pending hover describe (runs alongside game, 20k budget per tick)
   if Bridge._pending_describe and wasm_instance then
     local player_index = Bridge._pending_describe.player_index
@@ -976,7 +1056,14 @@ local function on_gui_selection_state_changed(event)
   if not element or not element.valid then return end
 
   -- Menu bar dropdown selection
-  local btn_key, ext_cmd = Gui.handle_menubar_selection(element)
+  local btn_key, ext_cmd, action = Gui.handle_menubar_selection(element)
+
+  -- Handle special actions (not NetHack key input)
+  if action == "toggle_player_mode" then
+    toggle_player_mode(player)
+    return
+  end
+
   if btn_key then
     if state.input_type == "getch" or state.input_type == "yn" then
       if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
@@ -1130,10 +1217,14 @@ local function on_display_changed(event)
   local player = game.get_player(event.player_index)
   if not player then return end
   Gui.create_player_gui(player)
-  -- Recreate loading bar if startup hasn't finished yet
-  -- (create_player_gui destroys all screen elements including nh_loading_frame)
+  -- Recreate loading bar or plsel dialog if startup hasn't finished yet
+  -- (create_player_gui destroys all screen elements including nh_loading_frame/nh_plsel_frame)
   if not state.first_input_received then
-    Gui.create_loading_bar(player)
+    if state.awaiting_input and state.input_type == "plsel" then
+      Gui.show_plsel_dialog(player)
+    else
+      Gui.create_loading_bar(player)
+    end
   end
   update_engine_gui()
 end
@@ -1146,11 +1237,61 @@ for _, input_name in ipairs(Input.get_custom_input_names()) do
 end
 
 ---------------------------------------------------------------------------
--- Console command: /nethack <chars>
+-- Secondary WASM call helper (for cheat commands, etc.)
+-- Executes a WASM export while the game is paused at nhgetch.
+-- Saves/restores exec state + stack pointer (same pattern as describe_pos).
+---------------------------------------------------------------------------
+
+local function execute_wasm_cheat(export_name, args, max_instructions)
+  if not wasm_instance or not wasm_instance.exec then return false end
+
+  max_instructions = max_instructions or 5000000
+
+  local idx = WasmInterp.get_export(wasm_instance, export_name)
+  if not idx then
+    Gui.add_message("Error: WASM export '" .. export_name .. "' not found", 0)
+    return false
+  end
+
+  -- Cancel any pending hover describe
+  Bridge.cancel_describe(wasm_instance)
+
+  -- Save current execution state and stack pointer
+  local saved_exec = wasm_instance.exec
+  local saved_sp = wasm_instance.globals[0]
+
+  local ok, err = pcall(function()
+    WasmInterp.call(wasm_instance, idx, args or {})
+    WasmInterp.run(wasm_instance, max_instructions)
+  end)
+
+  if not ok then
+    wasm_instance.exec = saved_exec
+    wasm_instance.globals[0] = saved_sp
+    Gui.add_message("Error executing " .. export_name .. ": " .. tostring(err), 0)
+    return false
+  end
+
+  local finished = wasm_instance.exec.finished
+
+  -- Restore game execution state
+  wasm_instance.exec = saved_exec
+  wasm_instance.globals[0] = saved_sp
+
+  if not finished then
+    Gui.add_message("Warning: " .. export_name .. " didn't finish within budget", 0)
+    return false
+  end
+
+  return true
+end
+
+---------------------------------------------------------------------------
+-- Console command: /nethack <chars> | /nethack revealall
 -- Usage: /nethack * or /nethack abc to send characters to NetHack
 ---------------------------------------------------------------------------
 
-commands.add_command("nethack", "Send character(s) to NetHack. Usage: /nethack *", function(cmd)
+commands.add_command("nethack", "Send character(s) or cheat commands to NetHack. Usage: /nethack <chars> | /nethack revealall", function(cmd)
   local str = cmd.parameter
   local state = storage.nh_main
   if not state or not state.game_started then
@@ -1161,13 +1302,31 @@ commands.add_command("nethack", "Send character(s) to NetHack. Usage: /nethack *
     game.print("No WASM instance")
     return
   end
+
+  -- Handle cheat subcommands
+  if str == "revealall" then
+    if not state.awaiting_input then
+      game.print("NetHack must be waiting for input")
+      return
+    end
+    -- Clear display grid cache so all print_glyph calls take effect immediately
+    local disp = storage.nh_display
+    if disp.current_level and disp.levels[disp.current_level] then
+      disp.levels[disp.current_level].grid = {}
+    end
+    if execute_wasm_cheat("nh_reveal_all_full", {}) then
+      Gui.add_message("Cheat: entire dungeon level revealed!", 0)
+    end
+    return
+  end
+
   if not state.awaiting_input then
     game.print("NetHack not waiting for input")
     return
   end
 
   if not str or #str == 0 then
-    game.print("Usage: /nethack <char>  (e.g. /feed * or /feed abc)")
+    game.print("Usage: /nethack <char>  (e.g. /nethack * or /nethack abc)")
     return
   end
 

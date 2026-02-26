@@ -262,6 +262,16 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
 - **`factorioconf.h` is the single source of truth for NetHack config defines**:
   It's force-included via `-include build/factorioconf.h` in CFLAGS. Add new
   NetHack config defines there, not as `-D` flags in the Makefile.
+- **Player detection by `@` character breaks shopkeepers**: NetHack 3.6.7's
+  `mapglyph()` does NOT set `MG_MONSTER` in special flags for regular monsters
+  (only for pet/detect/invis/ridden). So `ch == '@' and not is_monster` matched
+  both the hero AND shopkeepers/priests/etc, destroying their entities. Fix: use
+  `host_cliparound` (called by `flush_screen` after all `print_glyph` calls with
+  `u.ux, u.uy`) as the authoritative hero position source via `Display.set_hero_pos`.
+- **Accessing mod storage from RCON/lua_exec**: The mod's `storage` table is not
+  directly accessible from RCON `lua_exec`. Use the remote interface instead:
+  `remote.call("nethack", "get_display")`, `remote.call("nethack", "get_bridge")`,
+  `remote.call("nethack", "get_main")`, `remote.call("nethack", "get_input")`.
 - **Compiled/interpreter resume mismatch**: When budget expires mid-interpretation
   of a function that also has a compiled version, the outer loop must NOT dispatch
   to the compiled version on resume. The compiled path starts at entry_point=0
