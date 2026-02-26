@@ -1413,7 +1413,7 @@ function Compiler.compile_function_source(func_def, func_idx, module)
     local ok, source_or_err, n_calls = pcall(generate_source, func_idx, func_def, module)
     if not ok then
         if Compiler.debug then
-            io.stderr:write(string.format("Source gen error in func %d: %s\n", func_idx, tostring(source_or_err)))
+            log(string.format("Source gen error in func %d: %s\n", func_idx, tostring(source_or_err)))
         end
         return nil
     end
@@ -1429,7 +1429,7 @@ function Compiler.compile_function(func_def, func_idx, module)
     local fn, err = load(full_source, "=wasm_func_" .. func_idx)
     if not fn then
         if Compiler.debug then
-            io.stderr:write(string.format("Compile error in func %d: %s\n", func_idx, tostring(err)))
+            log(string.format("Compile error in func %d: %s\n", func_idx, tostring(err)))
             local f = io.open(string.format("/tmp/claude-1000/wasm_func_%d.lua", func_idx), "w")
             if f then f:write(full_source); f:close() end
         end
@@ -1443,7 +1443,7 @@ end
 function Compiler.load_source(source, func_idx)
     local fn, err = load(source, "=wasm_func_" .. func_idx)
     if not fn then
-        io.stderr:write(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
+        log(string.format("Load error in func %d: %s\n", func_idx, tostring(err)))
         return nil
     end
     return fn()
@@ -1471,7 +1471,7 @@ function Compiler.compile_module(module, instance)
     end
 
     if Compiler.debug then
-        io.stderr:write(string.format("Compiled %d functions (%d failed)\n", count, failed))
+        log(string.format("Compiled %d functions (%d failed)\n", count, failed))
     end
 
     return compiled
