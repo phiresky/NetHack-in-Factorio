@@ -604,7 +604,7 @@ local function generate_source(func_idx, func_def, module)
     local function emit_branch_body(target, cond_expr, indent)
         indent = indent or "  "
         if target.type == "func" then
-            emit(indent .. "if " .. cond_expr .. " then ctx.call_target = nil; return sp end")
+            emit(indent .. "if " .. cond_expr .. " then return sp end")
         else
             local arity = target.branch_arity or target.n_results or 0
             emit(indent .. "if " .. cond_expr .. " then")
@@ -1071,9 +1071,7 @@ local function generate_source(func_idx, func_def, module)
 
         elseif op == 0x0B then -- end
             if block_sp <= 1 then
-                -- End of function
-                -- Results are on stack. Signal completion.
-                emit("ctx.call_target = nil")
+                -- End of function — return sp only (no call_target = done)
                 emit("do return sp end")
             else
                 local blk = block_stack[block_sp]
@@ -1097,7 +1095,6 @@ local function generate_source(func_idx, func_def, module)
             local target = get_branch_target(instr.depth)
             if target then
                 if target.type == "func" then
-                    emit("ctx.call_target = nil")
                     emit("do return sp end")
                 else
                     local arity = target.branch_arity or target.n_results or 0
@@ -1126,7 +1123,7 @@ local function generate_source(func_idx, func_def, module)
                 if target then
                     local cmp = j == 0 and "if" or "elseif"
                     if target.type == "func" then
-                        emit(string.format("%s __idx == %d then ctx.call_target = nil; return sp", cmp, j))
+                        emit(string.format("%s __idx == %d then return sp", cmp, j))
                     else
                         local arity = target.branch_arity or target.n_results or 0
                         local label = target.type == "loop"
@@ -1149,7 +1146,7 @@ local function generate_source(func_idx, func_def, module)
                 emit("else")
                 indent_level = indent_level + 1
                 if def_target.type == "func" then
-                    emit("ctx.call_target = nil; return sp")
+                    emit("return sp")
                 else
                     local arity = def_target.branch_arity or def_target.n_results or 0
                     if arity > 0 and def_target.stack_base_var then
@@ -1170,29 +1167,26 @@ local function generate_source(func_idx, func_def, module)
             emit("end")
 
         elseif op == 0x0F then -- return
-            emit("ctx.call_target = nil")
             emit("do return sp end")
 
-        -- Calls: return to interpreter
+        -- Calls: return sp, target, resume_point to interpreter
         elseif op == 0x10 then -- call
             local csid = instr.call_site_id
-            emit(string.format("ctx.call_target = %d; ctx.resume_point = %d", instr.func_idx, csid))
-            emit("do return sp end")
+            emit(string.format("do return sp, %d, %d end", instr.func_idx, csid))
             emit(string.format("::C_%d::", csid))
 
         elseif op == 0x11 then -- call_indirect
             local csid = instr.call_site_id
             emit(string.format("ctx.call_indirect_type = %d; ctx.call_indirect_table = %d", instr.type_idx, instr.table_idx))
-            emit(string.format("ctx.call_target = -2; ctx.resume_point = %d", csid))
-            emit("do return sp end")
+            emit(string.format("do return sp, -2, %d end", csid))
             emit(string.format("::C_%d::", csid))
 
         -- Exception handling: fall back to interpreter for these
         elseif op == 0x08 then -- throw
-            emit(string.format("ctx.throw_tag = %d; ctx.call_target = -3; return sp", instr.tagidx))
+            emit(string.format("ctx.throw_tag = %d; return sp, -3", instr.tagidx))
 
         elseif op == 0x0A then -- throw_ref
-            emit("ctx.call_target = -4; return sp")
+            emit("return sp, -4")
 
         elseif op == 0x1F then -- try_table
             -- For now, fall back to interpreter for try_table

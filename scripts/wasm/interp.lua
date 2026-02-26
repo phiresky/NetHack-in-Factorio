@@ -1892,8 +1892,7 @@ end
 local function create_ctx(instance)
     local ctx = {
         -- Call protocol fields (set by compiled code, read by run loop)
-        call_target = nil,
-        resume_point = 0,
+        -- call_target and resume_point are now return values, not ctx fields
         call_indirect_type = nil,
         call_indirect_table = nil,
 
@@ -2648,11 +2647,11 @@ function Interp.run(instance, max_instructions)
                         return
                     end
 
-                    sp = compiled_fn(stack, sp, loc, memory, globals, ctx, entry_point)
+                    local _target, _resume
+                    sp, _target, _resume = compiled_fn(stack, sp, loc, memory, globals, ctx, entry_point)
                     entry_point = 0
 
-                    local target = ctx.call_target
-                    if target == nil then
+                    if _target == nil then
                         -- Function completed normally
                         running = false
                         break
@@ -2660,7 +2659,7 @@ function Interp.run(instance, max_instructions)
 
                     -- Resolve call_indirect target
                     local target_idx
-                    if target == -2 then
+                    if _target == -2 then
                         local type_idx = ctx.call_indirect_type
                         local table_idx = ctx.call_indirect_table
                         local elem_idx = stack[sp]; sp = sp - 1
@@ -2695,7 +2694,7 @@ function Interp.run(instance, max_instructions)
                                 end
                             end
                         end
-                    elseif target == -3 then
+                    elseif _target == -3 then
                         -- throw: create exception and propagate
                         local tagidx = ctx.throw_tag
                         local tag_info = instance.tags[tagidx]
@@ -2708,7 +2707,7 @@ function Interp.run(instance, max_instructions)
                         state.exception = {tag = tagidx, values = values}
                         running = false
                         break
-                    elseif target == -4 then
+                    elseif _target == -4 then
                         -- throw_ref: re-throw exception from stack
                         local exnref = stack[sp]; sp = sp - 1
                         if type(exnref) ~= "table" or exnref.tag == nil then
@@ -2718,7 +2717,7 @@ function Interp.run(instance, max_instructions)
                         running = false
                         break
                     else
-                        target_idx = target
+                        target_idx = _target
                     end
 
                     dbg_calls = dbg_calls + 1
@@ -2747,7 +2746,7 @@ function Interp.run(instance, max_instructions)
                             exec.blocking_return_arity = #target_type.results
                             exec.state = state; exec.call_stack = call_stack
                             exec.call_sp = call_sp; exec.func_idx = func_idx
-                            exec.compiled_entry_point = ctx.resume_point
+                            exec.compiled_entry_point = _resume
                             exec._blocking_result = handler_result
                             return
                         end
@@ -2760,7 +2759,7 @@ function Interp.run(instance, max_instructions)
                         end
                         mem_len = memory.byte_length
                         -- Continue compiled loop at resume point
-                        entry_point = ctx.resume_point
+                        entry_point = _resume
                     else
                         -- WASM-to-WASM call: push frame, set up callee
                         local args_base = sp - num_params
@@ -2773,7 +2772,7 @@ function Interp.run(instance, max_instructions)
                         frame.block_map = block_map; frame.stack_base = args_base
                         frame.return_arity = #target_type.results
                         frame.func_idx = func_idx
-                        frame.compiled_resume = ctx.resume_point
+                        frame.compiled_resume = _resume
                         frame.__sbs = ctx.__sbs
 
                         func_idx = target_idx
