@@ -102,6 +102,8 @@ function Input.init()
     storage.nh_input = {
       last_tile_pos = {},  -- player_index -> {x, y}
       processing = false,  -- flag to prevent re-entrant movement handling
+      last_move_dir = nil,  -- "dx,dy" string of last movement attempt
+      last_move_tick = nil, -- tick of last movement attempt
     }
   end
 end

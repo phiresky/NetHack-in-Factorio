@@ -12,6 +12,9 @@
 /* We support clipping */
 #define CLIPPING
 
+/* Enable text tombstone (genl_outrip in rip.c) */
+#define TEXT_TOMBSTONE
+
 /* No signals in WASM */
 #define NO_SIGNAL
 

@@ -332,7 +332,7 @@ factorio_askname()
     if (status < 0) {
         /* Quit requested */
         clearlocks();
-        nethack_exit(EXIT_SUCCESS);
+        exit(EXIT_SUCCESS);
     }
 
     /* Read player name (null-terminated chars queued by Lua) */
@@ -852,7 +852,19 @@ unsigned long *colormasks UNUSED;
         val = "";
     }
 
-    if (idx != BL_CONDITION) {
+    if (idx == BL_LEVELDESC) {
+        /* Format dungeon level like the Qt GUI: "Dungeons of Doom, level 1" */
+        char dlbuf[BUFSZ];
+        if (!describe_level(dlbuf)) {
+            /* Main dungeon - reconstruct long-form name */
+            Sprintf(dlbuf, "%s, level %d", dungeons[u.uz.dnum].dname, depth(&u.uz));
+        } else {
+            /* Special dungeon - trim trailing space from describe_level */
+            char *end = dlbuf + strlen(dlbuf) - 1;
+            while (end > dlbuf && *end == ' ') *end-- = '\0';
+        }
+        host_status_update(idx, dlbuf, (int) strlen(dlbuf), color, percent);
+    } else if (idx != BL_CONDITION) {
         /* Decode any \G glyph sequences in the value string */
         char decoded[BUFSZ * 2];
         decode_glyph_to_sprite(decoded, val);

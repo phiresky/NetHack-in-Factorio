@@ -265,11 +265,15 @@ function Gui.create_player_gui(player)
   local ui_width = player.display_resolution.width / player.display_scale
   local ui_height = player.display_resolution.height / player.display_scale
 
+  local minimap_width = 256
   -- Layout constants
-  local STATUS_WIDTH = 500
-  local total_width = math.min(1200, math.max(800, math.floor(ui_width * 0.80)))
+  local STATUS_WIDTH = 460
+  -- local total_width = math.min(1200, math.max(800, math.floor(ui_width * 0.80)))
+  -- total_width = math.min(total_width, math.floor(ui_width))  -- clamp to screen
+  local total_width = ui_width - minimap_width
+  -- player.display_resolution.width / player.display_scale - 16 -- ui_width - minimap_width
   -- Messages get the remaining space after status
-  local msg_width = total_width - STATUS_WIDTH - 16  -- account for padding/separator
+  local msg_width = math.max(200, total_width - STATUS_WIDTH - 32)  -- account for padding/separator
 
   -------------------------------------------------
   -- Single top panel: menu bar + [messages | status]
@@ -299,27 +303,6 @@ function Gui.create_player_gui(player)
       style = "nh_menubar_dropdown",
     }
   end
-
-  -- Hover info frame (bottom-right of screen, shows tile descriptions)
-  local hover_frame = screen.add{
-    type = "frame",
-    name = "nh_hover_frame",
-    direction = "vertical",
-    style = "nh_hover_frame",
-  }
-  hover_frame.visible = false
-  hover_frame.add{
-    type = "label",
-    name = "nh_hover_short",
-    caption = "",
-    style = "nh_hover_short_label",
-  }
-  hover_frame.add{
-    type = "label",
-    name = "nh_hover_long",
-    caption = "",
-    style = "nh_hover_long_label",
-  }
 
   -- Toolbar row (quick-access buttons)
   local toolbar = top_panel.add{
@@ -509,6 +492,28 @@ function Gui.create_player_gui(player)
     style = "nh_engine_count_label",
   }
 
+  -- Hover info frame (separate frame below top panel)
+  local hover_frame = screen.add{
+    type = "frame",
+    name = "nh_hover_frame",
+    direction = "vertical",
+    style = "nh_hover_frame",
+  }
+  hover_frame.location = {x = 0, y = math.floor(253 * player.display_scale)}
+  hover_frame.visible = false
+  hover_frame.add{
+    type = "label",
+    name = "nh_hover_short",
+    caption = "",
+    style = "nh_hover_short_label",
+  }
+  hover_frame.add{
+    type = "label",
+    name = "nh_hover_long",
+    caption = "",
+    style = "nh_hover_long_label",
+  }
+
   gui_data.player_frames[player.index] = true
 
   -- Render current status if available
@@ -590,8 +595,8 @@ end
 
 -- Flying text at player position, staggered to avoid overlap
 -- Tracks recent flying texts and offsets Y so multiple messages don't pile up
-local FLYING_TEXT_STAGGER_TICKS = 30  -- ~500ms window for staggering
-local FLYING_TEXT_Y_OFFSET = 0.8      -- vertical spacing between stacked texts
+local FLYING_TEXT_STAGGER_TICKS = 60  -- ~500ms window for staggering
+local FLYING_TEXT_Y_OFFSET = 0.4      -- vertical spacing between stacked texts
 
 function Gui.show_flying_text(player, text)
   if not player.character then return end
@@ -891,12 +896,14 @@ function Gui.destroy_window(winid)
   local gui_data = storage.nh_gui
   local win = gui_data.windows[winid]
 
-  -- If a text window is currently visible, leave the GUI element for the user
-  -- to dismiss via the OK button. The C code calls display_nhwindow(TEXT, TRUE)
-  -- expecting it to block, then immediately calls destroy_nhwindow. Since our
-  -- display is non-blocking, we defer GUI destruction to the nh_close_text_
-  -- click handler.
-  if win and win.visible and win.type == NHW_TEXT then
+  -- If a visible text-display window exists, leave the GUI element for the
+  -- user to dismiss via the OK button. This covers two patterns:
+  --   1. display_nhwindow(TEXT, TRUE) + destroy: our display is non-blocking,
+  --      so destroy fires before the user sees it.
+  --   2. checkfile/com_pager use NHW_MENU for text: display_nhwindow(MENU, FALSE)
+  --      + immediate destroy. Normal menus (via select_menu) never call
+  --      display_nhwindow, so win.visible stays false and this guard is skipped.
+  if win and win.visible and (win.type == NHW_TEXT or win.type == NHW_MENU) then
     gui_data.windows[winid] = nil
     return
   end
@@ -1506,9 +1513,6 @@ function Gui.create_loading_bar(player)
   local screen = player.gui.screen
   if screen.nh_loading_frame then return end
 
-  local ui_width = player.display_resolution.width / player.display_scale
-  local ui_height = player.display_resolution.height / player.display_scale
-
   local frame = screen.add{
     type = "frame",
     name = "nh_loading_frame",
@@ -1516,10 +1520,7 @@ function Gui.create_loading_bar(player)
     caption = "NetHack",
     style = "nh_loading_frame",
   }
-  frame.location = {
-    x = math.floor((ui_width - 350) / 2),
-    y = math.floor((ui_height - 120) / 2),
-  }
+  frame.auto_center = true
 
   frame.add{
     type = "label",
@@ -1643,19 +1644,7 @@ function Gui.update_hover_info(player, info)
     long_label.visible = false
   end
 
-  local vis = short_label.visible or long_label.visible
-  hover.visible = vis
-
-  if vis then
-    local long_len = info.long and #info.long or 0
-    local long_lines = math.max(1, math.ceil(long_len / 40))
-    local short_lines = info.short and 1 or 0
-    local est_height = (short_lines + long_lines) * 18 + 20
-
-    local ui_w = player.display_resolution.width / player.display_scale
-    local ui_h = player.display_resolution.height / player.display_scale
-    hover.location = {x = ui_w - 310, y = ui_h - 90 - est_height}
-  end
+  hover.visible = short_label.visible or long_label.visible
 end
 
 -----------------------------------------------------
@@ -1885,9 +1874,6 @@ function Gui.show_plsel_dialog(player)
     screen.nh_plsel_frame.destroy()
   end
 
-  local ui_width = player.display_resolution.width / player.display_scale
-  local ui_height = player.display_resolution.height / player.display_scale
-
   local frame = screen.add{
     type = "frame",
     name = "nh_plsel_frame",
@@ -1895,10 +1881,7 @@ function Gui.show_plsel_dialog(player)
     caption = "NetHack - Choose Your Character",
     style = "nh_plsel_frame",
   }
-  frame.location = {
-    x = math.floor((ui_width - 560) / 2),
-    y = math.floor((ui_height - 420) / 2),
-  }
+  frame.auto_center = true
 
   -- Name field
   local name_flow = frame.add{

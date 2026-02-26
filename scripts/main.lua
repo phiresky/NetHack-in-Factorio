@@ -291,6 +291,10 @@ local function run_and_process(max_instructions)
       state.running = false
       state.awaiting_input = false
       Gui.add_message("NetHack has ended.", 0)
+      local player = game.connected_players[1]
+      if player and player.character then
+        player.character.die()
+      end
       break
 
     elseif result.status == "error" then
@@ -539,6 +543,30 @@ local function on_player_changed_position(event)
   -- Crossed tile boundary - send direction to NetHack (direction_to_key clamps)
   local key = Input.direction_to_key(dx, dy)
   if not key then return end
+
+  -- Debounce: if same direction was recently attempted and @ hasn't moved,
+  -- throttle to every 30 ticks (~500ms) instead of 60/s.
+  local inp = storage.nh_input
+  local dir_key = dx .. "," .. dy
+
+  -- Clear debounce if @ has moved since last attempt (move succeeded, possibly
+  -- over multiple ticks of WASM execution)
+  if inp.last_move_pos_x ~= nh_pos.x or inp.last_move_pos_y ~= nh_pos.y then
+    inp.last_move_dir = nil
+    inp.last_move_tick = nil
+  end
+
+  if inp.last_move_dir == dir_key and inp.last_move_tick then
+    if game.tick - inp.last_move_tick < 30 then
+      update_player_position()
+      return
+    end
+  end
+
+  inp.last_move_dir = dir_key
+  inp.last_move_tick = game.tick
+  inp.last_move_pos_x = nh_pos.x
+  inp.last_move_pos_y = nh_pos.y
 
   Input.set_processing(true)
   advance_turn(key)
@@ -940,6 +968,19 @@ script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_stat
 script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
 script.on_event(defines.events.on_tick, on_tick)
 script.on_event("nh-click-move", on_click_move)
+
+-- Rebuild GUI when display resolution or scale changes (also fires shortly after
+-- on_player_created with the real resolution, replacing the default 1920x1080)
+local function on_display_changed(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  Gui.create_player_gui(player)
+  update_engine_gui()
+end
+script.on_event(defines.events.on_player_display_resolution_changed, on_display_changed)
+script.on_event(defines.events.on_player_display_scale_changed, on_display_changed)
 
 -- Register all custom input events
 for _, input_name in ipairs(Input.get_custom_input_names()) do

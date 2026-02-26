@@ -2315,6 +2315,10 @@ function Interp.run(instance, max_instructions)
 
     if not ok then
         exec.finished = true
+        -- WASI proc_exit throws {exit=true, status=N} — treat as clean finish
+        if type(err) == "table" and err.exit then
+            return {status = "finished", results = {}, exit_code = err.status}
+        end
         return {status = "error", message = err}
     end
 
