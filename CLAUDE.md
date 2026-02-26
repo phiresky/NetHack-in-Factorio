@@ -125,8 +125,7 @@ build/run_spec_tests.lua    — Spec test runner
 build/run_tests.sh          — Full test pipeline (clones spec suite, converts, runs all)
 build/test_values.lua       — Value conversion helpers for spec tests
 build/test_instantiate.lua  — End-to-end test: parse+instantiate+run NetHack WASM
-build/test_play.lua         — Play-through test (feeds inputs, verifies game state)
-build/bench_play.lua        — Precise WASM execution benchmark (startup + play timing)
+build/test_play.lua         — Play-through test + benchmark (--quiet --no-compile --no-inline --aot)
 build/json.lua              — Vendored JSON parser (rxi/json.lua)
 ```
 
@@ -282,7 +281,7 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   `-Os` is a no-op on clang `-Os` output (identical instruction count). `-Oz` gives
   smallest binary and ties for fastest. `-O3`/`-O4` are counterproductive (bigger+slower).
   `--converge` with `-Oz` is destructive (~30% slower). Overall wasm-opt impact is ~1%.
-  See `build/bench_play.lua` for the benchmark tool.
+  See `build/test_play.lua --quiet` for benchmarking.
 - **Menu at startup**: First input prompt is a getch (--More-- after intro text).
   The Factorio GUI input handler needs to work correctly.
 - **Tile sprites**: Real NetHack pixel art tiles replace ASCII placeholders.

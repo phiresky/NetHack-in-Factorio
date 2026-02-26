@@ -173,6 +173,7 @@ local Bridge = require("scripts.bridge")
 local use_aot = false
 for _, a in ipairs(arg or {}) do
     if a == "--no-compile" then WasmInterp.use_compiler = false end
+    if a == "--no-inline" then WasmInterp.inline_opcodes = false end
     if a == "--aot" then use_aot = true end
 end
 
@@ -494,3 +495,8 @@ if WasmInterp.use_compiler then
     mode = compiled_sources and "AOT" or "JIT"
 end
 print(string.format("  Compiler:     %s", mode))
+
+-- Machine-parseable output line (for scripts/benchmarking)
+io.write(string.format("RESULT load=%.2f parse=%.2f instantiate=%.2f startup=%.2f play=%.2f total_exec=%.2f inst_startup=%d inst_total=%d compiler=%s\n",
+    load_elapsed, parse_elapsed, instantiate_elapsed, startup_elapsed, play_elapsed,
+    startup_elapsed + play_elapsed, startup_instrs, total_instrs, mode))

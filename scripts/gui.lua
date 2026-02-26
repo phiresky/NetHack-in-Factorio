@@ -191,15 +191,34 @@ local MENU_BAR = {
   }},
 }
 
--- Build a lookup from button name -> {key, ext} for click handling
-local MENUBAR_LOOKUP = {}
+-- Build dropdown item lists and index->action lookup for each menu
+local MENU_DD_ITEMS = {}   -- menu.name -> {item strings}
+local MENU_DD_LOOKUP = {}  -- menu.name -> {[dropdown_index] -> {key, ext}}
+
 for _, menu in ipairs(MENU_BAR) do
-  for i, item in ipairs(menu.items) do
-    if not item.separator then
-      local btn_name = "nh_mb_" .. menu.name .. "_" .. i
-      MENUBAR_LOOKUP[btn_name] = {key = item.key, ext = item.ext}
+  local items = {menu.label}  -- index 1 = header (shown when closed)
+  local lookup = {}
+  for _, item in ipairs(menu.items) do
+    if item.separator then
+      items[#items + 1] = "───"
+      -- no lookup entry for separators
+    else
+      local shortcut = ""
+      if item.ext then
+        shortcut = "  #" .. item.ext
+      elseif item.key then
+        if item.key < 32 then
+          shortcut = "  ^" .. string.char(item.key + 64)
+        else
+          shortcut = "  " .. string.char(item.key)
+        end
+      end
+      items[#items + 1] = item.label .. shortcut
+      lookup[#items] = {key = item.key, ext = item.ext}
     end
   end
+  MENU_DD_ITEMS[menu.name] = items
+  MENU_DD_LOOKUP[menu.name] = lookup
 end
 
 -----------------------------------------------------
@@ -279,10 +298,11 @@ function Gui.create_player_gui(player)
   }
   for _, menu in ipairs(MENU_BAR) do
     menubar.add{
-      type = "button",
-      name = "nh_mb_toggle_" .. menu.name,
-      caption = menu.label,
-      style = "nh_menubar_button",
+      type = "drop-down",
+      name = "nh_mb_dd_" .. menu.name,
+      items = MENU_DD_ITEMS[menu.name],
+      selected_index = 1,
+      style = "nh_menubar_dropdown",
     }
   end
 
@@ -501,7 +521,7 @@ function Gui.destroy_player_gui(player)
 
   -- Destroy all our top-level screen elements
   local names = {
-    "nh_top_panel", "nh_mb_dropdown",
+    "nh_top_panel",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
@@ -1434,94 +1454,21 @@ function Gui.handle_toolbar_click(element_name)
   return nil
 end
 
--- Menu bar toggle: open/close a dropdown for the given menu name
-function Gui.handle_menubar_toggle(player, menu_name)
-  local screen = player.gui.screen
-  local dropdown = screen.nh_mb_dropdown
+-- Menu bar dropdown selection -> key code (and optional ext command), or nil
+-- Always resets dropdown to show the menu label (index 1).
+function Gui.handle_menubar_selection(element)
+  local menu_name = element.name:match("^nh_mb_dd_(.+)$")
+  if not menu_name then return nil end
 
-  -- Close existing dropdown (if any)
-  if dropdown then
-    local was_same = dropdown.tags and dropdown.tags.menu == menu_name
-    dropdown.destroy()
-    if was_same then return end  -- toggle off
-  end
+  local idx = element.selected_index
+  element.selected_index = 1  -- reset to header
 
-  -- Find the menu definition
-  local menu_def
-  for _, m in ipairs(MENU_BAR) do
-    if m.name == menu_name then menu_def = m; break end
-  end
-  if not menu_def then return end
+  if idx <= 1 then return nil end  -- clicked the header itself
 
-  -- Find the toggle button position for dropdown placement
-  local top_panel = screen.nh_top_panel
-  if not top_panel then return end
-  local menubar = top_panel.nh_menubar
-  if not menubar then return end
+  local lookup = MENU_DD_LOOKUP[menu_name]
+  if not lookup or not lookup[idx] then return nil end  -- separator or unknown
 
-  -- Create dropdown frame on screen, positioned below menu bar
-  local dd = screen.add{
-    type = "frame",
-    name = "nh_mb_dropdown",
-    direction = "vertical",
-    style = "nh_dropdown_frame",
-    tags = {menu = menu_name},
-  }
-  -- Position below the top panel, offset right for the menu
-  local x_offset = 8
-  for _, m in ipairs(MENU_BAR) do
-    if m.name == menu_name then break end
-    x_offset = x_offset + 70  -- approximate button width
-  end
-  dd.location = {x = x_offset, y = 30}
-
-  local scroll = dd.add{
-    type = "scroll-pane",
-    name = "nh_mb_dd_scroll",
-    horizontal_scroll_policy = "never",
-    vertical_scroll_policy = "auto-and-reserve-space",
-    style = "nh_dropdown_scroll",
-  }
-
-  for i, item in ipairs(menu_def.items) do
-    if item.separator then
-      scroll.add{type = "line", direction = "horizontal"}
-    else
-      local shortcut = ""
-      if item.ext then
-        shortcut = "  #" .. item.ext
-      elseif item.key then
-        if item.key < 32 then
-          shortcut = "  ^" .. string.char(item.key + 64)
-        else
-          shortcut = "  " .. string.char(item.key)
-        end
-      end
-      scroll.add{
-        type = "button",
-        name = "nh_mb_" .. menu_name .. "_" .. i,
-        caption = item.label .. shortcut,
-        style = "nh_dropdown_item_button",
-      }
-    end
-  end
-end
-
--- Menu bar item click -> key code (and optional ext command), or nil
-function Gui.handle_menubar_click(element_name)
-  local info = MENUBAR_LOOKUP[element_name]
-  if info then
-    return info.key, info.ext
-  end
-  return nil
-end
-
--- Close any open menu dropdown
-function Gui.close_dropdown(player)
-  local screen = player.gui.screen
-  if screen.nh_mb_dropdown then
-    screen.nh_mb_dropdown.destroy()
-  end
+  return lookup[idx].key, lookup[idx].ext
 end
 
 -----------------------------------------------------

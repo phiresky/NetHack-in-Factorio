@@ -667,37 +667,11 @@ local function on_gui_click(event)
   -- Toolbar button -> key code
   local tb_key = Gui.handle_toolbar_click(element.name)
   if tb_key then
-    Gui.close_dropdown(player)
     if state.input_type == "getch" or state.input_type == "yn" then
       if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
         player.gui.screen.nh_yn_frame.destroy()
       end
       advance_turn(tb_key)
-    end
-    return
-  end
-
-  -- Menu bar toggle button -> open/close dropdown
-  local toggle_menu = element.name:match("^nh_mb_toggle_(.+)$")
-  if toggle_menu then
-    Gui.handle_menubar_toggle(player, toggle_menu)
-    return
-  end
-
-  -- Menu bar item click -> key code (+ optional ext command)
-  local btn_key, ext_cmd = Gui.handle_menubar_click(element.name)
-  if btn_key then
-    Gui.close_dropdown(player)
-    if state.input_type == "getch" or state.input_type == "yn" then
-      -- Close yn popup if open (inline yn has no popup)
-      if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
-        player.gui.screen.nh_yn_frame.destroy()
-      end
-      if ext_cmd then
-        -- Extended command: send '#', then auto-respond with the command name
-        state.pending_ext_command = ext_cmd
-      end
-      advance_turn(btn_key)
     end
     return
   end
@@ -808,6 +782,33 @@ local function on_gui_confirmed(event)
     player.gui.screen.nh_getlin_frame.destroy()
   end
   advance_turn_string(text)
+end
+
+-- Dropdown selection change (menu bar dropdowns)
+local function on_gui_selection_state_changed(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input then return end
+
+  local player = game.get_player(event.player_index)
+  if not player then return end
+  local element = event.element
+  if not element or not element.valid then return end
+
+  -- Menu bar dropdown selection
+  local btn_key, ext_cmd = Gui.handle_menubar_selection(element)
+  if btn_key then
+    if state.input_type == "getch" or state.input_type == "yn" then
+      if state.input_type == "yn" and player.gui.screen.nh_yn_frame then
+        player.gui.screen.nh_yn_frame.destroy()
+      end
+      if ext_cmd then
+        state.pending_ext_command = ext_cmd
+      end
+      advance_turn(btn_key)
+    end
+    return
+  end
 end
 
 -- Checkbox state change (for plsel radio-button mutual exclusion)
@@ -931,6 +932,7 @@ end
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
+script.on_event(defines.events.on_gui_selection_state_changed, on_gui_selection_state_changed)
 script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
 script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
 script.on_event(defines.events.on_tick, on_tick)

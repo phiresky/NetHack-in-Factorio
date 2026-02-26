@@ -277,7 +277,10 @@ int *argcp UNUSED;
 char **argv UNUSED;
 {
     iflags.window_inited = TRUE;
+    /* Always use full menu for inventory, even with a single matching item */
+    iflags.force_invmenu = TRUE;
     /* flags.travelcmd defaults to TRUE (options.c), enabling click-to-travel */
+    iflags.echo = TRUE;
 }
 
 static void

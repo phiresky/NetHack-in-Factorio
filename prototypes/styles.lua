@@ -118,15 +118,9 @@ default_gui["nh_menubar_flow"] = {
   horizontal_spacing = 2,
 }
 
-default_gui["nh_menubar_button"] = {
-  type = "button_style",
-  font = "default-small-bold",
-  minimal_width = 56,
-  left_padding = 8,
-  right_padding = 8,
-  top_padding = 1,
-  bottom_padding = 1,
-  height = 24,
+default_gui["nh_menubar_dropdown"] = {
+  type = "dropdown_style",
+  width = 150,
 }
 
 -----------------------------------------------------
@@ -154,41 +148,6 @@ default_gui["nh_toolbar_button"] = {
 default_gui["nh_top_content_flow"] = {
   type = "horizontal_flow_style",
   horizontal_spacing = 4,
-}
-
-default_gui["nh_dropdown_frame"] = {
-  type = "frame_style",
-  top_padding = 4,
-  bottom_padding = 4,
-  left_padding = 4,
-  right_padding = 4,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.92,
-    },
-  },
-}
-
-default_gui["nh_dropdown_scroll"] = {
-  type = "scroll_pane_style",
-  maximal_height = 500,
-  minimal_width = 180,
-  extra_padding_when_activated = 0,
-}
-
-default_gui["nh_dropdown_item_button"] = {
-  type = "button_style",
-  font = "default-small",
-  font_color = {r = 0.9, g = 0.9, b = 0.9},
-  minimal_width = 172,
-  left_padding = 6,
-  right_padding = 6,
-  top_padding = 1,
-  bottom_padding = 1,
-  height = 24,
-  horizontally_stretchable = "on",
 }
 
 -----------------------------------------------------

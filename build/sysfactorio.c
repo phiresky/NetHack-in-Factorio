@@ -45,6 +45,8 @@ char *argv[];
 
     initoptions();
 
+    init_nhwindows(&argc, argv);
+
     u.uhp = 1; /* prevent RIP on early quits */
 
     dlb_init(); /* must be before newgame() */
