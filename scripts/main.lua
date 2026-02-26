@@ -21,10 +21,10 @@ local compiled_sources = require("scripts.nethack_compiled")
 local M = {}
 
 -- Maximum WASM instructions to execute per run() call
-local MAX_INSTRUCTIONS_PER_RUN = 50000
+local MAX_INSTRUCTIONS_PER_RUN = 100000
 
 -- Maximum instructions per tick (for background processing like level gen)
-local MAX_INSTRUCTIONS_PER_TICK = 20000
+local MAX_INSTRUCTIONS_PER_TICK = 500000
 
 ---------------------------------------------------------------------------
 -- NetHack Options (from Factorio mod startup settings)
@@ -298,7 +298,7 @@ local function run_and_process(max_instructions)
 
   local auto_feed_count = 0
   while true do
-    local result = WasmInterp.run(wasm_instance, max_instructions or MAX_INSTRUCTIONS_PER_RUN)
+    local result = WasmInterp.run(wasm_instance, max_instructions)
 
     if result.status == "waiting_input" then
       -- Auto-feed from input queue if available
@@ -455,7 +455,7 @@ local function start_nethack(player)
   state.game_started = true
 
   -- Run until we hit nhgetch (waiting for first input)
-  run_and_process()
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   update_engine_gui()
   update_player_position()
 
@@ -487,7 +487,7 @@ local function advance_turn(key_code)
   end
 
   WasmInterp.provide_input(wasm_instance, key_code)
-  run_and_process()
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   update_engine_gui()
   update_player_position()
 end
@@ -524,7 +524,7 @@ local function advance_turn_string(text)
   -- Feed first character, run_and_process drains the rest
   local first = table.remove(state.input_queue, 1)
   WasmInterp.provide_input(wasm_instance, first)
-  run_and_process()
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   update_engine_gui()
   update_player_position()
 end
@@ -555,7 +555,7 @@ local function advance_turn_menu(result)
 
   -- Provide count to resume from select_menu; run_and_process feeds IDs via queue
   WasmInterp.provide_input(wasm_instance, count)
-  run_and_process()
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   update_engine_gui()
   update_player_position()
 end
@@ -573,7 +573,7 @@ local function advance_turn_plsel(result)
     state.input_type = nil
     state.input_info = nil
     WasmInterp.provide_input(wasm_instance, -1)
-    run_and_process()
+    run_and_process(MAX_INSTRUCTIONS_PER_RUN)
     update_engine_gui()
     return
   end
@@ -598,7 +598,7 @@ local function advance_turn_plsel(result)
 
   -- Provide status 0 (play) to resume from host_plsel_show
   WasmInterp.provide_input(wasm_instance, 0)
-  run_and_process()
+  run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   update_engine_gui()
   update_player_position()
 end
@@ -1130,6 +1130,11 @@ local function on_display_changed(event)
   local player = game.get_player(event.player_index)
   if not player then return end
   Gui.create_player_gui(player)
+  -- Recreate loading bar if startup hasn't finished yet
+  -- (create_player_gui destroys all screen elements including nh_loading_frame)
+  if not state.first_input_received then
+    Gui.create_loading_bar(player)
+  end
   update_engine_gui()
 end
 script.on_event(defines.events.on_player_display_resolution_changed, on_display_changed)
