@@ -13,6 +13,8 @@
 local bit32 = bit32
 local math_floor = math.floor
 
+local Decode = require("scripts.wasm.decode")
+
 local Compiler = {}
 
 -- Mask for i32 wrapping
@@ -22,74 +24,10 @@ local M32 = 0xFFFFFFFF
 -- Bytecode decoder: pre-decode WASM bytecode into instruction list
 ---------------------------------------------------------------------------
 
--- Read unsigned LEB128 from byte array at position pos
--- Returns value, new_pos
-local function decode_leb128_u(code, pos)
-    local result = 0
-    local shift = 0
-    while true do
-        local b = code[pos]
-        pos = pos + 1
-        result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
-        if bit32.band(b, 0x80) == 0 then
-            return result, pos
-        end
-        shift = shift + 7
-    end
-end
-
--- Read signed LEB128 (i32) from byte array
-local function decode_leb128_s(code, pos)
-    local result = 0
-    local shift = 0
-    local b
-    while true do
-        b = code[pos]
-        pos = pos + 1
-        result = bit32.bor(result, bit32.lshift(bit32.band(b, 0x7F), shift))
-        shift = shift + 7
-        if bit32.band(b, 0x80) == 0 then break end
-    end
-    if shift < 32 and bit32.btest(b, 0x40) then
-        result = bit32.bor(result, bit32.lshift(-1, shift))
-    end
-    if bit32.btest(result, 0x80000000) then
-        return result - 0x100000000, pos
-    end
-    return result, pos
-end
-
--- Read signed LEB128 i64, returns {lo, hi}, new_pos
-local function decode_leb128_s64(code, pos)
-    local lo = 0
-    local hi = 0
-    local shift = 0
-    local b
-    while true do
-        b = code[pos]
-        pos = pos + 1
-        local val = bit32.band(b, 0x7F)
-        if shift < 32 then
-            lo = bit32.bor(lo, bit32.lshift(val, shift))
-            if shift + 7 > 32 then
-                hi = bit32.bor(hi, bit32.rshift(val, 32 - shift))
-            end
-        elseif shift < 64 then
-            hi = bit32.bor(hi, bit32.lshift(val, shift - 32))
-        end
-        shift = shift + 7
-        if bit32.band(b, 0x80) == 0 then break end
-    end
-    if bit32.btest(b, 0x40) then
-        if shift < 32 then
-            lo = bit32.bor(lo, bit32.lshift(0xFFFFFFFF, shift))
-            hi = 0xFFFFFFFF
-        elseif shift < 64 then
-            hi = bit32.bor(hi, bit32.lshift(0xFFFFFFFF, shift - 32))
-        end
-    end
-    return {lo, hi}, pos
-end
+-- Positional LEB128 decoders from shared module
+local decode_leb128_u = Decode.leb128_u
+local decode_leb128_s = Decode.leb128_s
+local decode_leb128_s64 = Decode.leb128_s64
 
 -- Read block type: signed LEB128. Returns (n_params, n_results, type_index_or_nil), new_pos
 -- type_index is non-nil only for type index blocktypes
@@ -706,8 +644,35 @@ local function generate_source(func_idx, func_def, module)
                 local val = fold[2](C)
                 if val ~= nil then emit(string.format(fold[1], val)) end
                 i = i + 2; goto continue_loop
-            elseif nop == 0x28 then -- i32.const C + i32.load
+            elseif nop == 0x28 then -- i32.const C + i32.load [+ branch]
                 local addr = C + ni.offset
+                -- 4-instr: const + load + eqz + br_if → load, branch if zero
+                if i + 3 <= n_instrs and instrs[i+2].op == 0x45 and instrs[i+3].op == 0x0D then
+                    emit(string.format("do local __addr = %s", u32_lit(addr)))
+                    emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    if bit32.band(addr, 3) == 0 then
+                        emit(string.format("  local __v = mem.data[%d] or 0", bit32.rshift(addr, 2)))
+                    else
+                        emit("  local __v; if band(__addr, 3) == 0 then __v = mem.data[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
+                    end
+                    emit_cond_branch_nopop(instrs[i+3].depth, "__v == 0")
+                    emit("end")
+                    i = i + 4; goto continue_loop
+                end
+                -- 3-instr: const + load + br_if → load, branch if nonzero
+                if i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
+                    emit(string.format("do local __addr = %s", u32_lit(addr)))
+                    emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    if bit32.band(addr, 3) == 0 then
+                        emit(string.format("  local __v = mem.data[%d] or 0", bit32.rshift(addr, 2)))
+                    else
+                        emit("  local __v; if band(__addr, 3) == 0 then __v = mem.data[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
+                    end
+                    emit_cond_branch_nopop(instrs[i+2].depth, "__v ~= 0")
+                    emit("end")
+                    i = i + 3; goto continue_loop
+                end
+                -- 2-instr: const + load → push to stack
                 emit("sp = sp + 1")
                 emit(string.format("do local __addr = %s", u32_lit(addr)))
                 emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
@@ -810,6 +775,45 @@ local function generate_source(func_idx, func_def, module)
             -- 3-instruction: local.get X + i32.eqz + br_if → direct branch on local
             if nop == 0x45 and i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
                 emit_cond_branch_nopop(instrs[i+2].depth, string.format("loc[%d] == 0", X))
+                i = i + 3; goto continue_loop
+            end
+
+            -- 2-instruction: local.get X + if → use loc[X] directly as condition
+            if nop == 0x04 then
+                local label_id = new_label()
+                local sb_var = "__sbs[" .. label_id .. "]"
+                block_sp = block_sp + 1
+                block_stack[block_sp] = {
+                    type = "if", label_id = label_id,
+                    n_results = ni.n_results, n_params = ni.n_params,
+                    has_else = false, stack_base_var = sb_var,
+                }
+                if ni.n_params > 0 then
+                    emit(sb_var .. " = sp - " .. ni.n_params)
+                else
+                    emit(sb_var .. " = sp")
+                end
+                emit(string.format("if loc[%d] == 0 then goto __else_%d end", X, label_id))
+                i = i + 2; goto continue_loop
+            end
+
+            -- 3-instruction: local.get X + i32.eqz + if → branch to else when nonzero
+            if nop == 0x45 and i + 2 <= n_instrs and instrs[i+2].op == 0x04 then
+                local if_instr = instrs[i+2]
+                local label_id = new_label()
+                local sb_var = "__sbs[" .. label_id .. "]"
+                block_sp = block_sp + 1
+                block_stack[block_sp] = {
+                    type = "if", label_id = label_id,
+                    n_results = if_instr.n_results, n_params = if_instr.n_params,
+                    has_else = false, stack_base_var = sb_var,
+                }
+                if if_instr.n_params > 0 then
+                    emit(sb_var .. " = sp - " .. if_instr.n_params)
+                else
+                    emit(sb_var .. " = sp")
+                end
+                emit(string.format("if loc[%d] ~= 0 then goto __else_%d end", X, label_id))
                 i = i + 3; goto continue_loop
             end
 
