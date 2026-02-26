@@ -1308,7 +1308,9 @@ function Interp.run(instance, max_instructions)
                     instructions = instructions + 50
                     dbg_segments = dbg_segments + 1
                     if instructions >= max_instr then
-                        state.sp = sp; state.locals = loc
+                        state.sp = sp; state.pc = pc; state.locals = loc
+                        state.code = code; state.block_stack = block_stack
+                        state.block_sp = block_sp; state.block_map = block_map
                         state.memory = memory; state.globals = globals
                         state.running = true
                         exec.call_stack = call_stack
