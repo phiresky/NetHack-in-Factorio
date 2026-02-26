@@ -112,9 +112,9 @@ local MENU_BAR = {
     {label = "History",       key = string.byte("V")},
     {label = "Options",       key = string.byte("O")},
     {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
-    {separator = true},
-    {label = "Save",          key = string.byte("S")},
-    {label = "Quit",          key = string.byte("#"), ext = "quit"},
+    -- {separator = true},
+    -- {label = "Save",          key = string.byte("S")},
+    -- {label = "Quit",          key = string.byte("#"), ext = "quit"},
   }},
   {name = "gear", label = "Gear", items = {
     {label = "Wield weapon",      key = string.byte("w")},
@@ -953,7 +953,9 @@ function Gui.show_menu(player, winid, how)
     type = "frame",
     name = "nh_menu_frame",
     direction = "vertical",
-    caption = win.prompt ~= "" and win.prompt or "Select",
+    caption = (win.prompt ~= "" and win.prompt)
+              or (storage.nh_bridge and storage.nh_bridge.inventory_prompt)
+              or "Select",
     style = "nh_menu_frame",
   }
   frame.location = {x = 200, y = 50}

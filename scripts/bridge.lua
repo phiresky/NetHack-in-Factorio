@@ -210,24 +210,25 @@ function Bridge.create_imports(memory_ref, instance_ref)
     Gui.add_message(query, 0)
     if not storage.nh_bridge then storage.nh_bridge = {} end
 
-    if query:match("%[.*%?.*%]") then
-      -- Inventory-style prompt (has '?' inside brackets, e.g. "[a-e or ?*]").
-      -- Auto-feed '?' to trigger NetHack's built-in inventory menu,
-      -- which provides a proper item-name selection UI via select_menu.
-      -- This applies whether resp is provided (specific letters) or empty (NULL).
-      -- Only do this ONCE per prompt cycle to prevent infinite loops:
-      -- if display_inventory returns without blocking (empty inventory),
-      -- getobj loops and calls yn_function again — without this guard,
-      -- '?' would be re-queued endlessly, freezing Factorio.
-      if not storage.nh_bridge.auto_fed_inventory then
-        storage.nh_bridge.auto_fed_inventory = true
-        local main_state = storage.nh_main
-        if main_state then
-          main_state.input_queue[#main_state.input_queue + 1] = string.byte("?")
-        end
+    -- Check for inventory-style prompt (brackets with ? or *)
+    local has_help = query:match("%[.*%?.*%]") or query:match("%[.*%*.*%]")
+
+    if has_help and not storage.nh_bridge.auto_fed_inventory then
+      -- First time: auto-feed '?' (or '*') to trigger NetHack's built-in
+      -- inventory menu, which provides item-name selection via select_menu.
+      -- Only do this ONCE per prompt cycle: after the inventory is dismissed,
+      -- getobj loops and calls yn_function again — the second call falls
+      -- through to the yn popup below.
+      storage.nh_bridge.auto_fed_inventory = true
+      storage.nh_bridge.inventory_prompt = query
+      local help_char = query:match("%[.*%?.*%]") and string.byte("?") or string.byte("*")
+      local main_state = storage.nh_main
+      if main_state then
+        main_state.input_queue[#main_state.input_queue + 1] = help_char
       end
     elseif resp ~= "" then
-      -- Simple y/n/q prompt (no '?' in brackets) — show yn prompt dialog
+      -- Show yn prompt popup: either a simple y/n/q prompt, or the re-prompt
+      -- after auto-fed inventory was dismissed (user picks item by letter).
       storage.nh_bridge.pending_yn = {query = query, resp = resp, def = def}
     end
     -- Otherwise (empty resp, no brackets): no pending_yn set,
@@ -353,151 +354,8 @@ Bridge._pos_cache = {}
 Bridge._long_cache = {}
 
 -- Clear position cache (call after each turn advance).
--- Precache is NOT aborted — it swaps exec states per-tick so game exec is always current.
 function Bridge.clear_pos_cache(instance)
   Bridge._pos_cache = {}
-end
-
--- Pre-cache queue: list of {x, y, entity_name} to process one per tick
-Bridge._precache_queue = {}
-Bridge._precache_dirty = false
-
--- Mark that the map may have changed (call after turn advance)
-function Bridge.mark_precache_dirty()
-  log("[precache] mark_dirty, queue=" .. #Bridge._precache_queue
-      .. " active=" .. tostring(Bridge._precache_active ~= nil))
-  Bridge._precache_dirty = true
-end
-
--- Scan a surface for unique NH entity types and queue uncached ones
-function Bridge.start_precache(surface)
-  Bridge._precache_dirty = false
-  local seen = {}
-  local queue = {}
-  local skipped = 0
-  for _, entity in pairs(surface.find_entities_filtered{name = "nh-player-marker", invert = true}) do
-    local ename = entity.name
-    if ename:find("^nh%-") and not seen[ename] then
-      seen[ename] = true
-      if Bridge._long_cache[ename] ~= nil then
-        skipped = skipped + 1
-      else
-        queue[#queue + 1] = {
-          x = math.floor(entity.position.x),
-          y = math.floor(entity.position.y),
-          entity_name = ename,
-        }
-      end
-    end
-  end
-  Bridge._precache_queue = queue
-  log("[precache] start_precache: queued=" .. #queue .. " already_cached=" .. skipped)
-end
-
--- Active precache state: saved game exec + in-progress describe exec
-Bridge._precache_active = nil  -- {saved_exec, entity_name}
-
--- Process one queued pre-cache entry across multiple ticks.
--- Runs up to `budget` WASM instructions per call. Returns true if more work remains.
--- IMPORTANT: instance.exec always holds the GAME state between ticks.
--- The describe call's exec is stored in _precache_active.describe_exec.
-function Bridge.tick_precache(instance, budget)
-  budget = budget or 1000
-  if not instance or not instance.exec then return false end
-
-  -- Resume an in-progress precache lookup
-  if Bridge._precache_active then
-    local active = Bridge._precache_active
-    -- Refresh saved game exec (it may have changed if player moved between ticks)
-    active.saved_exec = instance.exec
-    -- Swap in the describe exec state
-    instance.exec = active.describe_exec
-    local ok, err = pcall(function()
-      WasmInterp.run(instance, budget)
-    end)
-    local done = not ok or not instance.exec or instance.exec.finished
-    if done then
-      -- Finished (or errored) — read result and restore game state
-      local captured = storage.nh_bridge and storage.nh_bridge.describe_capture
-      if storage.nh_bridge then storage.nh_bridge.describe_capture = nil end
-      instance.exec = active.saved_exec
-
-      local result = storage.nh_bridge and storage.nh_bridge.describe_result
-      if storage.nh_bridge then storage.nh_bridge.describe_result = nil end
-      local short = nil
-      if result then
-        local parts = {}
-        if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
-        if result.buf ~= "" then parts[#parts + 1] = result.buf end
-        if #parts > 0 then
-          short = table.concat(parts, "  ")
-          Bridge._pos_cache[active.x .. "," .. active.y] = short
-        end
-      end
-      local long_text = nil
-      if captured and #captured > 0 then
-        long_text = table.concat(captured, "\n")
-        Bridge._long_cache[active.entity_name] = long_text
-      else
-        Bridge._long_cache[active.entity_name] = false
-      end
-      log("[precache] DONE " .. active.entity_name
-          .. " ok=" .. tostring(ok) .. " err=" .. tostring(err)
-          .. " short=" .. tostring(short ~= nil)
-          .. " long=" .. tostring(long_text ~= nil)
-          .. " queue=" .. #Bridge._precache_queue)
-      Bridge._precache_active = nil
-    else
-      -- Not done yet — save describe exec, restore game exec
-      active.describe_exec = instance.exec
-      instance.exec = active.saved_exec
-    end
-    return true
-  end
-
-  -- Ensure export index is cached
-  if not Bridge._describe_idx then
-    Bridge._describe_idx = WasmInterp.get_export(instance, "nh_describe_pos")
-    if not Bridge._describe_idx then return false end
-  end
-
-  -- Pick next uncached entry from queue
-  local queue = Bridge._precache_queue
-  while #queue > 0 do
-    local entry = table.remove(queue)
-    if Bridge._long_cache[entry.entity_name] == nil then
-      -- Start a new describe call
-      if not storage.nh_bridge then storage.nh_bridge = {} end
-      storage.nh_bridge.describe_result = nil
-      storage.nh_bridge.describe_capture = {}
-
-      local saved_exec = instance.exec
-      local ok, err = pcall(function()
-        WasmInterp.call(instance, Bridge._describe_idx, {entry.x, entry.y, 1})
-        WasmInterp.run(instance, budget)
-      end)
-      if not ok then
-        log("[precache] START ERROR " .. entry.entity_name .. " err=" .. tostring(err))
-        instance.exec = saved_exec
-        storage.nh_bridge.describe_capture = nil
-      else
-        log("[precache] START " .. entry.entity_name .. " at " .. entry.x .. "," .. entry.y
-            .. " queue=" .. #queue)
-        -- Save describe exec, restore game exec between ticks
-        Bridge._precache_active = {
-          saved_exec = saved_exec,
-          describe_exec = instance.exec,
-          entity_name = entry.entity_name,
-          x = entry.x, y = entry.y,
-        }
-        instance.exec = saved_exec
-      end
-      return true
-    else
-      log("[precache] SKIP " .. entry.entity_name .. " (already cached)")
-    end
-  end
-  return false
 end
 
 -- Describe a map position by calling nh_describe_pos in WASM.
@@ -531,22 +389,6 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
       else
         return {short = short, long = cached_long or nil}
       end
-    end
-  end
-
-  -- Cache miss — need a WASM call. Abort any in-progress precache first.
-  if Bridge._precache_active then
-    local aborted = Bridge._precache_active
-    log("[precache] ABORT by describe_pos, was=" .. aborted.entity_name
-        .. " queue=" .. #Bridge._precache_queue)
-    -- Push aborted entry back to queue so it's not lost
-    Bridge._precache_queue[#Bridge._precache_queue + 1] = {
-      x = aborted.x, y = aborted.y, entity_name = aborted.entity_name,
-    }
-    Bridge._precache_active = nil
-    if storage.nh_bridge then
-      storage.nh_bridge.describe_capture = nil
-      storage.nh_bridge.describe_result = nil
     end
   end
 

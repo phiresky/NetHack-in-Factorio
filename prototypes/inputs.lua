@@ -27,8 +27,8 @@ inp("nh-puton",       "ALT + SHIFT + P")
 inp("nh-remove",      "ALT + SHIFT + R")
 
 -- Item interaction
-inp("nh-pickup",      "COMMA")
-inp("nh-wait",        "PERIOD")
+inp("nh-pickup",      "ALT + COMMA")
+inp("nh-wait",        "ALT + PERIOD")
 inp("nh-search",      "ALT + S")
 inp("nh-open",        "ALT + O")
 inp("nh-close",       "ALT + C")
@@ -46,8 +46,8 @@ inp("nh-apply",       "ALT + A")
 
 -- Information
 inp("nh-look-here",   "SHIFT + ;")        -- :
-inp("nh-far-look",    "SEMICOLON")        -- ;
-inp("nh-whatis",      "SLASH")            -- /
+inp("nh-far-look",    "ALT + SEMICOLON")        -- ;
+inp("nh-whatis",      "ALT + SLASH")            -- /
 
 -- Consumables
 inp("nh-quaff",       "ALT + Q")

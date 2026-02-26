@@ -35,8 +35,6 @@ local function init_modules()
   Input.init()
   Gui.init()
   Bridge.init()
-  Display.on_new_entity_type = function() Bridge.mark_precache_dirty() end
-
   if not storage.nh_main then
     storage.nh_main = {
       game_started = false,
@@ -170,14 +168,6 @@ local function update_engine_gui()
   else
     engine_state = "Stopped"
     color = {r = 0.6, g = 0.6, b = 0.6}
-  end
-
-  -- Show precache progress in engine state
-  local precache_n = #Bridge._precache_queue
-  if precache_n > 0 or Bridge._precache_active then
-    local active_name = Bridge._precache_active and Bridge._precache_active.entity_name or ""
-    active_name = active_name:gsub("^nh%-[a-z]+%-", ""):gsub("%-", " ")
-    engine_state = engine_state .. "  [caching: " .. active_name .. " +" .. precache_n .. "]"
   end
 
   Gui.update_engine_state(engine_state, instructions, color)
@@ -355,11 +345,6 @@ local function start_nethack(player)
   update_engine_gui()
   update_player_position()
 
-  -- Pre-cache descriptions for all visible entity types
-  local surface = game.surfaces[state.level_name or "nh-dungeon-0"]
-  if surface then
-    Bridge.start_precache(surface)
-  end
 end
 
 ---------------------------------------------------------------------------
@@ -372,6 +357,7 @@ local function advance_turn(key_code)
   local state = storage.nh_main
   if not state.awaiting_input or not wasm_instance then return end
 
+  state.last_advance_tick = game.tick
   Bridge.clear_pos_cache(wasm_instance)
   Bridge.mark_precache_dirty()
   state.awaiting_input = false
@@ -567,6 +553,13 @@ local function on_custom_input(event)
 
   local key = Input.custom_input_to_key(event.input_name)
   if not key then return end
+
+  -- Guard: nh-menu-* and nh-apply/nh-eat/etc. share ALT+letter bindings,
+  -- so Factorio fires both events in the same tick. Skip menu-letter events
+  -- if advance_turn already ran this tick (it already processed the command).
+  if event.input_name:match("^nh%-menu%-") and state.last_advance_tick == game.tick then
+    return
+  end
 
   local player = game.get_player(event.player_index)
 
@@ -878,8 +871,17 @@ local function on_click_move(event)
   local dx = math.abs(gx - nh_pos.x)
   local dy = math.abs(gy - nh_pos.y)
 
-  -- Only handle distant clicks (> 1 tile); adjacent movement uses walking
-  if dx <= 1 and dy <= 1 then return end
+  -- Adjacent click: send direction key (for movement and "In what direction?" prompts)
+  if dx <= 1 and dy <= 1 then
+    local dir_dx = gx - nh_pos.x
+    local dir_dy = gy - nh_pos.y
+    if dir_dx == 0 and dir_dy == 0 then return end  -- same tile, ignore
+    local key = Input.direction_to_key(dir_dx, dir_dy)
+    if key then
+      advance_turn(key)
+    end
+    return
+  end
 
   -- Store click data for the C-side nh_poskey to read
   if not storage.nh_bridge then storage.nh_bridge = {} end
