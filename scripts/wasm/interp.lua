@@ -854,7 +854,7 @@ end
 -- Instantiation
 ---------------------------------------------------------------------------
 
-function Interp.instantiate(module, imports, compiled_sources)
+function Interp.instantiate(module, imports, compiled_sources, restore_state)
     imports = imports or {}
 
     local instance = {
@@ -870,52 +870,67 @@ function Interp.instantiate(module, imports, compiled_sources)
         total_instructions = 0, -- accumulates across ALL run() calls (incl. nested)
     }
 
-    -- Allocate memory
-    local mem_def = module.memory_def
-    local initial_pages = 1
-    local max_pages = nil
-    if mem_def then
-        initial_pages = mem_def.initial or 1
-        max_pages = mem_def.maximum
-    end
-    -- Check if memory is imported
-    for _, imp in ipairs(module.imports) do
-        if imp.kind == WasmParser.EXT_MEMORY then
-            local mem = resolve_import(imports, imp.module, imp.name)
-            if mem then
-                instance.memory = mem
-            else
-                -- Use import's limits if no provider found
-                if imp.desc and imp.desc.limits then
-                    initial_pages = imp.desc.limits.initial or 0
-                    max_pages = imp.desc.limits.maximum
+    if restore_state then
+        -- Restore mode: use saved memory/globals/tables from storage
+        instance.memory = Memory.wrap(
+            restore_state.memory_data,
+            restore_state.memory_pages,
+            restore_state.memory_max_pages
+        )
+        instance.globals = restore_state.globals
+        instance.tables = restore_state.tables
+        instance.table_sizes = restore_state.table_sizes
+        instance.data_segments_raw = restore_state.dropped_data_segs or {}
+        instance.element_segments_raw = restore_state.dropped_elem_segs or {}
+        instance.total_instructions = restore_state.total_instructions or 0
+    else
+        -- Normal mode: allocate fresh memory
+        local mem_def = module.memory_def
+        local initial_pages = 1
+        local max_pages = nil
+        if mem_def then
+            initial_pages = mem_def.initial or 1
+            max_pages = mem_def.maximum
+        end
+        -- Check if memory is imported
+        for _, imp in ipairs(module.imports) do
+            if imp.kind == WasmParser.EXT_MEMORY then
+                local mem = resolve_import(imports, imp.module, imp.name)
+                if mem then
+                    instance.memory = mem
+                else
+                    -- Use import's limits if no provider found
+                    if imp.desc and imp.desc.limits then
+                        initial_pages = imp.desc.limits.initial or 0
+                        max_pages = imp.desc.limits.maximum
+                    end
                 end
             end
         end
-    end
-    if not instance.memory then
-        instance.memory = Memory.new(initial_pages, max_pages)
-    end
+        if not instance.memory then
+            instance.memory = Memory.new(initial_pages, max_pages)
+        end
 
-    -- Set up imported globals
-    local global_idx = 0
-    for _, imp in ipairs(module.imports) do
-        if imp.kind == WasmParser.EXT_GLOBAL then
-            local val = resolve_import(imports, imp.module, imp.name)
-            if val ~= nil then
-                instance.globals[global_idx] = val
-            else
-                instance.globals[global_idx] = default_value(imp.desc.valtype)
+        -- Set up imported globals
+        local global_idx = 0
+        for _, imp in ipairs(module.imports) do
+            if imp.kind == WasmParser.EXT_GLOBAL then
+                local val = resolve_import(imports, imp.module, imp.name)
+                if val ~= nil then
+                    instance.globals[global_idx] = val
+                else
+                    instance.globals[global_idx] = default_value(imp.desc.valtype)
+                end
+                global_idx = global_idx + 1
             end
+        end
+
+        -- Set up module globals
+        for _, g in ipairs(module.globals) do
+            local val = eval_init_expr(g.init, g.init_opcode, instance.globals)
+            instance.globals[global_idx] = val
             global_idx = global_idx + 1
         end
-    end
-
-    -- Set up module globals
-    for _, g in ipairs(module.globals) do
-        local val = eval_init_expr(g.init, g.init_opcode, instance.globals)
-        instance.globals[global_idx] = val
-        global_idx = global_idx + 1
     end
 
     -- Initialize tags (imported + module-defined)
@@ -951,52 +966,54 @@ function Interp.instantiate(module, imports, compiled_sources)
         end
     end
 
-    -- Initialize data segments
-    for i, seg in ipairs(module.data_segments) do
-        if seg.passive then goto continue_data end
-        local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
-        if type(offset) == "number" then
-            if offset + #seg.data > instance.memory.byte_length or offset < 0 then
-                fail("out of bounds memory access")
-            end
-            instance.memory:write_bytes(offset, seg.data)
-        end
-        instance.data_segments_raw[i] = seg.data
-        ::continue_data::
-    end
-
-    -- Initialize tables (imported + module-defined)
-    local table_count = 0
-    for _, imp in ipairs(module.imports) do
-        if imp.kind == WasmParser.EXT_TABLE then
-            instance.tables[table_count] = {}
-            instance.table_sizes[table_count] = imp.desc.limits.initial or 0
-            table_count = table_count + 1
-        end
-    end
-    for _, tbl_def in ipairs(module.tables) do
-        instance.tables[table_count] = {}
-        instance.table_sizes[table_count] = tbl_def.limits.initial or 0
-        table_count = table_count + 1
-    end
-
-    -- Initialize element segments
-    for i, seg in ipairs(module.element_segments) do
-        if not seg.passive and not seg.declarative then
-            local tbl_idx = seg.table_idx or 0
+    if not restore_state then
+        -- Initialize data segments
+        for i, seg in ipairs(module.data_segments) do
+            if seg.passive then goto continue_data end
             local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
             if type(offset) == "number" then
-                local tbl_size = instance.table_sizes[tbl_idx] or 0
-                if offset + #seg.func_indices > tbl_size or offset < 0 then
-                    fail("out of bounds table access")
+                if offset + #seg.data > instance.memory.byte_length or offset < 0 then
+                    fail("out of bounds memory access")
                 end
-                local tbl = instance.tables[tbl_idx]
-                for j, fidx in ipairs(seg.func_indices) do
-                    tbl[offset + j - 1] = fidx
-                end
+                instance.memory:write_bytes(offset, seg.data)
+            end
+            instance.data_segments_raw[i] = seg.data
+            ::continue_data::
+        end
+
+        -- Initialize tables (imported + module-defined)
+        local table_count = 0
+        for _, imp in ipairs(module.imports) do
+            if imp.kind == WasmParser.EXT_TABLE then
+                instance.tables[table_count] = {}
+                instance.table_sizes[table_count] = imp.desc.limits.initial or 0
+                table_count = table_count + 1
             end
         end
-        instance.element_segments_raw[i] = seg.func_indices
+        for _, tbl_def in ipairs(module.tables) do
+            instance.tables[table_count] = {}
+            instance.table_sizes[table_count] = tbl_def.limits.initial or 0
+            table_count = table_count + 1
+        end
+
+        -- Initialize element segments
+        for i, seg in ipairs(module.element_segments) do
+            if not seg.passive and not seg.declarative then
+                local tbl_idx = seg.table_idx or 0
+                local offset = eval_init_expr(seg.offset, seg.offset_opcode, instance.globals)
+                if type(offset) == "number" then
+                    local tbl_size = instance.table_sizes[tbl_idx] or 0
+                    if offset + #seg.func_indices > tbl_size or offset < 0 then
+                        fail("out of bounds table access")
+                    end
+                    local tbl = instance.tables[tbl_idx]
+                    for j, fidx in ipairs(seg.func_indices) do
+                        tbl[offset + j - 1] = fidx
+                    end
+                end
+            end
+            instance.element_segments_raw[i] = seg.func_indices
+        end
     end
 
     -- Convert function bytecode from strings to byte arrays for faster access
@@ -1062,8 +1079,8 @@ function Interp.instantiate(module, imports, compiled_sources)
         if self.ctx then self.ctx.__sbs = saved.sbs end
     end
 
-    -- Run start function if present
-    if module.start_func then
+    -- Run start function if present (skip on restore — already ran)
+    if not restore_state and module.start_func then
         Interp.call(instance, module.start_func, {})
         local result = Interp.run(instance, 10000000) -- generous budget for start
         if result.status == "error" then
@@ -1074,6 +1091,144 @@ function Interp.instantiate(module, imports, compiled_sources)
     end
 
     return instance
+end
+
+---------------------------------------------------------------------------
+-- Exec state snapshot (for Factorio save/load)
+-- Creates a serializable copy of execution state, stripping non-serializable
+-- references (code, block_map, memory, globals, instance, module).
+---------------------------------------------------------------------------
+
+function Interp.snapshot_exec(instance)
+    if not instance or not instance.exec then return nil end
+    local exec = instance.exec
+    local s = exec.state
+
+    local snap = {
+        func_idx = exec.func_idx,
+        pc = s.pc,
+        sp = s.sp,
+        locals = s.locals,
+        block_sp = s.block_sp,
+        running = s.running,
+        exception = s.exception,
+        call_sp = exec.call_sp,
+        waiting_input = exec.waiting_input,
+        blocking_return_arity = exec.blocking_return_arity,
+        finished = exec.finished,
+        compiled_entry_point = exec.compiled_entry_point,
+    }
+
+    -- Copy stack (1-indexed, up to sp)
+    local stack_copy = {}
+    for i = 1, s.sp do stack_copy[i] = s.stack[i] end
+    snap.stack = stack_copy
+
+    -- Copy block_stack (1-indexed, up to block_sp)
+    local bs_copy = {}
+    for i = 1, s.block_sp do bs_copy[i] = s.block_stack[i] end
+    snap.block_stack = bs_copy
+
+    -- Copy call stack frames (strip code/block_map, keep func_idx)
+    local frames = {}
+    for i = 1, exec.call_sp do
+        local f = exec.call_stack[i]
+        frames[i] = {
+            func_idx = f.func_idx,
+            pc = f.pc,
+            locals = f.locals,
+            block_stack = f.block_stack,
+            block_sp = f.block_sp,
+            stack_base = f.stack_base,
+            return_arity = f.return_arity,
+            compiled_resume = f.compiled_resume,
+            __sbs = f.__sbs,
+        }
+    end
+    snap.frames = frames
+
+    snap.ctx_sbs = instance.ctx and instance.ctx.__sbs
+    snap.total_instructions = instance.total_instructions
+
+    return snap
+end
+
+---------------------------------------------------------------------------
+-- Exec state restoration (for Factorio save/load)
+-- Reconstructs execution state from a snapshot, re-linking code/block_map
+-- references from the re-parsed module.
+---------------------------------------------------------------------------
+
+function Interp.restore_exec(instance, snapshot)
+    if not snapshot then return end
+    local module = instance.module
+
+    -- Get current function's code/block_map
+    local func_def = module.funcs[snapshot.func_idx]
+    local state = {
+        stack = snapshot.stack,
+        sp = snapshot.sp,
+        locals = snapshot.locals,
+        memory = instance.memory,
+        globals = instance.globals,
+        instance = instance,
+        module = module,
+        pc = snapshot.pc,
+        code = func_def.code.code,
+        block_map = func_def.code.block_map,
+        block_stack = snapshot.block_stack,
+        block_sp = snapshot.block_sp,
+        running = snapshot.running,
+        do_return = false,
+        call_func = nil,
+        exception = snapshot.exception,
+    }
+
+    -- Rebuild call stack frames with code/block_map references
+    local call_stack = {}
+    for i = 1, snapshot.call_sp do
+        local sf = snapshot.frames[i]
+        local frame_func = module.funcs[sf.func_idx]
+        call_stack[i] = {
+            locals = sf.locals,
+            pc = sf.pc,
+            code = frame_func.code.code,
+            block_map = frame_func.code.block_map,
+            block_stack = sf.block_stack,
+            block_sp = sf.block_sp,
+            stack_base = sf.stack_base,
+            return_arity = sf.return_arity,
+            func_idx = sf.func_idx,
+            compiled_resume = sf.compiled_resume,
+            __sbs = sf.__sbs,
+        }
+    end
+
+    -- Determine top-level function type (original function passed to Interp.call)
+    local top_func_idx = snapshot.call_sp > 0
+        and snapshot.frames[1].func_idx
+        or snapshot.func_idx
+    local top_func_def = module.funcs[top_func_idx]
+    local top_type_info = module.types[top_func_def.type_idx + 1]
+
+    instance.exec = {
+        state = state,
+        call_stack = call_stack,
+        call_sp = snapshot.call_sp,
+        func_idx = snapshot.func_idx,
+        top_type_info = top_type_info,
+        waiting_input = snapshot.waiting_input,
+        blocking_return_arity = snapshot.blocking_return_arity,
+        finished = snapshot.finished,
+        compiled_entry_point = snapshot.compiled_entry_point,
+    }
+
+    instance.total_instructions = snapshot.total_instructions or 0
+
+    -- Restore ctx.__sbs for compiled code
+    if instance.ctx and snapshot.ctx_sbs ~= nil then
+        instance.ctx.__sbs = snapshot.ctx_sbs
+    end
 end
 
 ---------------------------------------------------------------------------

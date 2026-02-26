@@ -82,9 +82,13 @@ end
 -- VFS file fds start at 4.
 -----------------------------------------------------------------------
 
-local function vfs_new()
+local function vfs_new(overlay)
+    -- Use a metatable overlay so writes go to a separate table while reads
+    -- fall through to the immutable nethack_data module.
+    local files = setmetatable(overlay or {}, {__index = nethack_data})
+
     local vfs = {
-        files = nethack_data,  -- filename -> content string
+        files = files,         -- filename -> content string (overlay + nethack_data)
         fds = {},              -- fd -> {data=string, pos=number, writable=bool, name=string}
         next_fd = 4,           -- fd 3 is preopened dir
     }

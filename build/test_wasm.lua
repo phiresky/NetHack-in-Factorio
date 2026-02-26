@@ -919,6 +919,189 @@ test("instruction budget pause and resume", function()
     assert_eq(result.results[1], 5050, "sum 1..100 = 5050")
 end)
 
+print("--- Save/Restore ---")
+
+test("snapshot and restore exec at blocking import", function()
+    -- Module: calls blocking import twice and sums results. Tests that
+    -- snapshot/restore preserves stack and exec state across a simulated save/load.
+    local mod = Parser.parse(make_module({
+        types = {functype({}, {I32}), functype({}, {I32})},
+        imports = {{module = "env", name = "get_input", type_idx = 0}},
+        func_types = {1},
+        name = "test",
+        code = string.char(
+            0x10, 0x00,                     -- call get_input -> first value
+            0x10, 0x00,                     -- call get_input -> second value
+            0x6A),                          -- i32.add
+    }))
+
+    local blocking_import = {
+        blocking = true,
+        handler = function() return {input_type = "getch"} end,
+    }
+
+    -- First instance: run to first blocking point
+    local inst1 = Interp.instantiate(mod, {["env.get_input"] = blocking_import})
+    local func_idx = Interp.get_export(inst1, "test")
+    Interp.call(inst1, func_idx, {})
+    local result = Interp.run(inst1, 50000)
+    assert_eq(result.status, "waiting_input", "should pause at first import")
+
+    -- Provide first input
+    Interp.provide_input(inst1, 10)
+    result = Interp.run(inst1, 50000)
+    assert_eq(result.status, "waiting_input", "should pause at second import")
+
+    -- SNAPSHOT the exec state
+    local snapshot = Interp.snapshot_exec(inst1)
+    assert(snapshot, "snapshot should be non-nil")
+    assert_eq(snapshot.waiting_input, true, "snapshot should be waiting")
+
+    -- Create a NEW instance in restore mode, simulating save/load
+    local restore_state = {
+        memory_data = inst1.memory.data,
+        memory_pages = inst1.memory.page_count,
+        memory_max_pages = inst1.memory.max_pages,
+        globals = inst1.globals,
+        tables = inst1.tables,
+        table_sizes = inst1.table_sizes,
+        dropped_data_segs = inst1.data_segments_raw,
+        dropped_elem_segs = inst1.element_segments_raw,
+        total_instructions = inst1.total_instructions,
+    }
+    local mod2 = Parser.parse(make_module({
+        types = {functype({}, {I32}), functype({}, {I32})},
+        imports = {{module = "env", name = "get_input", type_idx = 0}},
+        func_types = {1},
+        name = "test",
+        code = string.char(
+            0x10, 0x00,
+            0x10, 0x00,
+            0x6A),
+    }))
+    local inst2 = Interp.instantiate(mod2, {["env.get_input"] = blocking_import}, nil, restore_state)
+
+    -- Restore exec from snapshot
+    Interp.restore_exec(inst2, snapshot)
+
+    -- Provide second input on the RESTORED instance
+    Interp.provide_input(inst2, 32)
+    result = Interp.run(inst2, 50000)
+    assert_eq(result.status, "finished", "restored should finish")
+    assert_eq(result.results[1], 42, "10 + 32 = 42 after restore")
+end)
+
+test("snapshot and restore exec at instruction budget", function()
+    -- Loop summing 1..100. Pause mid-loop via budget, snapshot, restore, finish.
+    local mod_bytes = make_module({
+        params = {I32}, results = {I32},
+        locals = leb128(1) .. leb128(1) .. string.char(I32),
+        code = string.char(
+            0x41, 0x00, 0x21, 0x01,   -- result = 0
+            0x02, 0x40,               -- block void
+            0x03, 0x40,               -- loop void
+            0x20, 0x01, 0x20, 0x00, 0x6A, 0x21, 0x01,  -- result += n
+            0x20, 0x00, 0x41, 0x01, 0x6B, 0x22, 0x00,  -- n = n-1, tee
+            0x0D, 0x00,               -- br_if 0 (loop)
+            0x0B, 0x0B,               -- end loop, end block
+            0x20, 0x01),              -- local.get result
+    })
+
+    local mod = Parser.parse(mod_bytes)
+    local inst = Interp.instantiate(mod, {})
+    local func_idx = Interp.get_export(inst, "test")
+    Interp.call(inst, func_idx, {100})
+
+    -- Run with tiny budget to pause mid-loop
+    local result = Interp.run(inst, 50)
+    assert_eq(result.status, "running", "should still be running")
+
+    -- Snapshot
+    local snapshot = Interp.snapshot_exec(inst)
+    assert(snapshot, "snapshot should be non-nil")
+
+    -- Restore into a new instance
+    local restore_state = {
+        memory_data = inst.memory.data,
+        memory_pages = inst.memory.page_count,
+        memory_max_pages = inst.memory.max_pages,
+        globals = inst.globals,
+        tables = inst.tables,
+        table_sizes = inst.table_sizes,
+        dropped_data_segs = inst.data_segments_raw,
+        dropped_elem_segs = inst.element_segments_raw,
+        total_instructions = inst.total_instructions,
+    }
+    local mod2 = Parser.parse(mod_bytes)
+    local inst2 = Interp.instantiate(mod2, {}, nil, restore_state)
+    Interp.restore_exec(inst2, snapshot)
+
+    -- Resume on restored instance
+    result = Interp.run(inst2, 50000)
+    assert_eq(result.status, "finished", "restored should finish")
+    assert_eq(result.results[1], 5050, "sum 1..100 = 5050 after restore")
+end)
+
+test("snapshot and restore with memory writes", function()
+    -- Write a value to memory, pause at blocking import, restore, read it back
+    local mod_bytes = make_module({
+        types = {functype({}, {I32}), functype({}, {I32})},
+        imports = {{module = "env", name = "get_input", type_idx = 0}},
+        func_types = {1},
+        name = "test",
+        code = string.char(
+            -- store 0xDEAD at memory[0]
+            0x41, 0x00,                     -- i32.const 0 (addr)
+            0x41, 0xAD, 0xBD, 0x03,        -- i32.const 0xDEAD (leb128)
+            0x36, 0x02, 0x00,              -- i32.store align=2 offset=0
+            -- call blocking import
+            0x10, 0x00,                     -- call get_input
+            -- load memory[0] and add to input
+            0x41, 0x00,                     -- i32.const 0 (addr)
+            0x28, 0x02, 0x00,              -- i32.load align=2 offset=0
+            0x6A),                          -- i32.add
+    })
+
+    local blocking_import = {
+        blocking = true,
+        handler = function() return {input_type = "getch"} end,
+    }
+
+    local mod = Parser.parse(mod_bytes)
+    local inst = Interp.instantiate(mod, {["env.get_input"] = blocking_import})
+    local func_idx = Interp.get_export(inst, "test")
+    Interp.call(inst, func_idx, {})
+
+    -- Run to blocking point (after memory write)
+    local result = Interp.run(inst, 50000)
+    assert_eq(result.status, "waiting_input", "should pause")
+
+    -- Snapshot
+    local snapshot = Interp.snapshot_exec(inst)
+
+    -- Restore into new instance (sharing memory data table)
+    local restore_state = {
+        memory_data = inst.memory.data,
+        memory_pages = inst.memory.page_count,
+        memory_max_pages = inst.memory.max_pages,
+        globals = inst.globals,
+        tables = inst.tables,
+        table_sizes = inst.table_sizes,
+        dropped_data_segs = inst.data_segments_raw,
+        dropped_elem_segs = inst.element_segments_raw,
+        total_instructions = inst.total_instructions,
+    }
+    local mod2 = Parser.parse(mod_bytes)
+    local inst2 = Interp.instantiate(mod2, {["env.get_input"] = blocking_import}, nil, restore_state)
+    Interp.restore_exec(inst2, snapshot)
+
+    -- Provide input on restored instance
+    Interp.provide_input(inst2, 1)
+    result = Interp.run(inst2, 50000)
+    assert_eq(result.status, "finished", "should finish")
+    assert_eq(result.results[1], 0xDEAD + 1, "memory survives restore")
+end)
+
 -- ====================================================================
 -- LOAD .wasm FILES FROM DISK (if available)
 -- ====================================================================

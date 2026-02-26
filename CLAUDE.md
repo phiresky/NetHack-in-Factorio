@@ -272,6 +272,16 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   directly accessible from RCON `lua_exec`. Use the remote interface instead:
   `remote.call("nethack", "get_display")`, `remote.call("nethack", "get_bridge")`,
   `remote.call("nethack", "get_main")`, `remote.call("nethack", "get_input")`.
+- **Save/restore via direct storage integration**: WASM mutable state (memory.data,
+  globals, tables) lives directly as subtables of Factorio's `storage`. No explicit
+  serialization needed — writes during gameplay go through shared references. Only
+  exec state needs explicit snapshots (at every `run_and_process` exit), stripping
+  non-serializable references (code, block_map, module) and replacing with `func_idx`
+  for reconstruction on load. `Memory.wrap()` creates a Memory object backed by an
+  existing data table. VFS uses a metatable overlay (`__index = nethack_data`) so
+  only modified files are persisted. On `on_load`, the WASM binary is re-parsed,
+  instance created in restore mode (skips segment init + `_start`), exec
+  reconstructed by re-linking code/block_map from `module.funcs[func_idx]`.
 - **Compiled/interpreter resume mismatch**: When budget expires mid-interpretation
   of a function that also has a compiled version, the outer loop must NOT dispatch
   to the compiled version on resume. The compiled path starts at entry_point=0
@@ -287,8 +297,10 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   `binaryen` packages. setjmp/longjmp via WASM EH proposal.
 - **Compile**: `make` (clones NetHack, builds host tools, cross-compiles to WASM,
   generates Lua data modules, converts tile art to sprites).
-- **Save/load**: `on_load` warns but doesn't rebuild WASM instance. WASM memory
-  and execution state need serialization to `storage` for game save/load to work.
+- **Save/load**: Implemented. WASM memory/globals/tables live directly in
+  `storage` tables (auto-persisted by Factorio). Exec state (call stack, PC,
+  locals) is snapshotted at every pause point. On load, WASM binary is re-parsed,
+  AOT functions recompiled, and exec state reconstructed from snapshot.
 - **Performance**: NetHack 3.6.7 reaches first input in **1.77M instructions / ~3.7s**
   (vs 3.7's 95.8M / 216s — 54x fewer instructions). Per-instruction cost ~2.1µs.
   Optimized run loop (inlined opcodes, cached locals, byte arrays) gives ~475K inst/sec.

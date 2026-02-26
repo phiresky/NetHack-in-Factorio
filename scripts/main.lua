@@ -148,6 +148,26 @@ local function init_modules()
   if storage.nh_main.first_input_received == nil then
     storage.nh_main.first_input_received = storage.nh_main.game_started or false
   end
+  -- WASM state persistence structure
+  if not storage.wasm_state then
+    storage.wasm_state = {
+      memory_data = nil,      -- shared ref to Memory.data table
+      memory_pages = 0,
+      memory_max_pages = 0,
+      globals = nil,          -- shared ref to instance.globals
+      tables = nil,           -- shared ref to instance.tables
+      table_sizes = nil,
+      dropped_data_segs = {},
+      dropped_elem_segs = {},
+      vfs_overlay = {},       -- modified/created VFS files (delta over nethack_data)
+      vfs_fds = {},           -- open file descriptors
+      vfs_next_fd = 4,
+      exec_snapshot = nil,    -- serialized exec state
+      ctx_sbs = nil,          -- compiled code __sbs
+      total_instructions = 0,
+      active = false,         -- true after _start has run
+    }
+  end
 end
 
 -- Load and instantiate the WASM NetHack module
@@ -169,13 +189,98 @@ local function load_wasm_nethack()
   local instance = WasmInterp.instantiate(module, imports, compiled_sources)
   instance_ref.inst = instance
 
-  -- Store instance in a non-serialized location (rebuilt on load)
-  storage.nh_main.wasm_instance_id = "active"
+  -- Link mutable state to storage so Factorio's save persists it automatically.
+  -- These are SHARED references: writes via the instance update storage directly.
+  local ws = storage.wasm_state
+  ws.memory_data = instance.memory.data
+  ws.memory_pages = instance.memory.page_count
+  ws.memory_max_pages = instance.memory.max_pages
+  ws.globals = instance.globals
+  ws.tables = instance.tables
+  ws.table_sizes = instance.table_sizes
+  ws.active = true
+
   return instance
 end
 
 -- The active WASM instance (not serializable, kept in upvalue)
+-- Declared here so snapshot/restore functions can see it as an upvalue.
 local wasm_instance = nil
+
+-- Restore WASM instance from saved state in storage (called from on_load)
+local function restore_wasm_instance()
+  local ws = storage.wasm_state
+
+  -- Re-parse the WASM binary
+  local module = WasmInit.parse(wasm_data_module.data)
+
+  -- Create import functions (closures only — not called until event handlers)
+  local instance_ref = {inst = nil}
+  local function memory_ref()
+    return instance_ref.inst.memory
+  end
+  local opts = {environ = build_nethack_environ()}
+  local imports = Bridge.create_imports(memory_ref, instance_ref, opts)
+
+  -- Instantiate in restore mode (skips segment init + _start, uses saved state)
+  local instance = WasmInterp.instantiate(module, imports, compiled_sources, ws)
+  instance_ref.inst = instance
+
+  -- Restore VFS: overlay on top of immutable nethack_data
+  local ok_data, nethack_data = pcall(require, "scripts.nethack_data")
+  if not ok_data then nethack_data = {} end
+  instance._vfs = {
+    files = setmetatable({}, {__index = nethack_data}),
+    fds = ws.vfs_fds or {},
+    next_fd = ws.vfs_next_fd or 4,
+  }
+  for k, v in pairs(ws.vfs_overlay or {}) do
+    instance._vfs.files[k] = v
+  end
+
+  -- Restore execution state from snapshot
+  WasmInterp.restore_exec(instance, ws.exec_snapshot)
+
+  return instance
+end
+
+-- Snapshot WASM state to storage (called after every run_and_process)
+local function snapshot_wasm_state()
+  if not wasm_instance then return end
+  local ws = storage.wasm_state
+  if not ws then return end
+
+  -- Sync memory metadata (data table is already shared)
+  ws.memory_pages = wasm_instance.memory.page_count
+  ws.memory_max_pages = wasm_instance.memory.max_pages
+
+  -- Snapshot exec state
+  ws.exec_snapshot = WasmInterp.snapshot_exec(wasm_instance)
+  ws.ctx_sbs = wasm_instance.ctx and wasm_instance.ctx.__sbs
+  ws.total_instructions = wasm_instance.total_instructions
+
+  -- Sync VFS state
+  if wasm_instance._vfs then
+    -- Flush open writable fds to files table
+    for _, entry in pairs(wasm_instance._vfs.fds) do
+      if entry.writable and entry.name then
+        wasm_instance._vfs.files[entry.name] = entry.data
+      end
+    end
+    -- Save overlay (only files explicitly set, not inherited from nethack_data)
+    local overlay = {}
+    for k, v in pairs(wasm_instance._vfs.files) do
+      overlay[k] = v
+    end
+    ws.vfs_overlay = overlay
+    ws.vfs_fds = wasm_instance._vfs.fds
+    ws.vfs_next_fd = wasm_instance._vfs.next_fd
+  end
+
+  -- Sync segment drop state
+  ws.dropped_data_segs = wasm_instance.data_segments_raw
+  ws.dropped_elem_segs = wasm_instance.element_segments_raw
+end
 
 ---------------------------------------------------------------------------
 -- Interpreter Execution
@@ -423,6 +528,9 @@ local function run_and_process(max_instructions)
       break
     end
   end
+
+  -- Snapshot WASM state to storage for save/load persistence
+  snapshot_wasm_state()
 end
 
 ---------------------------------------------------------------------------
@@ -984,11 +1092,26 @@ end)
 
 script.on_load(function()
   -- WASM modules are loaded at require time (top of file).
-  -- Note: WASM instance must be rebuilt from serialized memory on load.
-  -- This is a known limitation - save/load will restart the game.
+  -- Rebuild the WASM instance from saved state in storage.
+  if storage.wasm_state and storage.wasm_state.active
+     and storage.wasm_state.exec_snapshot then
+    wasm_instance = restore_wasm_instance()
+  end
 end)
 
 script.on_configuration_changed(function()
+  -- Mod versions changed — WASM binary may have changed, invalidating saved state.
+  -- Clear WASM state so the game starts fresh.
+  if storage.wasm_state and storage.wasm_state.active then
+    storage.wasm_state.active = false
+    storage.wasm_state.exec_snapshot = nil
+    wasm_instance = nil
+    if storage.nh_main then
+      storage.nh_main.game_started = false
+      storage.nh_main.running = false
+      storage.nh_main.awaiting_input = false
+    end
+  end
   init_modules()
 end)
 
