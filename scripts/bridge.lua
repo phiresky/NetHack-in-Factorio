@@ -56,8 +56,8 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
 
   -- Immediate imports (execute and continue)
 
-  imports["env.host_print_glyph"] = function(x, y, tile_idx, ch, color, special)
-    Display.print_glyph(x, y, tile_idx, ch, color, special)
+  imports["env.host_print_glyph"] = function(x, y, tile_idx, ch, color, special, bk_tile_idx)
+    Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
   end
 
   imports["env.host_putstr"] = function(win, attr, str_ptr, len)

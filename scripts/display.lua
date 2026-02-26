@@ -189,16 +189,30 @@ local function place_entity(surface, level_name, x, y, entity_name, tint)
   return ent
 end
 
+-- Resolve a bk_tile_idx to a Factorio base tile name.
+-- bk_tile_idx comes from glyph2tile[bkglyph] where bkglyph encodes the
+-- ground type (room, corridor, pool, lava, etc.) underneath entities.
+local function resolve_base_tile(bk_tile_idx)
+  if bk_tile_idx and bk_tile_idx >= 0 then
+    local other_base = TC.n_monsters + TC.n_objects
+    if bk_tile_idx >= other_base then
+      local other_idx = bk_tile_idx - other_base + 1
+      local name = TC.other_names[other_idx]
+      if name then
+        if name == "pool" or name == "water" then return "nh-water" end
+        if name == "molten-lava" then return "nh-lava" end
+        if name == "ice" then return "nh-water" end  -- ice over water
+      end
+    end
+  end
+  return "nh-floor"
+end
+
 -- Core function: handle a print_glyph call from NetHack
 -- tile_idx = glyph2tile[glyph] index for sprite selection
 -- ch = ASCII character, color = color index, special = glyphflags
---
--- NetHack's core already handles visibility via glyph substitution:
---   - Dark rooms get S_darkroom glyph (different tile_idx than lit S_room)
---   - Unlit corridors get S_corr (different tile_idx than S_litcorr)
---   - Stone/rock always gets S_stone tile_idx
--- So we just render the tile_idx entity and get dark/lit distinction for free.
-function Display.print_glyph(x, y, tile_idx, ch, color, special)
+-- bk_tile_idx = glyph2tile[bkglyph] for the ground under this glyph (-1 = none)
+function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
   local disp = storage.nh_display
   if not disp.current_level then return end
 
@@ -210,10 +224,11 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
   -- Store grid state
   if not level.grid[y] then level.grid[y] = {} end
   local old = level.grid[y][x]
-  level.grid[y][x] = {tile_idx = tile_idx, ch = ch, color = color, special = special}
+  level.grid[y][x] = {tile_idx = tile_idx, ch = ch, color = color, special = special, bk_tile_idx = bk_tile_idx}
 
   -- Skip if nothing changed
-  if old and old.tile_idx == tile_idx and old.ch == ch and old.color == color and old.special == special then
+  if old and old.tile_idx == tile_idx and old.ch == ch and old.color == color
+     and old.special == special and old.bk_tile_idx == bk_tile_idx then
     return
   end
 
@@ -232,87 +247,30 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special)
     tint = DETECT_TINT
   end
 
+  -- Resolve base tile from bkglyph when available
+  local base_tile = resolve_base_tile(bk_tile_idx)
+
   -- Handle the player character '@'
   -- NetHack 3.6.7's mapglyph() does NOT set MG_MONSTER in special flags,
   -- so we detect the player by character alone. The player's @ is always
   -- drawn last, so the final @ position is correct.
   if ch == string.byte("@") and not is_monster then
     disp.player_pos = {x = x, y = y}
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
+    surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
     destroy_entity_at(level_name, x, y)
     return
   end
 
-  -- Walls: floor tile underneath + wall entity on top
-  if WALL_CHARS[ch] then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Doors: floor tile underneath + door entity on top
-  if DOOR_CHARS[ch] then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Stairs: floor tile underneath + stair entity on top
-  if STAIR_CHARS[ch] then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Monsters (non-player)
-  if is_monster then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Floor and corridor: use tile_idx entity for the sprite.
-  -- The core already picks dark vs lit variants (S_darkroom vs S_room,
-  -- S_corr vs S_litcorr), so different tile_idx = different sprite.
-  if ch == string.byte(".") or ch == string.byte("#") then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Water: } with blue/cyan color
-  if ch == string.byte("}") then
-    if color == 1 then -- CLR_RED = lava
-      surface.set_tiles({{name = "nh-lava", position = {x = x, y = y}}})
-    else
-      surface.set_tiles({{name = "nh-water", position = {x = x, y = y}}})
-    end
-    destroy_entity_at(level_name, x, y)
-    return
-  end
-
-  -- Traps (^)
-  if ch == string.byte("^") then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
-
-  -- Stone/rock (space character): render the stone tile entity.
-  -- The core sends S_stone for all rock — both explored and unexplored.
-  -- This matches Qt behavior where all stone is shown as dark rock texture.
+  -- Stone/rock (space character): void tile + stone entity
   if ch == string.byte(" ") then
     surface.set_tiles({{name = "nh-void", position = {x = x, y = y}}})
     place_entity(surface, level_name, x, y, ent_name, tint)
     return
   end
 
-  -- Items and other visible features (anything above ASCII 32)
-  if ch > 32 then
-    surface.set_tiles({{name = "nh-floor", position = {x = x, y = y}}})
-    place_entity(surface, level_name, x, y, ent_name, tint)
-    return
-  end
+  -- Everything else: set base tile from bkglyph, place foreground entity
+  surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
+  place_entity(surface, level_name, x, y, ent_name, tint)
 end
 
 -- Clear the entire map display (called on level change)

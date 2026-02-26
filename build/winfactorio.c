@@ -24,7 +24,7 @@
 
 extern int host_nhgetch(void);
 extern short glyph2tile[];
-extern void host_print_glyph(int x, int y, int tile_idx, int ch, int color, int special);
+extern void host_print_glyph(int x, int y, int tile_idx, int ch, int color, int special, int bk_tile_idx);
 extern void host_putstr(int win_type, int attr, const char *str, int len);
 extern void host_raw_print(const char *str, int len);
 extern void host_status_update(int idx, const char *val, int len,
@@ -281,6 +281,9 @@ char **argv UNUSED;
     iflags.force_invmenu = TRUE;
     /* flags.travelcmd defaults to TRUE (options.c), enabling click-to-travel */
     iflags.echo = TRUE;
+    /* Enable background glyph so print_glyph receives the floor tile under
+     * monsters/objects (used by Lua display code for ground rendering). */
+    iflags.use_background_glyph = TRUE;
 }
 
 static void
@@ -608,15 +611,18 @@ factorio_print_glyph(window, x, y, glyph, bkglyph)
 winid window UNUSED;
 xchar x, y;
 int glyph;
-int bkglyph UNUSED;
+int bkglyph;
 {
     int ch;
     int color;
     unsigned special;
+    int bk_tile = -1;
 
     (void) mapglyph(glyph, &ch, &color, &special, x, y, 0);
+    if (bkglyph != NO_GLYPH)
+        bk_tile = (int) glyph2tile[bkglyph];
     host_print_glyph((int) x, (int) y, (int) glyph2tile[glyph],
-                     ch, color, (int) special);
+                     ch, color, (int) special, bk_tile);
 }
 
 static void

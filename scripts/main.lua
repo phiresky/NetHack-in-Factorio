@@ -1162,7 +1162,7 @@ commands.add_command("nethack", "Send character(s) to NetHack. Usage: /nethack *
   end
 
   if not str or #str == 0 then
-    game.print("Usage: /feed <char>  (e.g. /feed * or /feed abc)")
+    game.print("Usage: /nethack <char>  (e.g. /feed * or /feed abc)")
     return
   end
 
