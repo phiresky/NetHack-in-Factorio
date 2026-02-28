@@ -255,7 +255,7 @@ $(NETHACK)/src/tile.c: $(STAMPS)/host-tools
 
 $(WASM): $(NH_SRC) $(STAMPS)/pager-patched $(NETHACK)/src/tile.c build/factorioconf.h
 	$(WASM_CC) $(CFLAGS) $(LDFLAGS) $(NH_SRC) -o $@
-	#  wasm-opt -Oz --enable-exception-handling -o $@ $@
+	wasm-opt -Oz --enable-exception-handling -o $@ $@
 	@echo "Build complete: $@ ($$(stat -c%s $@ 2>/dev/null || stat -f%z $@) bytes)"
 
 # ================================================================

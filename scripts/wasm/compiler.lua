@@ -518,6 +518,13 @@ local function generate_source(func_idx, func_def, module)
         out[out_n] = s
     end
 
+    local skip_bc = Compiler.no_bounds_check ~= false
+    local function emit_bc(size)
+        if not skip_bc then
+            emit(string.format("  if __addr + %d > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end", size))
+        end
+    end
+
     -- Block tracking for control flow
     local block_stack = {}  -- {type="block"|"loop"|"if"|"try_table", label_id=N, ...}
     local block_sp = 0
@@ -540,6 +547,7 @@ local function generate_source(func_idx, func_def, module)
     -- Pre-declare block-scope variables at function top level
     -- __sbs: table of stack base values per block (saved/restored via ctx.__sbs)
     -- __cond: reused for if conditions
+    emit("local __md = mem.data")
     emit("local __sbs, __cond")
     emit("if entry_point > 0 then __sbs = ctx.__sbs else __sbs = {}; ctx.__sbs = __sbs end")
 
@@ -664,11 +672,11 @@ local function generate_source(func_idx, func_def, module)
                 -- 4-instr: const + load + eqz + br_if → load, branch if zero
                 if i + 3 <= n_instrs and instrs[i+2].op == 0x45 and instrs[i+3].op == 0x0D then
                     emit(string.format("do local __addr = %s", u32_lit(addr)))
-                    emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit_bc(4)
                     if bit32.band(addr, 3) == 0 then
-                        emit(string.format("  local __v = mem.data[%d] or 0", bit32.rshift(addr, 2)))
+                        emit(string.format("  local __v = __md[%d] or 0", bit32.rshift(addr, 2)))
                     else
-                        emit("  local __v; if band(__addr, 3) == 0 then __v = mem.data[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
+                        emit("  local __v; if band(__addr, 3) == 0 then __v = __md[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
                     end
                     emit_cond_branch_nopop(instrs[i+3].depth, "__v == 0")
                     emit("end")
@@ -677,11 +685,11 @@ local function generate_source(func_idx, func_def, module)
                 -- 3-instr: const + load + br_if → load, branch if nonzero
                 if i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
                     emit(string.format("do local __addr = %s", u32_lit(addr)))
-                    emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit_bc(4)
                     if bit32.band(addr, 3) == 0 then
-                        emit(string.format("  local __v = mem.data[%d] or 0", bit32.rshift(addr, 2)))
+                        emit(string.format("  local __v = __md[%d] or 0", bit32.rshift(addr, 2)))
                     else
-                        emit("  local __v; if band(__addr, 3) == 0 then __v = mem.data[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
+                        emit("  local __v; if band(__addr, 3) == 0 then __v = __md[rshift(__addr, 2)] or 0 else __v = mem:load_i32(__addr) end")
                     end
                     emit_cond_branch_nopop(instrs[i+2].depth, "__v ~= 0")
                     emit("end")
@@ -690,11 +698,11 @@ local function generate_source(func_idx, func_def, module)
                 -- 2-instr: const + load → push to stack
                 emit("sp = sp + 1")
                 emit(string.format("do local __addr = %s", u32_lit(addr)))
-                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(4)
                 if bit32.band(addr, 3) == 0 then
-                    emit(string.format("  stack[sp] = mem.data[%d] or 0 end", bit32.rshift(addr, 2)))
+                    emit(string.format("  stack[sp] = __md[%d] or 0 end", bit32.rshift(addr, 2)))
                 else
-                    emit("  if band(__addr, 3) == 0 then stack[sp] = mem.data[rshift(__addr, 2)] or 0")
+                    emit("  if band(__addr, 3) == 0 then stack[sp] = __md[rshift(__addr, 2)] or 0")
                     emit("  else stack[sp] = mem:load_i32(__addr) end end")
                 end
                 i = i + 2; goto continue_loop
@@ -703,9 +711,9 @@ local function generate_source(func_idx, func_def, module)
                 -- 4-instr: const + load8_u + eqz + br_if → load byte, branch if zero
                 if i + 3 <= n_instrs and instrs[i+2].op == 0x45 and instrs[i+3].op == 0x0D then
                     emit(string.format("do local __addr = %s", u32_lit(addr)))
-                    emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit_bc(1)
                     emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
-                    emit("  local __v = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF)")
+                    emit("  local __v = band(rshift(__md[__wi] or 0, __bo * 8), 0xFF)")
                     emit_cond_branch_nopop(instrs[i+3].depth, "__v == 0")
                     emit("end")
                     i = i + 4; goto continue_loop
@@ -713,9 +721,9 @@ local function generate_source(func_idx, func_def, module)
                 -- 3-instr: const + load8_u + br_if → load byte, branch if nonzero
                 if i + 2 <= n_instrs and instrs[i+2].op == 0x0D then
                     emit(string.format("do local __addr = %s", u32_lit(addr)))
-                    emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                    emit_bc(1)
                     emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
-                    emit("  local __v = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF)")
+                    emit("  local __v = band(rshift(__md[__wi] or 0, __bo * 8), 0xFF)")
                     emit_cond_branch_nopop(instrs[i+2].depth, "__v ~= 0")
                     emit("end")
                     i = i + 3; goto continue_loop
@@ -723,15 +731,15 @@ local function generate_source(func_idx, func_def, module)
                 -- 2-instr: const + load8_u → push to stack
                 emit("sp = sp + 1")
                 emit(string.format("do local __addr = %s", u32_lit(addr)))
-                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(1)
                 emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
-                emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
+                emit("  stack[sp] = band(rshift(__md[__wi] or 0, __bo * 8), 0xFF) end")
                 i = i + 2; goto continue_loop
             elseif nop == 0x2C then -- i32.const C + i32.load8_s
                 local addr = C + ni.offset
                 emit("sp = sp + 1")
                 emit(string.format("do local __addr = %s", u32_lit(addr)))
-                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(1)
                 emit("  local __v = mem:load_i8_s(__addr)")
                 emit("  if __v < 0 then __v = __v + 0x100000000 end")
                 emit("  stack[sp] = __v end")
@@ -754,8 +762,8 @@ local function generate_source(func_idx, func_def, module)
                 local Cv = bit32.band(C, 0xFFFFFFFF)
                 emit(string.format("do local __addr = stack[sp]%s", off ~= 0 and (" + " .. off) or ""))
                 emit("  sp = sp - 1")
-                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
-                emit(string.format("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = %s", u32_lit(Cv)))
+                emit_bc(4)
+                emit(string.format("  if band(__addr, 3) == 0 then __md[rshift(__addr, 2)] = %s", u32_lit(Cv)))
                 emit(string.format("  else mem:store_i32(__addr, %s) end end", u32_lit(Cv)))
                 i = i + 2; goto continue_loop
             elseif nop == 0x3A then -- i32.const C + i32.store8 (store constant byte)
@@ -763,11 +771,11 @@ local function generate_source(func_idx, func_def, module)
                 local byte_val = bit32.band(C, 0xFF)
                 emit(string.format("do local __addr = stack[sp]%s", off ~= 0 and (" + " .. off) or ""))
                 emit("  sp = sp - 1")
-                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(1)
                 emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
                 emit("  local __sh = __bo * 8; local __mask = bnot(lshift(0xFF, __sh))")
-                emit("  local __w = mem.data[__wi] or 0")
-                emit(string.format("  mem.data[__wi] = bor(band(__w, __mask), lshift(%d, __sh)) end", byte_val))
+                emit("  local __w = __md[__wi] or 0")
+                emit(string.format("  __md[__wi] = bor(band(__w, __mask), lshift(%d, __sh)) end", byte_val))
                 i = i + 2; goto continue_loop
             elseif nop == 0x21 then -- i32.const C + local.set
                 emit(string.format("loc[%d] = %s", ni.idx, u32_lit(bit32.band(C, 0xFFFFFFFF))))
@@ -862,9 +870,9 @@ local function generate_source(func_idx, func_def, module)
                 else
                     emit(string.format("do local __addr = loc[%d] + %d", X, off))
                 end
-                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(4)
                 emit(string.format("  local __v = band(loc[%d], 0xFFFFFFFF)", B))
-                emit("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = __v")
+                emit("  if band(__addr, 3) == 0 then __md[rshift(__addr, 2)] = __v")
                 emit("  else mem:store_i32(__addr, __v) end end")
                 i = i + 3; goto continue_loop
             end
@@ -883,8 +891,8 @@ local function generate_source(func_idx, func_def, module)
                 else
                     emit(string.format("do local __addr = loc[%d] + %d", X, off))
                 end
-                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
-                emit("  if band(__addr, 3) == 0 then stack[sp] = mem.data[rshift(__addr, 2)] or 0")
+                emit_bc(4)
+                emit("  if band(__addr, 3) == 0 then stack[sp] = __md[rshift(__addr, 2)] or 0")
                 emit("  else stack[sp] = mem:load_i32(__addr) end end")
                 i = i + 2; goto continue_loop
             elseif nop == 0x2D then -- local.get + i32.load8_u
@@ -895,9 +903,9 @@ local function generate_source(func_idx, func_def, module)
                 else
                     emit(string.format("do local __addr = loc[%d] + %d", X, off))
                 end
-                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(1)
                 emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
-                emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
+                emit("  stack[sp] = band(rshift(__md[__wi] or 0, __bo * 8), 0xFF) end")
                 i = i + 2; goto continue_loop
             elseif nop == 0x2C then -- local.get + i32.load8_s
                 local off = ni.offset
@@ -927,9 +935,9 @@ local function generate_source(func_idx, func_def, module)
                 else
                     emit(string.format("do local __addr = stack[sp] + %d; sp = sp - 1", off))
                 end
-                emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(4)
                 emit(string.format("  local __v = band(loc[%d], 0xFFFFFFFF)", X))
-                emit("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = __v")
+                emit("  if band(__addr, 3) == 0 then __md[rshift(__addr, 2)] = __v")
                 emit("  else mem:store_i32(__addr, __v) end end")
                 i = i + 2; goto continue_loop
             elseif nop == 0x3A then -- local.get + i32.store8 (value from local)
@@ -939,11 +947,11 @@ local function generate_source(func_idx, func_def, module)
                 else
                     emit(string.format("do local __addr = stack[sp] + %d; sp = sp - 1", off))
                 end
-                emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+                emit_bc(1)
                 emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
                 emit("  local __sh = __bo * 8; local __mask = bnot(lshift(0xFF, __sh))")
-                emit("  local __w = mem.data[__wi] or 0")
-                emit(string.format("  mem.data[__wi] = bor(band(__w, __mask), lshift(band(loc[%d], 0xFF), __sh)) end", X))
+                emit("  local __w = __md[__wi] or 0")
+                emit(string.format("  __md[__wi] = bor(band(__w, __mask), lshift(band(loc[%d], 0xFF), __sh)) end", X))
                 i = i + 2; goto continue_loop
             end
         end
@@ -1266,8 +1274,8 @@ local function generate_source(func_idx, func_def, module)
             else
                 emit(string.format("do local __addr = stack[sp] + %d", off))
             end
-            emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
-            emit("  if band(__addr, 3) == 0 then stack[sp] = mem.data[rshift(__addr, 2)] or 0")
+            emit_bc(4)
+            emit("  if band(__addr, 3) == 0 then stack[sp] = __md[rshift(__addr, 2)] or 0")
             emit("  else stack[sp] = mem:load_i32(__addr) end end")
 
         elseif op == 0x29 then -- i64.load
@@ -1292,9 +1300,9 @@ local function generate_source(func_idx, func_def, module)
             else
                 emit(string.format("do local __addr = stack[sp] + %d", off))
             end
-            emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+            emit_bc(1)
             emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
-            emit("  stack[sp] = band(rshift(mem.data[__wi] or 0, __bo * 8), 0xFF) end")
+            emit("  stack[sp] = band(rshift(__md[__wi] or 0, __bo * 8), 0xFF) end")
 
         elseif op == 0x2E then -- i32.load16_s
             emit(string.format("do local __addr = stack[sp] + %d", instr.offset))
@@ -1327,7 +1335,7 @@ local function generate_source(func_idx, func_def, module)
         elseif op == 0x34 then -- i64.load32_s
             emit(string.format("do local __addr = stack[sp] + %d", instr.offset))
             emit("  local __v = mem:load_i32(__addr)")
-            emit("  stack[sp] = {__v, bit32.btest(__v, 0x80000000) and 0xFFFFFFFF or 0} end")
+            emit("  stack[sp] = {__v, btest(__v, 0x80000000) and 0xFFFFFFFF or 0} end")
 
         elseif op == 0x35 then -- i64.load32_u
             emit(string.format("do local __addr = stack[sp] + %d; stack[sp] = {mem:load_i32(__addr), 0} end", instr.offset))
@@ -1341,9 +1349,9 @@ local function generate_source(func_idx, func_def, module)
             else
                 emit(string.format("  local __addr = stack[sp] + %d; sp = sp - 1", off))
             end
-            emit("  if __addr + 4 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+            emit_bc(4)
             emit("  __v = band(__v, 0xFFFFFFFF)")
-            emit("  if band(__addr, 3) == 0 then mem.data[rshift(__addr, 2)] = __v")
+            emit("  if band(__addr, 3) == 0 then __md[rshift(__addr, 2)] = __v")
             emit("  else mem:store_i32(__addr, __v) end end")
 
         elseif op == 0x37 then -- i64.store
@@ -1363,11 +1371,11 @@ local function generate_source(func_idx, func_def, module)
             else
                 emit(string.format("  local __addr = stack[sp] + %d; sp = sp - 1", off))
             end
-            emit("  if __addr + 1 > mem.byte_length or __addr < 0 then error({msg='out of bounds memory access'}) end")
+            emit_bc(1)
             emit("  local __wi = rshift(__addr, 2); local __bo = band(__addr, 3)")
             emit("  local __sh = __bo * 8; local __mask = bnot(lshift(0xFF, __sh))")
-            emit("  local __w = mem.data[__wi] or 0")
-            emit("  mem.data[__wi] = bor(band(__w, __mask), lshift(band(__v, 0xFF), __sh)) end")
+            emit("  local __w = __md[__wi] or 0")
+            emit("  __md[__wi] = bor(band(__w, __mask), lshift(band(__v, 0xFF), __sh)) end")
 
         elseif op == 0x3B then -- i32.store16
             emit(string.format("do local __v = stack[sp]; sp = sp - 1; local __addr = stack[sp] + %d; sp = sp - 1; mem:store_i16(__addr, __v) end", instr.offset))
