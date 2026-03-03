@@ -287,7 +287,7 @@ $(SPRITE_SHEETS): $(TILE_CONFIG)
 
 $(STAMPS)/sprites-optimized: $(TILE_CONFIG)
 	@mkdir -p $(STAMPS)
-	find graphics/sheets graphics/tiles -name '*.png' \
+	find graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other -name '*.png' \
 		-print0 | xargs -0 -P$$(nproc) oxipng --opt max --zopfli
 	@touch $@
 
@@ -296,7 +296,7 @@ $(STAMPS)/sprites-optimized: $(TILE_CONFIG)
 # ================================================================
 
 GENERATED_FILES := $(WASM) $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG)
-GENERATED_DIRS  := graphics/sheets graphics/tiles
+GENERATED_DIRS  := graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other
 
 verify:
 	@ok=true; \
@@ -329,5 +329,5 @@ verify:
 clean:
 	rm -f $(WASM)
 	rm -f $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG)
-	rm -rf graphics/sheets graphics/tiles
+	rm -rf graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other
 	rm -rf $(STAMPS)

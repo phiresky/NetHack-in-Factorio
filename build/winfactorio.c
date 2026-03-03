@@ -47,6 +47,11 @@ extern void host_curs(int winid, int x, int y);
 extern void host_cliparound(int x, int y);
 extern void host_delay_output(void);
 extern void host_update_inventory(void);
+extern void host_inventory_begin(void);
+extern void host_inventory_item(int slot, int tile, int o_id, int invlet,
+                                const char *name, int name_len, int quan,
+                                int oclass, int owornmask);
+extern void host_inventory_done(int count);
 extern void host_mark_synch(void);
 extern void host_describe_result(const char *buf, int buf_len,
                                  const char *monbuf, int monbuf_len);
@@ -404,6 +409,8 @@ static void
 factorio_clear_nhwindow(window)
 winid window;
 {
+    if (window == WIN_MAP)
+        clear_glyph_buffer();
     host_clear_nhwindow((int) window);
 }
 
@@ -579,7 +586,20 @@ const char *mesg;
 static void
 factorio_update_inventory()
 {
-    host_update_inventory();
+    struct obj *otmp;
+    int slot = 0;
+
+    host_inventory_begin();
+    for (otmp = invent; otmp; otmp = otmp->nobj) {
+        char *name = doname(otmp);
+        int glyph = obj_to_glyph(otmp, rn2_on_display_rng);
+        int tile = (int) glyph2tile[glyph];
+        host_inventory_item(slot, tile, (int)otmp->o_id, (int)otmp->invlet,
+                           name, (int)strlen(name), (int)otmp->quan,
+                           (int)otmp->oclass, (int)otmp->owornmask);
+        slot++;
+    }
+    host_inventory_done(slot);
 }
 
 static void

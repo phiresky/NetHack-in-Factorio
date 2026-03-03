@@ -236,6 +236,16 @@ def generate_sprite_sheet(palette, tiles, output_path, palette_overrides=None):
     return n_tiles
 
 
+def generate_tile_icons(palette, tiles, names, output_dir, prefix):
+    """Generate individual 32x32 PNGs for each tile (for Factorio icons)."""
+    os.makedirs(output_dir, exist_ok=True)
+    for i, tile in enumerate(tiles):
+        pixels = render_tile(palette, tile, transparent_bg=True)
+        write_png(os.path.join(output_dir, f"{prefix}{names[i]}.png"),
+                  TILE_DST, TILE_DST, pixels)
+    print(f"  icons: {output_dir} ({len(tiles)} icons, prefix={prefix})")
+
+
 def generate_ground_tile(palette, tile, output_path):
     """Generate a 512x512 ground tile PNG by tiling a single opaque tile."""
     tile_pixels = render_tile_opaque(palette, tile)
@@ -317,6 +327,15 @@ def main():
     n_oth = generate_sprite_sheet(oth_palette, oth_tiles,
                                   os.path.join(sheets_dir, "nh-other.png"),
                                   palette_overrides=oth_pal_overrides)
+
+    # Generate individual icon PNGs for Factorio prototypes (items + entity icons)
+    icons_base = os.path.join(mod_root, "graphics", "icons")
+    generate_tile_icons(mon_palette, mon_tiles, mon_names,
+                        os.path.join(icons_base, "monsters"), "nh-mon-")
+    generate_tile_icons(obj_palette, obj_tiles, obj_names,
+                        os.path.join(icons_base, "objects"), "nh-item-")
+    generate_tile_icons(oth_palette, oth_tiles, oth_names,
+                        os.path.join(icons_base, "other"), "nh-other-")
 
     # Generate ground tile PNGs from specific "other" tiles
     ground_mapping = {

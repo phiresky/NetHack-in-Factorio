@@ -2,6 +2,7 @@ require("prototypes.tiles")
 require("prototypes.entities")
 require("prototypes.sprites")
 require("prototypes.inputs")
+require("prototypes.items")
 require("prototypes.styles")
 
 data:extend{{
