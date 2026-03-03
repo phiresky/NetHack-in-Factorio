@@ -266,8 +266,11 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   `mapglyph()` does NOT set `MG_MONSTER` in special flags for regular monsters
   (only for pet/detect/invis/ridden). So `ch == '@' and not is_monster` matched
   both the hero AND shopkeepers/priests/etc, destroying their entities. Fix: use
-  `host_cliparound` (called by `flush_screen` after all `print_glyph` calls with
-  `u.ux, u.uy`) as the authoritative hero position source via `Display.set_hero_pos`.
+  `host_curs(WIN_MAP, x, y)` (called by `flush_screen` after all `print_glyph`
+  calls with `u.ux, u.uy`) to trigger `Display.set_hero_pos`. Note: `cliparound`
+  fires from `allmain.c` at the START of the next turn, NOT from `flush_screen`
+  (the factorio port's `factorio_curs` does NOT call `cliparound` unlike tty).
+  Both `host_curs` and `host_cliparound` call `set_hero_pos` for robustness.
 - **Accessing mod storage from RCON/lua_exec**: The mod's `storage` table is not
   directly accessible from RCON `lua_exec`. Use the remote interface instead:
   `remote.call("nethack", "get_display")`, `remote.call("nethack", "get_bridge")`,

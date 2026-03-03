@@ -166,6 +166,38 @@ local function destroy_entity_at(level_name, x, y)
   end
 end
 
+-- Restore the entity at a grid position from stored grid data.
+-- Used when the entity was suppressed (e.g., hero standing on it) and needs to reappear.
+local function restore_entity_from_grid(surface, level_name, x, y)
+  local disp = storage.nh_display
+  local level = disp.levels[level_name]
+  if not level then return end
+  local row = level.grid[y]
+  local cell = row and row[x]
+  if not cell then return end
+  local ent_name = Display.tile_entity_name(cell.tile_idx)
+  local tint = nil
+  if has_flag(cell.special, MG_PET) then
+    tint = PET_TINT
+  elseif has_flag(cell.special, MG_DETECT) then
+    tint = DETECT_TINT
+  end
+  -- Inline place_entity to avoid forward reference
+  destroy_entity_at(level_name, x, y)
+  local ent = surface.create_entity{
+    name = ent_name,
+    position = {x = x + 0.5, y = y + 0.5},
+    force = "player",
+  }
+  if ent then
+    if tint then ent.color = tint end
+    if not disp.entity_map[level_name][y] then
+      disp.entity_map[level_name][y] = {}
+    end
+    disp.entity_map[level_name][y][x] = {entity = ent, name = ent_name}
+  end
+end
+
 -- Place or update an entity at grid position
 local function place_entity(surface, level_name, x, y, entity_name, tint)
   local disp = storage.nh_display
@@ -255,20 +287,28 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
   local base_tile = ch == string.byte(" ") and "nh-void" or resolve_base_tile(bk_tile_idx)
   surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
 
-  -- In factorio player mode, suppress the hero entity so the engineer is visible.
-  -- Uses hero position from the last cliparound call (accurate for current frame).
-  local at_hero = disp.player_mode ~= "nethack" and disp.player_pos
-    and x == disp.player_pos.x and y == disp.player_pos.y
-
-  if at_hero then
-    destroy_entity_at(level_name, x, y)
-  else
-    place_entity(surface, level_name, x, y, ent_name, tint)
-  end
+  -- Always place the entity. Hero suppression is handled by set_hero_pos
+  -- (called from host_curs(WIN_MAP) after all print_glyph calls in flush_screen).
+  place_entity(surface, level_name, x, y, ent_name, tint)
 end
 
--- Clear the entire map display (called on level change)
+-- Clear the map display grid cache, forcing all subsequent print_glyph calls
+-- to update entities. Entities are preserved (not destroyed) because flush_screen
+-- may not send print_glyph calls immediately (e.g., during cheat execution).
+-- Positions that should become stone/void will be updated by the next print_glyph call.
 function Display.clear_map()
+  local disp = storage.nh_display
+  if not disp.current_level then return end
+  local level = disp.levels[disp.current_level]
+  if not level then return end
+  -- Only clear the grid cache — entities and tiles stay.
+  -- print_glyph calls (whenever they arrive) will see old=nil and update everything.
+  level.grid = {}
+end
+
+-- Full destructive clear: destroy all entities, fill with void tiles, reset grid.
+-- Used for level transitions where a fresh surface needs to be initialized.
+function Display.clear_map_full()
   local disp = storage.nh_display
   if not disp.current_level then return end
 
@@ -303,15 +343,30 @@ function Display.clear_map()
   surface.set_tiles(tiles)
 end
 
--- Called from host_cliparound after all print_glyph calls.
+-- Called from host_cliparound (in the main game loop, before each command).
 -- Updates the hero position so the Factorio player character is teleported there.
--- In "factorio" player mode, destroys the hero entity so the engineer is visible.
+-- In "factorio" player mode, destroys the hero entity so the engineer is visible,
+-- and restores the entity at the previous hero position from grid data.
 function Display.set_hero_pos(x, y)
   local disp = storage.nh_display
   if not disp then return end
+
+  local old_pos = disp.player_pos
   disp.player_pos = {x = x, y = y}
+
   if disp.player_mode ~= "nethack" and disp.current_level then
-    destroy_entity_at(disp.current_level, x, y)
+    local level_name = disp.current_level
+    local level = disp.levels[level_name]
+    local surface = level and game.surfaces[level.surface_name]
+    if not surface then return end
+
+    -- Destroy entity at NEW hero position (so the engineer character is visible)
+    destroy_entity_at(level_name, x, y)
+
+    -- Restore entity at OLD hero position (it was suppressed by previous set_hero_pos)
+    if old_pos and (old_pos.x ~= x or old_pos.y ~= y) then
+      restore_entity_from_grid(surface, level_name, old_pos.x, old_pos.y)
+    end
   end
 end
 
@@ -323,10 +378,16 @@ function Display.set_player_mode(mode)
   disp.player_mode = mode
   -- Apply immediately to current hero position
   if disp.player_pos and disp.current_level then
-    if mode == "factorio" then
-      destroy_entity_at(disp.current_level, disp.player_pos.x, disp.player_pos.y)
+    local level_name = disp.current_level
+    local level = disp.levels[level_name]
+    local surface = level and game.surfaces[level.surface_name]
+    if surface then
+      if mode == "factorio" then
+        destroy_entity_at(level_name, disp.player_pos.x, disp.player_pos.y)
+      elseif mode == "nethack" then
+        restore_entity_from_grid(surface, level_name, disp.player_pos.x, disp.player_pos.y)
+      end
     end
-    -- In "nethack" mode, the entity will be placed by the next print_glyph cycle
   end
 end
 

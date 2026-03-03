@@ -4,6 +4,7 @@
 
 local Display = require("scripts.display")
 local Gui = require("scripts.gui")
+local Inventory = require("scripts.inventory")
 local Wasi = require("scripts.wasm.wasi")
 
 local WasmInterp = require("scripts.wasm.interp")
@@ -153,18 +154,40 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
     -- Cursor positioning - used by the display system
     -- We track this for map window cursor
     get_bridge_state().cursor = {winid = winid, x = x, y = y}
+    -- flush_screen calls curs(WIN_MAP, u.ux, u.uy) after all print_glyph calls.
+    -- Use this to suppress the hero entity at the player's position.
+    -- (cliparound fires at the START of the next turn in allmain.c, too late.)
+    local gui_data = storage.nh_gui
+    local win = gui_data and gui_data.windows[winid]
+    if win and win.type == NHW_MAP then
+      Display.set_hero_pos(x, y)
+    end
   end
 
   imports["env.host_cliparound"] = function(x, y)
-    -- Called by flush_screen after all print_glyph calls with the hero's position.
-    -- This is the authoritative source of the player's map coordinates.
+    -- Called from allmain.c at the start of each turn with u.ux, u.uy.
+    -- Also updates hero position (belt-and-suspenders with host_curs above).
     Display.set_hero_pos(x, y)
   end
 
   -- Stub imports: called by NetHack but not needed in Factorio
   local function noop() end
   imports["env.host_delay_output"] = noop
-  imports["env.host_update_inventory"] = noop
+  imports["env.host_update_inventory"] = noop  -- backward compat for old WASM binaries
+
+  imports["env.host_inventory_begin"] = function()
+    Inventory.begin()
+  end
+
+  imports["env.host_inventory_item"] = function(slot, tile, o_id, invlet,
+                                                name_ptr, name_len, quan, oclass, owornmask)
+    local name = Bridge.read_string_len(memory_ref(), name_ptr, name_len)
+    Inventory.add_item(slot, tile, o_id, invlet, name, quan, oclass, owornmask)
+  end
+
+  imports["env.host_inventory_done"] = function(count)
+    Inventory.done(count)
+  end
   imports["env.host_mark_synch"] = noop
 
   imports["env.host_start_menu"] = function(winid)
@@ -204,6 +227,18 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
     local resp = read_string_safe(memory, resp_ptr, rlen)
     Gui.add_message(query, 0)
     local bridge = get_bridge_state()
+
+    -- Check for pending drop from Factorio inventory
+    local inv_state = storage.nh_inventory
+    if inv_state and inv_state.pending_drop then
+      local drop = inv_state.pending_drop
+      inv_state.pending_drop = nil
+      local main_state = storage.nh_main
+      if main_state then
+        main_state.input_queue[#main_state.input_queue + 1] = drop.invlet
+      end
+      return
+    end
 
     -- Check for inventory-style prompt (brackets with ? or *)
     local has_help = query:match("%[.*%?.*%]") or query:match("%[.*%*.*%]")
@@ -315,6 +350,7 @@ function Bridge.init()
       cursor = {winid = 0, x = 0, y = 0},
     }
   end
+  Inventory.init()
 end
 
 -- Long description cache: keyed by entity name, persists across game session

@@ -13,6 +13,7 @@ local Display = require("scripts.display")
 local Input = require("scripts.input")
 local Gui = require("scripts.gui")
 local Bridge = require("scripts.bridge")
+local Inventory = require("scripts.inventory")
 local WasmInit = require("scripts.wasm.init")
 local WasmInterp = require("scripts.wasm.interp")
 local wasm_data_module = require("scripts.nethack_wasm")
@@ -444,12 +445,37 @@ local function run_and_process(max_instructions)
         local continue_loop = false
 
         if result.input_type == "menu" then
-          -- host_select_menu blocked - show menu GUI
-          state.input_type = "menu"
-          state.input_info = result
-          local player = game.connected_players[1]
-          if player then
-            Gui.show_menu(player, result.winid, result.how)
+          -- Check for pending drop: auto-select the item instead of showing menu
+          local inv_state = storage.nh_inventory
+          if inv_state and inv_state.pending_drop then
+            local drop = inv_state.pending_drop
+            inv_state.pending_drop = nil
+            local gui_data = storage.nh_gui
+            local win = gui_data and gui_data.windows[result.winid]
+            if win and win.items then
+              for _, item in ipairs(win.items) do
+                if item.accelerator == drop.invlet then
+                  -- Auto-select: provide count=1, queue identifier for nhgetch
+                  state.input_queue[#state.input_queue + 1] = item.identifier
+                  WasmInterp.provide_input(wasm_instance, 1)
+                  continue_loop = true
+                  break
+                end
+              end
+            end
+            if not continue_loop then
+              -- Item not found in menu, cancel
+              WasmInterp.provide_input(wasm_instance, -1)
+              continue_loop = true
+            end
+          else
+            -- host_select_menu blocked - show menu GUI
+            state.input_type = "menu"
+            state.input_info = result
+            local player = game.connected_players[1]
+            if player then
+              Gui.show_menu(player, result.winid, result.how)
+            end
           end
 
         elseif result.input_type == "plsel" then
@@ -562,6 +588,9 @@ local function start_nethack(player)
   -- Slow the player down so tile-based movement feels right
   if player.character then
     player.character.character_running_speed_modifier = -0.4
+    -- Clear Factorio's default starting items (iron plates, burner drill, etc.)
+    -- Only NH inventory items should appear.
+    player.clear_items_inside()
   end
 
   -- Zoom in so each NetHack tile is clearly visible
@@ -582,6 +611,7 @@ local function start_nethack(player)
 
   -- Run until we hit nhgetch (waiting for first input)
   run_and_process(MAX_INSTRUCTIONS_PER_RUN)
+  Inventory.apply_sync()
   update_engine_gui()
   update_player_position()
 
@@ -617,6 +647,7 @@ local function do_advance(input_value, skip_position_update)
   clear_input_state()
   WasmInterp.provide_input(wasm_instance, input_value)
   run_and_process(MAX_INSTRUCTIONS_PER_RUN)
+  Inventory.apply_sync()
   update_engine_gui()
   if not skip_position_update then
     update_player_position()
@@ -1027,6 +1058,7 @@ local function on_tick(event)
     local budget = MAX_INSTRUCTIONS_PER_TICK
     if state.travel_active then budget = budget * 4 end
     run_and_process(budget)
+    Inventory.apply_sync()
     update_engine_gui()
     update_player_position()
   end
@@ -1095,6 +1127,7 @@ script.on_configuration_changed(function()
       storage.nh_main.awaiting_input = false
     end
   end
+  Inventory.reset()
   init_modules()
 end)
 
@@ -1270,6 +1303,44 @@ local function on_selected_entity_changed(event)
   end
 end
 
+-- Inventory drop: player dragged an NH item out of Factorio inventory
+local function on_player_dropped_item(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+
+  local entity = event.entity
+  if not entity or not entity.valid then return end
+
+  -- Only handle NH items
+  local stack = entity.stack
+  if not stack or not stack.valid_for_read then return end
+  if not stack.name:find("^nh%-item%-") then return end
+
+  local item_name = stack.name
+  -- Destroy the Factorio ground entity (NH will place its own via print_glyph)
+  entity.destroy()
+
+  local invlet = Inventory.find_invlet_by_item(item_name)
+  if not invlet then return end
+  if not state.awaiting_input or state.input_type ~= "getch" then return end
+
+  -- Queue NH drop: set pending letter, send 'd' command
+  local inv_state = storage.nh_inventory
+  if inv_state then
+    inv_state.pending_drop = {invlet = invlet}
+  end
+  advance_turn(string.byte("d"))
+end
+
+-- Inventory changed: prevent manual manipulation of NH items
+local function on_inventory_changed(event)
+  local inv_state = storage.nh_inventory
+  if not inv_state or inv_state.syncing then return end
+  -- If staging data exists, sync will happen after run completes
+  -- Otherwise, restore from last known state to revert unauthorized changes
+  Inventory.restore_from_slot_map()
+end
+
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
@@ -1278,6 +1349,8 @@ script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_stat
 script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
 script.on_event(defines.events.on_tick, on_tick)
 script.on_event("nh-click-move", on_click_move)
+script.on_event(defines.events.on_player_dropped_item, on_player_dropped_item)
+script.on_event(defines.events.on_player_main_inventory_changed, on_inventory_changed)
 
 -- Rebuild GUI when display resolution or scale changes (also fires shortly after
 -- on_player_created with the real resolution, replacing the default 1920x1080)
@@ -1384,8 +1457,16 @@ commands.add_command("nethack", "Send character(s) or cheat commands to NetHack.
     if disp.current_level and disp.levels[disp.current_level] then
       disp.levels[disp.current_level].grid = {}
     end
-    if execute_wasm_cheat("nh_reveal_all_full", {}) then
+    local cheat_ok = execute_wasm_cheat("nh_reveal_all_full", {}, 50000000)
+    if cheat_ok then
       Gui.add_message("Cheat: entire dungeon level revealed!", 0)
+      -- The cheat modifies map data in WASM memory, but flush_screen inside
+      -- execute_wasm_cheat doesn't produce print_glyph calls (unknown reason).
+      -- Force a display refresh via Ctrl-R (doredraw → docrt) through the
+      -- normal game loop, which flushes reliably.
+      advance_turn(18)  -- ASCII 18 = Ctrl-R = redraw screen
+    else
+      Gui.add_message("Cheat failed — budget exceeded", 0)
     end
     return
   end
