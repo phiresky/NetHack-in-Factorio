@@ -597,14 +597,12 @@ function Gui.show_flying_text(player, text)
     end
   end
 
-  -- Find Y offset that clears all existing texts' current positions.
-  -- Each text started at y_start and has floated up by speed * elapsed.
+  -- Place new text below all existing texts (each entry records its spawn Y)
   local y_offset = 0
   for _, entry in ipairs(queue) do
-    local elapsed = now - entry.tick
-    local current_y = entry.y_start + FLYING_TEXT_GAP - FLYING_TEXT_SPEED * elapsed
-    if current_y > y_offset then
-      y_offset = current_y
+    local below = entry.y_start + FLYING_TEXT_GAP
+    if below > y_offset then
+      y_offset = below
     end
   end
 
