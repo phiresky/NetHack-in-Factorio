@@ -12,6 +12,7 @@ generates:
 Uses only Python stdlib (struct + zlib) — no PIL/Pillow required.
 """
 
+import json
 import os
 import re
 import struct
@@ -377,6 +378,29 @@ def main():
             door_closed_indices.append(idx)
         elif "open door" in name or "open drawbridge" in name:
             door_open_indices.append(idx)
+
+    # Generate JSON tile config for web-ui (if --web-json flag provided)
+    tile_config_data = {
+        "n_monsters": n_mon,
+        "n_objects": n_obj,
+        "n_other": n_oth,
+        "sheet_cols": SHEET_COLS,
+        "wall_indices": wall_indices,
+        "door_closed_indices": door_closed_indices,
+        "door_open_indices": door_open_indices,
+        "monster_names": mon_names,
+        "object_names": obj_names,
+        "other_names": oth_names,
+    }
+    web_json_idx = None
+    for i, arg in enumerate(sys.argv):
+        if arg == "--web-json" and i + 1 < len(sys.argv):
+            web_json_idx = i
+            json_path = sys.argv[i + 1]
+            os.makedirs(os.path.dirname(json_path) or ".", exist_ok=True)
+            with open(json_path, "w") as jf:
+                json.dump(tile_config_data, jf)
+            print(f"  web config: {json_path}")
 
     # Generate scripts/tile_config.lua
     config_path = os.path.join(scripts_dir, "tile_config.lua")

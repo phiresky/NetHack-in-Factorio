@@ -11,6 +11,8 @@ For NetHack 3.6, typical usage:
 where datout/ contains compiled .lev and dungeon files from build tools.
 """
 
+import base64
+import json
 import os
 import sys
 import glob
@@ -78,6 +80,18 @@ def embed_data(dat_dirs, output_path):
             # Later directories override earlier ones (compiled overrides source)
             files[filename] = data
 
+    if output_path.endswith('.json'):
+        _write_json(files, output_path)
+    else:
+        _write_lua(files, output_path)
+
+    file_count = len(files)
+    total_bytes = sum(len(d) for d in files.values())
+    output_size = os.path.getsize(output_path)
+    print(f"Embedded {file_count} files ({total_bytes} bytes) -> {output_path} ({output_size} bytes)")
+
+
+def _write_lua(files, output_path):
     with open(output_path, 'w') as f:
         f.write('-- Auto-generated NetHack data files\n')
         f.write('-- DO NOT EDIT - regenerate with embed_data.py\n')
@@ -90,16 +104,19 @@ def embed_data(dat_dirs, output_path):
                 eq = '=' * level
                 f.write('M["%s"] = [%s[%s]%s]\n\n' % (filename, eq, content, eq))
             else:
-                # Binary file: use hex string chunks
                 hex_str = ''.join('\\x%02x' % b for b in data)
                 f.write('M["%s"] = "%s"\n\n' % (filename, hex_str))
 
         f.write('return M\n')
 
-    file_count = len(files)
-    total_bytes = sum(len(d) for d in files.values())
-    output_size = os.path.getsize(output_path)
-    print(f"Embedded {file_count} files ({total_bytes} bytes) -> {output_path} ({output_size} bytes)")
+
+def _write_json(files, output_path):
+    """Write files as JSON with base64-encoded binary values."""
+    obj = {}
+    for filename, data in sorted(files.items()):
+        obj[filename] = base64.b64encode(data).decode('ascii')
+    with open(output_path, 'w') as f:
+        json.dump(obj, f)
 
 
 def main():

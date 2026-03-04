@@ -480,8 +480,6 @@ function Wasi.add_imports(imports, memory_ref, instance_ref, opts)
         local path = read_string_n(memory, path_ptr, path_len)
         local vfs = get_vfs()
 
-        log("[WASM path_open] " .. path .. " oflags=" .. tostring(oflags) .. " fdflags=" .. tostring(fdflags))
-
         local fd = vfs_open(vfs, path, oflags, fdflags)
         if fd then
             memory:store_i32(fd_ptr, fd)

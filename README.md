@@ -59,7 +59,7 @@ Without wall clocks, the instruction budget per tick is a fixed constant - it ca
 - Interactive paperdoll (click to equip/unequip/wield/swap)
 
   ![paperdoll](doc/paperdoll.png)
-- Synchronization with Factorio inventory
+- Synchronization with Factorio inventory - right click with item in hand uses it, dropping it (y) drops it.
   ![alt text](doc/inventory.png)
 - Save/load persisted through Factorio's save system - WASM interpreter state is rehydrated on factorio load.
   - + export nethack save file function - only works for 32-bit NetHack builds sadly

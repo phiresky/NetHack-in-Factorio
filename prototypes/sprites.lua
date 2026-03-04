@@ -75,7 +75,7 @@ local ICON_OBJ = "__nethack-factorio__/graphics/icons/objects/"
 local ghost_tint = {r = 0.4, g = 0.4, b = 0.4, a = 0.8}
 local ghost_items = {
   {"off-hand",  "nh-item-dagger"},
-  {"helmet",    "nh-item-fedora"},
+  {"helmet",    "nh-item-etched-helmet-helm-of-brilliance"},
   {"eyes",      "nh-item-blindfold"},
   {"shield",    "nh-item-small-shield"},
   {"amulet",    "nh-item-circular-amulet-of-esp"},
