@@ -108,6 +108,7 @@ local MENU_BAR = {
     {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
     {separator = true},
     {label = "Toggle player mode", action = "toggle_player_mode"},
+    {label = "Toggle ASCII mode", action = "toggle_ascii"},
     -- {label = "Save",          key = string.byte("S")},
     -- {label = "Quit",          key = string.byte("#"), ext = "quit"},
   }},
