@@ -52,15 +52,18 @@ Without wall clocks, the instruction budget per tick is a fixed constant - it ca
 - UI layout based on the original Qt GUI layout
   ![top bar screenshot](doc/top-bar.png)
 
-- Original NetHack tile art (monsters, objects, dungeon features), plus switchable ASCII Mode
-  [switching gif]
+- Original NetHack tile art (monsters, objects, dungeon features), plus switchable ASCII Mode. The default has the Factorio Engineer running around the NetHack pixealart world.
+  ![switching gif](doc/view-modes.avif)
 - Factoriopedia integration
   ![factoriopedia](doc/factoriopedia.png)
 - Interactive paperdoll (click to equip/unequip/wield/swap)
+
   ![paperdoll](doc/paperdoll.png)
 - Synchronization with Factorio inventory
   ![alt text](doc/inventory.png)
-- Save/load persisted through Factorio's save system (+ export save function). **No guarantees though**. Don't sue me if you lose your save game.
+- Save/load persisted through Factorio's save system - WASM interpreter state is rehydrated on factorio load.
+  - + export nethack save file function - only works for 32-bit NetHack builds sadly
+  - **No guarantees though**. Don't sue me if you lose your save game.
 
 ## The WASM Interpreter
 
