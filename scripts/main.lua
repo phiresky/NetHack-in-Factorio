@@ -829,6 +829,33 @@ local function toggle_player_mode(player)
   player.zoom = zoom
 end
 
+-- Cycle through 4 display modes:
+-- tiles+factorio -> tiles+nethack -> ascii+factorio -> ascii+nethack -> ...
+local function cycle_display_mode(player)
+  local ascii = Display.get_ascii_mode()
+  local pmode = Display.get_player_mode()  -- "factorio" or "nethack"
+
+  if not ascii and pmode == "factorio" then
+    -- tiles+factorio -> tiles+nethack
+    toggle_player_mode(player)
+  elseif not ascii and pmode == "nethack" then
+    -- tiles+nethack -> ascii+nethack
+    Display.toggle_ascii_mode()
+  elseif ascii and pmode == "nethack" then
+    -- ascii+factorio -> ascii+nethack
+    toggle_player_mode(player)
+  else
+    -- ascii+nethack -> tiles+factorio
+    Display.toggle_ascii_mode()
+  end
+
+  local new_ascii = Display.get_ascii_mode()
+  local new_pmode = Display.get_player_mode()
+  local label = (new_ascii and "ASCII" or "Tiles") .. " + " ..
+                (new_pmode == "nethack" and "NH sprite" or "Factorio")
+  -- Gui.show_flying_text(player, label)
+end
+
 ---------------------------------------------------------------------------
 -- Event Handlers
 ---------------------------------------------------------------------------
@@ -1425,6 +1452,14 @@ script.on_event(defines.events.on_player_display_scale_changed, on_display_chang
 for _, input_name in ipairs(Input.get_custom_input_names()) do
   script.on_event(input_name, on_custom_input)
 end
+
+-- Display mode cycle shortcut (works regardless of awaiting_input)
+script.on_event("nh-cycle-display", function(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  local player = game.get_player(event.player_index)
+  if player then cycle_display_mode(player) end
+end)
 
 ---------------------------------------------------------------------------
 -- Secondary WASM call helper (for cheat commands, etc.)

@@ -89,4 +89,7 @@ end
 -- Click-to-travel: left click on distant tile triggers NetHack travel command
 inp("nh-click-move",  "mouse-button-1", "none")
 
+-- Display mode cycle (tiles/factorio -> tiles/nethack -> ascii/factorio -> ascii/nethack)
+inp("nh-cycle-display", "ALT + 0", "none")
+
 data:extend(inputs)
