@@ -189,8 +189,9 @@ function Status.render_status(player)
   local vitals = left_col.nh_st_vitals
   if vitals then
     -- Gold
+    -- BL_GOLD value from NetHack is "<symbol>:<amount>" (e.g. "$:0")
     local gold = get_val(BL_GOLD)
-    set_label(vitals, "nh_st_gold", gold ~= "" and ("Au:" .. gold) or "", "nh_gold_label")
+    set_label(vitals, "nh_st_gold", gold, "nh_gold_label")
 
     -- HP with ratio-based color
     local hp_str = get_val(BL_HP)

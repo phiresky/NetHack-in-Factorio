@@ -44,14 +44,15 @@ end
 -- GUI icons (generated from NetHack Qt XPM data by build/generate_icons.py)
 local ICON_DIR = "__nethack-factorio__/graphics/icons/"
 
-local function add_icon_batch(names, width, height, scale)
+local function add_icon_batch(names, width, height, scale, flags)
+  flags = flags or {"icon"}
   for _, name in ipairs(names) do
     local icon = {
       type = "sprite",
       name = "nh-icon-" .. name,
       filename = ICON_DIR .. "nh-icon-" .. name .. ".png",
       width = width, height = height,
-      flags = {"icon"},
+      flags = flags,
     }
     if scale then icon.scale = scale end
     sprites[#sprites + 1] = icon
@@ -64,7 +65,8 @@ add_icon_batch({"hungry", "satiated", "confused", "blind", "stunned", "hallu",
                 "sick-fp", "sick-il"}, 40, 40, 0.5)
 add_icon_batch({"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}, 40, 40, 0.5)
 add_icon_batch({"tb-again", "tb-get", "tb-kick", "tb-throw",
-                "tb-fire", "tb-drop", "tb-eat", "tb-rest"}, 12, 13)
+                "tb-fire", "tb-drop", "tb-eat", "tb-rest", "tb-search"}, 14, 15, nil,
+                {"no-crop", "no-scale", "group=icon"})
 
 -- Equipment paperdoll placeholder sprites (ghosted/faint)
 local ICON_OBJ = "__nethack-factorio__/graphics/icons/objects/"

@@ -93,8 +93,9 @@ local TOOLBAR_BUTTONS = {
   {name = "throw", label = "[img=nh-icon-tb-throw] Throw", key = string.byte("t")},
   {name = "fire",  label = "[img=nh-icon-tb-fire] Fire",   key = string.byte("f")},
   {name = "drop",  label = "[img=nh-icon-tb-drop] Drop",   key = string.byte("d")},
-  {name = "eat",   label = "[img=nh-icon-tb-eat] Eat",     key = string.byte("e")},
+  -- {name = "eat",   label = "[img=nh-icon-tb-eat] Eat",     key = string.byte("e")},
   {name = "rest",  label = "[img=nh-icon-tb-rest] Rest",   key = string.byte(".")},
+  {name = "search",label = "[img=nh-icon-tb-search] Search", key = string.byte("s")},
 }
 
 -- Menu bar definitions (matches Qt menu bar: Game, Gear, Action, Magic, Info, Help)
@@ -491,7 +492,7 @@ function Gui.create_player_gui(player)
     direction = "vertical",
     style = "nh_hover_frame",
   }
-  hover_frame.location = {x = 0, y = math.floor(230 * player.display_scale)}
+  hover_frame.location = {x = 0, y = math.floor(220 * player.display_scale)}
   hover_frame.visible = false
   hover_frame.add{
     type = "label",
