@@ -21,6 +21,20 @@ local compiled_sources = require("scripts.nethack_compiled")
 
 local M = {}
 
+-- NetHack object class -> default action key when capsule is used
+local OCLASS_ACTION = {
+  [7]  = string.byte("e"),  -- FOOD_CLASS -> eat
+  [8]  = string.byte("q"),  -- POTION_CLASS -> quaff
+  [9]  = string.byte("r"),  -- SCROLL_CLASS -> read
+  [10] = string.byte("r"),  -- SPBOOK_CLASS -> read
+  [11] = string.byte("z"),  -- WAND_CLASS -> zap
+  [2]  = string.byte("w"),  -- WEAPON_CLASS -> wield
+  [3]  = string.byte("W"),  -- ARMOR_CLASS -> wear
+  [4]  = string.byte("P"),  -- RING_CLASS -> put on
+  [5]  = string.byte("P"),  -- AMULET_CLASS -> put on
+  [6]  = string.byte("a"),  -- TOOL_CLASS -> apply
+}
+
 -- Maximum WASM instructions to execute per run() call
 local MAX_INSTRUCTIONS_PER_RUN = 10000000
 
@@ -456,6 +470,27 @@ local function run_and_process(max_instructions)
               for _, item in ipairs(win.items) do
                 if item.accelerator == drop.invlet then
                   -- Auto-select: provide count=1, queue identifier for nhgetch
+                  state.input_queue[#state.input_queue + 1] = item.identifier
+                  WasmInterp.provide_input(wasm_instance, 1)
+                  continue_loop = true
+                  break
+                end
+              end
+            end
+            if not continue_loop then
+              -- Item not found in menu, cancel
+              WasmInterp.provide_input(wasm_instance, -1)
+              continue_loop = true
+            end
+          elseif inv_state and inv_state.pending_use then
+            -- Check for pending capsule use: auto-select the item
+            local use = inv_state.pending_use
+            inv_state.pending_use = nil
+            local gui_data = storage.nh_gui
+            local win = gui_data and gui_data.windows[result.winid]
+            if win and win.items then
+              for _, item in ipairs(win.items) do
+                if item.accelerator == use.invlet then
                   state.input_queue[#state.input_queue + 1] = item.identifier
                   WasmInterp.provide_input(wasm_instance, 1)
                   continue_loop = true
@@ -1351,6 +1386,32 @@ local function on_inventory_changed(event)
   Inventory.restore_from_slot_map()
 end
 
+-- Capsule item used: trigger corresponding NetHack action
+local function on_capsule_used(event)
+  local state = storage.nh_main
+  if not state or not state.game_started then return end
+  if not state.awaiting_input or state.input_type ~= "getch" then return end
+
+  local item = event.item
+  if not item then return end
+  local item_name = item.name
+  if not item_name or not item_name:find("^nh%-item%-") then return end
+
+  local entry = Inventory.find_by_item(item_name)
+  if not entry then return end
+
+  local action_key = OCLASS_ACTION[entry.oclass]
+  if not action_key then return end
+
+  -- Store pending use so when NH asks "What do you want to <action>?",
+  -- we auto-select this item
+  local inv_state = storage.nh_inventory
+  if inv_state then
+    inv_state.pending_use = {invlet = entry.invlet}
+  end
+  advance_turn(action_key)
+end
+
 script.on_event(defines.events.on_player_changed_position, on_player_changed_position)
 script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
@@ -1360,6 +1421,7 @@ script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_ch
 script.on_event(defines.events.on_tick, on_tick)
 script.on_event("nh-click-move", on_click_move)
 script.on_event(defines.events.on_player_dropped_item, on_player_dropped_item)
+script.on_event(defines.events.on_player_used_capsule, on_capsule_used)
 script.on_event(defines.events.on_player_main_inventory_changed, on_inventory_changed)
 
 -- Rebuild GUI when display resolution or scale changes (also fires shortly after
