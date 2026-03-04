@@ -1183,6 +1183,12 @@ local function on_gui_selection_state_changed(event)
     return
   end
 
+  if action == "toggle_ascii" then
+    local mode = Display.toggle_ascii_mode()
+    Gui.show_flying_text(player, mode and "ASCII mode ON" or "ASCII mode OFF")
+    return
+  end
+
   -- Key-based actions require awaiting_input
   if not state.awaiting_input then return end
 

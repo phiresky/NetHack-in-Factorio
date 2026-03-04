@@ -63,6 +63,26 @@ local PET_TINT = {r=0.5, g=1.0, b=0.5, a=1}
 -- Detected monster tint (slight cyan)
 local DETECT_TINT = {r=0.5, g=1.0, b=1.0, a=1}
 
+-- NetHack color indices -> Factorio RGB for ASCII mode
+local NH_COLORS = {
+  [0]  = {r=0.2, g=0.2, b=0.2},  -- black
+  [1]  = {r=1, g=0, b=0},         -- red
+  [2]  = {r=0, g=0.8, b=0},       -- green
+  [3]  = {r=0.6, g=0.4, b=0.1},   -- brown
+  [4]  = {r=0.3, g=0.3, b=1},     -- blue
+  [5]  = {r=0.8, g=0, b=0.8},     -- magenta
+  [6]  = {r=0, g=0.8, b=0.8},     -- cyan
+  [7]  = {r=0.7, g=0.7, b=0.7},   -- gray
+  [8]  = {r=1, g=1, b=1},         -- no-color/default
+  [9]  = {r=1, g=0.5, b=0},       -- orange
+  [10] = {r=0, g=1, b=0},         -- bright green
+  [11] = {r=1, g=1, b=0},         -- yellow
+  [12] = {r=0.5, g=0.5, b=1},     -- bright blue
+  [13] = {r=1, g=0.3, b=1},       -- bright magenta
+  [14] = {r=0.3, g=1, b=1},       -- bright cyan
+  [15] = {r=1, g=1, b=1},         -- white
+}
+
 function Display.init()
   if not storage.nh_display then
     storage.nh_display = {
@@ -70,8 +90,14 @@ function Display.init()
       current_level = nil,  -- current level name
       player_pos = {x = 0, y = 0},
       entity_map = {},      -- [level_name][y][x] -> entity reference data
+      ascii_mode = false,   -- true = colored ASCII text, false = tile sprites
+      text_objects = {},    -- [level_name][y][x] -> render object id (ASCII mode)
     }
   end
+  -- Migration: ensure fields exist on saves from older versions
+  local disp = storage.nh_display
+  if disp.ascii_mode == nil then disp.ascii_mode = false end
+  if not disp.text_objects then disp.text_objects = {} end
 end
 
 -- Create or get a dungeon level surface
@@ -123,6 +149,7 @@ function Display.get_or_create_level(level_name)
     grid = {},  -- [y][x] = {tile_idx, ch, color, special}
   }
   disp.entity_map[level_name] = {}
+  disp.text_objects[level_name] = {}
 
   return surface
 end
@@ -164,6 +191,43 @@ local function destroy_entity_at(level_name, x, y)
   if emap[y] then
     emap[y][x] = nil
   end
+end
+
+-- Destroy text render object at a grid position (ASCII mode)
+local function destroy_text_at(level_name, x, y)
+  local disp = storage.nh_display
+  local tmap = disp.text_objects[level_name]
+  if not tmap then return end
+  if not tmap[y] then return end
+  local obj = tmap[y][x]
+  if obj and obj.valid then
+    obj.destroy()
+  end
+  tmap[y][x] = nil
+end
+
+-- Place a colored ASCII character at a grid position (ASCII mode)
+local function place_text(surface, level_name, x, y, ch, color)
+  local disp = storage.nh_display
+  if not disp.text_objects[level_name] then
+    disp.text_objects[level_name] = {}
+  end
+  if not disp.text_objects[level_name][y] then
+    disp.text_objects[level_name][y] = {}
+  end
+  destroy_text_at(level_name, x, y)
+
+  local obj = rendering.draw_text{
+    text = string.char(ch),
+    surface = surface,
+    target = {x = x + 0.5, y = y + 0.5},
+    color = NH_COLORS[color] or {r=1, g=1, b=1},
+    scale = 2.5,
+    alignment = "center",
+    vertical_alignment = "middle",
+    font = "default-mono",
+  }
+  disp.text_objects[level_name][y][x] = obj
 end
 
 -- Restore the entity at a grid position from stored grid data.
@@ -272,6 +336,21 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
     return
   end
 
+  -- Resolve base tile: stone/rock uses void, everything else uses bkglyph
+  local base_tile = ch == string.byte(" ") and "nh-void" or resolve_base_tile(bk_tile_idx)
+  surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
+
+  if disp.ascii_mode then
+    -- ASCII mode: show colored character, no entity sprite
+    destroy_entity_at(level_name, x, y)
+    if ch ~= string.byte(" ") then
+      place_text(surface, level_name, x, y, ch, color)
+    else
+      destroy_text_at(level_name, x, y)
+    end
+    return
+  end
+
   -- Determine entity name from tile index
   local ent_name = Display.tile_entity_name(tile_idx)
 
@@ -282,10 +361,6 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
   elseif has_flag(special, MG_DETECT) then
     tint = DETECT_TINT
   end
-
-  -- Resolve base tile: stone/rock uses void, everything else uses bkglyph
-  local base_tile = ch == string.byte(" ") and "nh-void" or resolve_base_tile(bk_tile_idx)
-  surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
 
   -- Always place the entity. Hero suppression is handled by set_hero_pos
   -- (called from host_curs(WIN_MAP) after all print_glyph calls in flush_screen).
@@ -330,6 +405,17 @@ function Display.clear_map_full()
   end
   disp.entity_map[level_name] = {}
 
+  -- Destroy all text objects (ASCII mode)
+  local tmap = disp.text_objects[level_name]
+  if tmap then
+    for y, row in pairs(tmap) do
+      for x, obj in pairs(row) do
+        if obj and obj.valid then obj.destroy() end
+      end
+    end
+  end
+  disp.text_objects[level_name] = {}
+
   -- Reset grid
   level.grid = {}
 
@@ -362,10 +448,22 @@ function Display.set_hero_pos(x, y)
 
     -- Destroy entity at NEW hero position (so the engineer character is visible)
     destroy_entity_at(level_name, x, y)
+    if disp.ascii_mode then
+      destroy_text_at(level_name, x, y)
+    end
 
-    -- Restore entity at OLD hero position (it was suppressed by previous set_hero_pos)
+    -- Restore at OLD hero position (it was suppressed by previous set_hero_pos)
     if old_pos and (old_pos.x ~= x or old_pos.y ~= y) then
-      restore_entity_from_grid(surface, level_name, old_pos.x, old_pos.y)
+      if disp.ascii_mode then
+        -- Restore text at old position from grid data (no entity in ASCII mode)
+        local row = level and level.grid[old_pos.y]
+        local cell = row and row[old_pos.x]
+        if cell and cell.ch ~= string.byte(" ") then
+          place_text(surface, level_name, old_pos.x, old_pos.y, cell.ch, cell.color)
+        end
+      else
+        restore_entity_from_grid(surface, level_name, old_pos.x, old_pos.y)
+      end
     end
   end
 end
@@ -384,8 +482,19 @@ function Display.set_player_mode(mode)
     if surface then
       if mode == "factorio" then
         destroy_entity_at(level_name, disp.player_pos.x, disp.player_pos.y)
+        if disp.ascii_mode then
+          destroy_text_at(level_name, disp.player_pos.x, disp.player_pos.y)
+        end
       elseif mode == "nethack" then
-        restore_entity_from_grid(surface, level_name, disp.player_pos.x, disp.player_pos.y)
+        if disp.ascii_mode then
+          local row = level.grid[disp.player_pos.y]
+          local cell = row and row[disp.player_pos.x]
+          if cell and cell.ch ~= string.byte(" ") then
+            place_text(surface, level_name, disp.player_pos.x, disp.player_pos.y, cell.ch, cell.color)
+          end
+        else
+          restore_entity_from_grid(surface, level_name, disp.player_pos.x, disp.player_pos.y)
+        end
       end
     end
   end
@@ -407,6 +516,56 @@ end
 function Display.get_current_level()
   local disp = storage.nh_display
   return disp.current_level
+end
+
+-- Toggle between ASCII and tile display modes.
+-- Returns the new ascii_mode state.
+function Display.toggle_ascii_mode()
+  local disp = storage.nh_display
+  disp.ascii_mode = not disp.ascii_mode
+
+  if not disp.current_level then return disp.ascii_mode end
+  local level_name = disp.current_level
+  local level = disp.levels[level_name]
+  local surface = game.surfaces[level.surface_name]
+  if not surface then return disp.ascii_mode end
+
+  -- Re-render all cells
+  for y, row in pairs(level.grid) do
+    for x, cell in pairs(row) do
+      if disp.ascii_mode then
+        -- Switch to ASCII: destroy entity, create text
+        destroy_entity_at(level_name, x, y)
+        if cell.ch ~= string.byte(" ") then
+          place_text(surface, level_name, x, y, cell.ch, cell.color)
+        end
+      else
+        -- Switch to tiles: destroy text, create entity
+        destroy_text_at(level_name, x, y)
+        local ent_name = Display.tile_entity_name(cell.tile_idx)
+        local tint = nil
+        if has_flag(cell.special, MG_PET) then tint = PET_TINT
+        elseif has_flag(cell.special, MG_DETECT) then tint = DETECT_TINT end
+        place_entity(surface, level_name, x, y, ent_name, tint)
+      end
+    end
+  end
+
+  -- Re-apply hero suppression
+  if disp.player_mode ~= "nethack" and disp.player_pos then
+    local pos = disp.player_pos
+    destroy_entity_at(level_name, pos.x, pos.y)
+    if disp.ascii_mode then
+      destroy_text_at(level_name, pos.x, pos.y)
+    end
+  end
+
+  return disp.ascii_mode
+end
+
+function Display.get_ascii_mode()
+  local disp = storage.nh_display
+  return disp and disp.ascii_mode or false
 end
 
 return Display
