@@ -186,6 +186,7 @@ WASM_LUA     := scripts/nethack_wasm.lua
 DATA_LUA     := scripts/nethack_data.lua
 COMPILED_LUA := scripts/nethack_compiled.lua
 TILE_CONFIG  := scripts/tile_config.lua
+ENCYCLOPEDIA := scripts/encyclopedia.lua
 
 SPRITE_SHEETS := \
 	graphics/sheets/nh-monsters.png \
@@ -203,7 +204,7 @@ TILE_SOURCES := \
 
 .PHONY: all wasm sprites clean verify
 
-all: wasm sprites
+all: wasm sprites $(ENCYCLOPEDIA)
 
 wasm: $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA)
 
@@ -272,6 +273,13 @@ $(COMPILED_LUA): $(WASM_LUA) scripts/wasm/compiler.lua scripts/wasm/init.lua
 	lua5.2 build/compile_wasm.lua $(WASM_LUA) $@
 
 # ================================================================
+# Stage 6b — Generate encyclopedia lookup table
+# ================================================================
+
+$(ENCYCLOPEDIA): $(NETHACK)/dat/data.base $(TILE_CONFIG) build/parse_encyclopedia.py
+	python3 build/parse_encyclopedia.py $(NETHACK)/dat/data.base $(TILE_CONFIG) $@
+
+# ================================================================
 # Stage 7 — Convert tile art to sprites
 # ================================================================
 
@@ -295,7 +303,7 @@ $(STAMPS)/sprites-optimized: $(TILE_CONFIG)
 # Verify all outputs exist
 # ================================================================
 
-GENERATED_FILES := $(WASM) $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG)
+GENERATED_FILES := $(WASM) $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG) $(ENCYCLOPEDIA)
 GENERATED_DIRS  := graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other
 
 verify:
@@ -328,6 +336,6 @@ verify:
 
 clean:
 	rm -f $(WASM)
-	rm -f $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG)
+	rm -f $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG) $(ENCYCLOPEDIA)
 	rm -rf graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other
 	rm -rf $(STAMPS)

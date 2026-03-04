@@ -1071,17 +1071,6 @@ local function on_tick(event)
   -- God mode: poll walking_state for movement input
   god_mode_movement()
 
-  -- Continue pending hover describe (runs alongside game, 20k budget per tick)
-  if Bridge._pending_describe and wasm_instance then
-    local player_index = Bridge._pending_describe.player_index
-    local result = Bridge.continue_describe(wasm_instance, 20000)
-    if result and player_index then
-      local player = game.get_player(player_index)
-      if player then
-        Gui.update_hover_info(player, result)
-      end
-    end
-  end
 
 end
 
@@ -1302,10 +1291,6 @@ local function on_selected_entity_changed(event)
 
   local description = Bridge.describe_pos(wasm_instance, gx, gy, true, entity.name, 20000)
   Gui.update_hover_info(player, description)
-  -- If describe didn't finish, store player index for tick-based continuation
-  if not description and Bridge._pending_describe then
-    Bridge._pending_describe.player_index = event.player_index
-  end
 end
 
 -- Inventory drop: player dragged an NH item out of Factorio inventory
