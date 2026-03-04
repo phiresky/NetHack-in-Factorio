@@ -9,6 +9,10 @@ local Wasi = require("scripts.wasm.wasi")
 
 local WasmInterp = require("scripts.wasm.interp")
 
+-- Encyclopedia lookup table (generated at build time by parse_encyclopedia.py)
+local ok_enc, encyclopedia = pcall(require, "scripts.encyclopedia")
+if not ok_enc then encyclopedia = {} end
+
 local Bridge = {}
 
 -- Ensure storage.nh_bridge exists and return it.
@@ -77,12 +81,6 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   imports["env.host_putstr"] = function(win, attr, str_ptr, len)
     local memory = memory_ref()
     local text = Bridge.read_string_len(memory, str_ptr, len)
-    -- In capture mode, redirect text to buffer instead of GUI
-    local capture = storage.nh_bridge and storage.nh_bridge.describe_capture
-    if capture then
-      capture[#capture + 1] = text
-      return
-    end
     Gui.putstr(win, attr, text)
   end
 
@@ -113,10 +111,6 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
   end
 
   imports["env.host_display_nhwindow"] = function(winid, blocking)
-    -- In capture mode, suppress display entirely
-    if storage.nh_bridge and storage.nh_bridge.describe_capture then
-      return
-    end
     Gui.display_window(winid, blocking ~= 0)
     -- When blocking a message window, show --More-- indicator.
     -- The C code will call host_nhgetch next to actually block.
@@ -353,74 +347,14 @@ function Bridge.init()
   Inventory.init()
 end
 
--- Long description cache: keyed by entity name, persists across game session
-Bridge._long_cache = {}
-
--- Pending describe continuation state (non-serializable, lives in module local)
--- Fields: saved (from instance:save_state()), full, entity_name, cached_long
-Bridge._pending_describe = nil
-
--- Extract description results from storage and return {short=..., long=...} or nil.
-local function collect_describe_result(full, entity_name, cached_long)
-  -- Read captured checkfile text
-  local captured = full and storage.nh_bridge.describe_capture or nil
-  storage.nh_bridge.describe_capture = nil
-
-  -- Read lookat result
-  local result = storage.nh_bridge.describe_result
-  storage.nh_bridge.describe_result = nil
-
-  -- Build short description from lookat
-  local short_desc = nil
-  if result then
-    local parts = {}
-    if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
-    if result.buf ~= "" then parts[#parts + 1] = result.buf end
-    if #parts > 0 then short_desc = table.concat(parts, "  ") end
-  end
-
-  -- Build long description from checkfile capture
-  local long_desc = nil
-  if captured and #captured > 0 then
-    long_desc = table.concat(captured, "\n")
-  end
-
-  -- Cache long description keyed by entity name (persists across session)
-  if full and entity_name then
-    Bridge._long_cache[entity_name] = long_desc or false
-  end
-
-  -- Use cached long desc if we skipped checkfile
-  if not long_desc and cached_long then
-    long_desc = cached_long ~= false and cached_long or nil
-  end
-
-  if not short_desc and not long_desc then return nil end
-  return {short = short_desc, long = long_desc}
-end
-
--- Describe a map position by calling nh_describe_pos in WASM.
+-- Describe a map position by calling nh_describe_pos in WASM for the short
+-- description (lookat result), and looking up the long description from the
+-- pre-built encyclopedia table (no more expensive checkfile() WASM call).
 -- Safe to call while paused at nhgetch: saves/restores exec state.
--- entity_name: Factorio prototype name (e.g. "nh-mon-little-dog"), used as long desc cache key.
--- Returns {short=..., long=...}, or nil if not yet complete.
--- If budget is exceeded, saves continuation state in Bridge._pending_describe
--- for resumption via Bridge.continue_describe().
--- short = lookat() one-liner, long = checkfile() encyclopedia entry (only when full=true).
+-- entity_name: Factorio prototype name (e.g. "nh-mon-little-dog").
+-- Returns {short=..., long=...} or nil.
 function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions)
   if not instance or not instance.exec then return nil end
-
-  -- Cancel any existing pending describe
-  Bridge.cancel_describe(instance)
-
-  -- Check long cache by entity name
-  local cached_long = nil
-  if full and entity_name then
-    cached_long = Bridge._long_cache[entity_name]
-    if cached_long ~= nil then
-      -- Have long desc cached, but still need short from WASM
-      full = false
-    end
-  end
 
   -- Cache the export index
   if not Bridge._describe_idx then
@@ -429,96 +363,47 @@ function Bridge.describe_pos(instance, x, y, full, entity_name, max_instructions
   end
 
   local saved = instance:save_state()
-
-  -- Clear any previous result; enable capture mode only when fetching full desc
   local bridge = get_bridge_state()
   bridge.describe_result = nil
-  if full then
-    bridge.describe_capture = {}
-  end
 
-  -- Call nh_describe_pos(x, y, full) and run with budget.
+  -- Call nh_describe_pos(x, y, 0) -- short description only (no checkfile)
   local ok, err = pcall(function()
-    WasmInterp.call(instance, Bridge._describe_idx, {x, y, full and 1 or 0})
+    WasmInterp.call(instance, Bridge._describe_idx, {x, y, 0})
     WasmInterp.run(instance, max_instructions or 500000)
   end)
 
   if not ok then
-    -- Error: restore and discard
     instance:restore_state(saved)
-    storage.nh_bridge.describe_capture = nil
     return nil
   end
 
-  -- Check if the describe call finished
-  local finished = instance.exec.finished
-
-  if finished then
-    instance:restore_state(saved)
-    return collect_describe_result(full, entity_name, cached_long)
-  end
-
-  -- Not finished: save describe state, then restore game state
-  local describe_saved = instance:save_state()
   instance:restore_state(saved)
 
-  Bridge._pending_describe = {
-    saved = describe_saved,
-    full = full,
-    entity_name = entity_name,
-    cached_long = cached_long,
-  }
-  return nil
+  -- Build short description from lookat result
+  local result = bridge.describe_result
+  bridge.describe_result = nil
+
+  local short_desc = nil
+  if result then
+    local parts = {}
+    if result.monbuf ~= "" then parts[#parts + 1] = result.monbuf end
+    if result.buf ~= "" then parts[#parts + 1] = result.buf end
+    if #parts > 0 then short_desc = table.concat(parts, "  ") end
+  end
+
+  -- Look up long description from encyclopedia (static table, no WASM call)
+  local long_desc = nil
+  if entity_name then
+    local key = entity_name:gsub("^nh%-mon%-", ""):gsub("^nh%-obj%-", ""):gsub("^nh%-other%-", "")
+    long_desc = encyclopedia[key]
+  end
+
+  if not short_desc and not long_desc then return nil end
+  return {short = short_desc, long = long_desc}
 end
 
--- Continue a pending describe_pos call. Returns {short=..., long=...} when done,
--- nil if still running, or false if there's nothing pending.
-function Bridge.continue_describe(instance, max_instructions)
-  local pending = Bridge._pending_describe
-  if not pending then return false end
-  if not instance or not instance.exec then
-    Bridge._pending_describe = nil
-    return false
-  end
-
-  -- Swap in the describe exec state
-  local saved = instance:save_state()
-  instance:restore_state(pending.saved)
-
-  local ok, err = pcall(function()
-    WasmInterp.run(instance, max_instructions or 20000)
-  end)
-
-  if not ok then
-    instance:restore_state(saved)
-    Bridge._pending_describe = nil
-    storage.nh_bridge.describe_capture = nil
-    return false
-  end
-
-  local finished = instance.exec.finished
-
-  -- Save progressed describe state, then restore game state
-  pending.saved = instance:save_state()
-  instance:restore_state(saved)
-
-  if finished then
-    Bridge._pending_describe = nil
-    return collect_describe_result(pending.full, pending.entity_name, pending.cached_long)
-  end
-
-  return nil -- still running
-end
-
--- Cancel any pending describe continuation, restoring clean state.
-function Bridge.cancel_describe(instance)
-  if Bridge._pending_describe then
-    Bridge._pending_describe = nil
-    if storage.nh_bridge then
-      storage.nh_bridge.describe_capture = nil
-      storage.nh_bridge.describe_result = nil
-    end
-  end
-end
+-- Stubs for backward compat (no-ops now that describe is synchronous)
+function Bridge.continue_describe() return false end
+function Bridge.cancel_describe() end
 
 return Bridge
