@@ -65,7 +65,9 @@ add_icon_batch({"hungry", "satiated", "confused", "blind", "stunned", "hallu",
                 "sick-fp", "sick-il"}, 40, 40, 0.5)
 add_icon_batch({"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}, 40, 40, 0.5)
 add_icon_batch({"tb-again", "tb-get", "tb-kick", "tb-throw",
-                "tb-fire", "tb-drop", "tb-eat", "tb-rest", "tb-search"}, 14, 15, nil,
+                "tb-fire", "tb-drop", "tb-eat", "tb-rest"}, 12, 13, nil,
+                {"no-crop", "no-scale", "group=icon"})
+add_icon_batch({"tb-search"}, 14, 15, nil,
                 {"no-crop", "no-scale", "group=icon"})
 
 -- Equipment paperdoll placeholder sprites (ghosted/faint)

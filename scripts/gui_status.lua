@@ -142,7 +142,7 @@ function Status.flush_status()
         char = main_state and main_state.saved_character
       end
       if char and char.valid then
-        char.health = ratio * char.prototype.max_health
+        char.health = ratio * char.max_health
       end
     end
   end

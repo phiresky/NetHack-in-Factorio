@@ -44,13 +44,12 @@ Without wall clocks, the instruction budget per tick is a fixed constant - it ca
 ## Features
 
 - Full NetHack 3.6.7 gameplay
-- Original NetHack tile art (monsters, objects, dungeon features)
+- UI layout based on the original Qt GUI layout
+- Original NetHack tile art (monsters, objects, dungeon features), plus switchable ASCII Mode
 - Equipment paperdoll display
-- Inventory with item icons
+- Synchronization with Factorio inventory
 - Status pane with HP/MP bars, stats, and tooltips
-- Message history and menu system
-- Save/load persisted through Factorio's save system
-- Works with Factorio 2.0
+- Save/load persisted through Factorio's save system (+ export save function)
 
 ![top bar screenshot](doc/top-bar.png)
 
@@ -88,13 +87,15 @@ The build clones NetHack 3.6.7, builds 32-bit native host tools (makedefs, lev_c
 
 ### Install
 
-Copy or symlink the mod directory into your Factorio mods folder:
+For dev: Copy or symlink the mod directory into your Factorio mods folder:
 
 ```bash
 ln -s "$(pwd)" ~/.factorio/mods/nethack-factorio
 ```
 
-### Testing
+Otherwise, get this mod from https://mods.factorio.com/mod/nethack
+
+### Testing WASM
 
 ```bash
 ./build/run_tests.sh              # full test suite
@@ -104,7 +105,7 @@ lua5.2 build/test_wasm.lua        # 56 unit tests
 lua5.2 build/test_play.lua        # end-to-end NetHack playtest + benchmark
 ```
 
-**Note:** Use `lua5.2`, not `lua` — system Lua may be 5.4 which lacks the `bit32` library.
+**Note:** Use `lua5.2`, not `lua` — system Lua may be 5.4 which lacks the `bit32` library and has other incompatible changes.
 
 ## Project Structure
 
