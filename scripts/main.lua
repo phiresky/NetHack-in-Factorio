@@ -1009,6 +1009,18 @@ local function on_gui_click(event)
     return
   end
 
+  -- Equipment paperdoll click -> inventory letter
+  local equip_key = Gui.handle_equip_click(element.name)
+  if equip_key then
+    if state.input_type == "getch" or state.input_type == "yn" then
+      if state.input_type == "yn" then
+        Gui.destroy_modal(player, "nh_yn_frame")
+      end
+      advance_turn(equip_key)
+    end
+    return
+  end
+
   -- yn_function response
   if state.input_type == "yn" then
     local key = Gui.handle_yn_click(player, element.name)

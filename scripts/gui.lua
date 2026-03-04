@@ -35,6 +35,7 @@ Gui.update_status = GuiStatus.update_status
 Gui.flush_status = GuiStatus.flush_status
 Gui.render_status = GuiStatus.render_status
 Gui.render_equipment = GuiEquip.render_equipment
+Gui.handle_equip_click = GuiEquip.handle_click
 
 Gui.start_menu = GuiMenus.start_menu
 Gui.add_menu_item = GuiMenus.add_menu_item
@@ -253,17 +254,10 @@ function Gui.create_player_gui(player)
   local ui_height = player.display_resolution.height / player.display_scale
 
   local minimap_width = 256
-  -- Layout constants
-  local STATUS_WIDTH = 700
-  -- local total_width = math.min(1200, math.max(800, math.floor(ui_width * 0.80)))
-  -- total_width = math.min(total_width, math.floor(ui_width))  -- clamp to screen
   local total_width = ui_width - minimap_width
-  -- player.display_resolution.width / player.display_scale - 16 -- ui_width - minimap_width
-  -- Messages get the remaining space after status
-  local msg_width = math.max(200, total_width - STATUS_WIDTH - 32)  -- account for padding/separator
 
   -------------------------------------------------
-  -- Single top panel: menu bar + [messages | status]
+  -- Top panel: menu bar, then [toolbar+messages | stats | equipment]
   -------------------------------------------------
   local top_panel = screen.add{
     type = "frame",
@@ -291,8 +285,29 @@ function Gui.create_player_gui(player)
     }
   end
 
-  -- Toolbar row (quick-access buttons)
-  local toolbar = top_panel.add{
+  -- Separator below menu bar
+  top_panel.add{type = "line", direction = "horizontal"}
+
+  -- Content area: [toolbar+messages | stats | equipment]
+  local content = top_panel.add{
+    type = "flow",
+    name = "nh_top_content",
+    direction = "horizontal",
+    style = "nh_top_content_flow",
+  }
+
+  -------------------------------------------------
+  -- Left column: toolbar + messages
+  -------------------------------------------------
+  local msg_pane = content.add{
+    type = "flow",
+    name = "nh_msg_pane",
+    direction = "vertical",
+  }
+  msg_pane.style.maximal_width = 620
+
+  -- Toolbar (quick-access buttons)
+  local toolbar = msg_pane.add{
     type = "flow",
     name = "nh_toolbar",
     direction = "horizontal",
@@ -316,27 +331,7 @@ function Gui.create_player_gui(player)
   }
   cancel_btn.visible = false
 
-  -- Separator below toolbar
-  top_panel.add{type = "line", direction = "horizontal"}
-
-  -- Content area: messages (left) | status (right)
-  local content = top_panel.add{
-    type = "flow",
-    name = "nh_top_content",
-    direction = "horizontal",
-    style = "nh_top_content_flow",
-  }
-
-  -------------------------------------------------
-  -- Messages pane (left side of content)
-  -------------------------------------------------
-  local msg_pane = content.add{
-    type = "flow",
-    name = "nh_msg_pane",
-    direction = "vertical",
-  }
-  msg_pane.style.width = msg_width
-
+  -- Messages scroll
   local msg_scroll = msg_pane.add{
     type = "scroll-pane",
     name = "nh_msg_scroll",
@@ -358,12 +353,11 @@ function Gui.create_player_gui(player)
     msg_scroll.scroll_to_bottom()
   end
 
-  -- Vertical separator between messages and status
+  -- Vertical separator
   content.add{type = "line", direction = "vertical"}
 
   -------------------------------------------------
-  -- Status pane (right side of content)
-  -- Two-column: stats (left) | equipment (right)
+  -- Middle column: stats
   -------------------------------------------------
   local status_flow = content.add{
     type = "flow",
@@ -371,9 +365,7 @@ function Gui.create_player_gui(player)
     direction = "horizontal",
     style = "nh_st_lower_flow",
   }
-  status_flow.style.width = STATUS_WIDTH
 
-  -- Left column: all player stats
   local left_col = status_flow.add{
     type = "flow",
     name = "nh_st_left",
@@ -463,8 +455,13 @@ function Gui.create_player_gui(player)
     direction = "horizontal",
   }
 
-  -- Right column: equipment (paperdoll)
-  local right_col = status_flow.add{
+  -- Vertical separator
+  content.add{type = "line", direction = "vertical"}
+
+  -------------------------------------------------
+  -- Right column: equipment (paperdoll grid)
+  -------------------------------------------------
+  local right_col = content.add{
     type = "flow",
     name = "nh_st_right",
     direction = "vertical",
@@ -476,10 +473,16 @@ function Gui.create_player_gui(player)
     caption = "Equipment",
     style = "nh_equip_header_label",
   }
-  right_col.add{
-    type = "flow",
-    name = "nh_equip_flow",
-    direction = "vertical",
+  local equip_frame = right_col.add{
+    type = "frame",
+    name = "nh_equip_frame",
+    style = "deep_frame_in_shallow_frame",
+  }
+  equip_frame.add{
+    type = "table",
+    name = "nh_equip_table",
+    column_count = 5,
+    style = "nh_equip_table",
   }
 
   -- Engine state (right-aligned in menu bar)
@@ -489,22 +492,11 @@ function Gui.create_player_gui(player)
     style = "nh_engine_spacer",
   }
   engine_spacer.style.horizontally_stretchable = true
-  local engine_vflow = menubar.add{
-    type = "flow",
-    name = "nh_engine_vflow",
-    direction = "vertical",
-  }
-  engine_vflow.add{
+  menubar.add{
     type = "label",
-    name = "nh_engine_state",
+    name = "nh_engine_label",
     caption = "Initializing",
     style = "nh_engine_state_label",
-  }
-  engine_vflow.add{
-    type = "label",
-    name = "nh_engine_count",
-    caption = "",
-    style = "nh_engine_count_label",
   }
 
   -- Hover info frame (separate frame below top panel)
@@ -514,7 +506,7 @@ function Gui.create_player_gui(player)
     direction = "vertical",
     style = "nh_hover_frame",
   }
-  hover_frame.location = {x = 0, y = math.floor(253 * player.display_scale)}
+  hover_frame.location = {x = 0, y = math.floor(230 * player.display_scale)}
   hover_frame.visible = false
   hover_frame.add{
     type = "label",
@@ -1090,7 +1082,7 @@ end
 -----------------------------------------------------
 
 function Gui.update_engine_state(state_text, instructions, color)
-  local count_text = format_number(instructions) .. " WASM inst"
+  local caption = state_text .. " | " .. format_number(instructions) .. " inst"
 
   for _, player in pairs(game.connected_players) do
     local screen = player.gui.screen
@@ -1098,18 +1090,13 @@ function Gui.update_engine_state(state_text, instructions, color)
     if top then
       local menubar = top.nh_menubar
       if menubar then
-        local vflow = menubar.nh_engine_vflow
-        local state_label = vflow and vflow.nh_engine_state
-        if state_label then
-          state_label.caption = "NH Engine: " .. state_text
+        local label = menubar.nh_engine_label
+        if label then
+          label.caption = caption
           if color then
-            state_label.style = "nh_engine_state_label"
-            state_label.style.font_color = color
+            label.style = "nh_engine_state_label"
+            label.style.font_color = color
           end
-        end
-        local count_label = vflow and vflow.nh_engine_count
-        if count_label then
-          count_label.caption = count_text
         end
       end
     end
@@ -1122,7 +1109,8 @@ function Gui.set_cancel_visible(visible)
     local screen = player.gui.screen
     local top = screen.nh_top_panel
     if top then
-      local toolbar = top.nh_toolbar
+      local msg_pane = top.nh_top_content and top.nh_top_content.nh_msg_pane
+      local toolbar = msg_pane and msg_pane.nh_toolbar
       if toolbar and toolbar.nh_cancel then
         toolbar.nh_cancel.visible = visible
       end

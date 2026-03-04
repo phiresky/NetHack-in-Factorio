@@ -26,10 +26,11 @@ default_gui["nh_top_frame"] = {
 
 default_gui["nh_msg_scroll"] = {
   type = "scroll_pane_style",
-  maximal_height = 120,
-  minimal_height = 60,
+  maximal_height = 130,
+  minimal_height = 130,
   extra_padding_when_activated = 0,
   vertical_spacing = 1,
+  horizontally_stretchable = "on",
 }
 
 default_gui["nh_message_label"] = {
@@ -128,27 +129,37 @@ default_gui["nh_st_right_flow"] = {
   vertical_spacing = 1,
 }
 
------------------------------------------------------
--- Equipment (paperdoll list in status pane)
------------------------------------------------------
+default_gui["nh_equip_table"] = {
+  type = "table_style",
+  horizontal_spacing = 0,
+  vertical_spacing = 0,
+  cell_padding = 0,
+}
 
 default_gui["nh_equip_header_label"] = {
   type = "label_style",
   font = "default-bold",
   font_color = {r = 1, g = 0.85, b = 0.4},
-  top_padding = 2,
   bottom_padding = 2,
 }
 
-default_gui["nh_equip_slot_label"] = {
-  type = "label_style",
-  font = "default",
-  font_color = {r = 0.9, g = 0.9, b = 0.9},
-  left_padding = 4,
-  right_padding = 4,
-  rich_text_setting = "enabled",
-  single_line = true,
-  maximal_width = 260,
+default_gui["nh_equip_slot_button"] = {
+  type = "button_style",
+  parent = "slot_button",
+  size = 34,
+}
+
+default_gui["nh_equip_slot_empty"] = {
+  type = "button_style",
+  parent = "slot_button",
+  draw_grayscale_picture = true,
+  size = 34,
+}
+
+default_gui["nh_equip_filler"] = {
+  type = "empty_widget_style",
+  width = 34,
+  height = 34,
 }
 
 -----------------------------------------------------
@@ -490,11 +501,6 @@ default_gui["nh_engine_state_label"] = {
   right_padding = 8,
 }
 
-default_gui["nh_engine_count_label"] = {
-  type = "label_style",
-  font = "default-small",
-  font_color = {r = 0.65, g = 0.65, b = 0.65},
-}
 
 -----------------------------------------------------
 -- Hover Info (separate frame below top panel)

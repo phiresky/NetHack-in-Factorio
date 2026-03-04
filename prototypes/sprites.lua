@@ -66,4 +66,36 @@ add_icon_batch({"enc-slt", "enc-mod", "enc-hvy", "enc-ext", "enc-ovr"}, 40, 40, 
 add_icon_batch({"tb-again", "tb-get", "tb-kick", "tb-throw",
                 "tb-fire", "tb-drop", "tb-eat", "tb-rest"}, 12, 13)
 
+-- Equipment paperdoll placeholder sprites (ghosted/faint)
+local ICON_OBJ = "__nethack-factorio__/graphics/icons/objects/"
+local ghost_tint = {r = 0.4, g = 0.4, b = 0.4, a = 0.8}
+local ghost_items = {
+  {"off-hand",  "nh-item-dagger"},
+  {"helmet",    "nh-item-fedora"},
+  {"eyes",      "nh-item-blindfold"},
+  {"shield",    "nh-item-small-shield"},
+  {"amulet",    "nh-item-circular-amulet-of-esp"},
+  {"weapon",    "nh-item-long-sword"},
+  {"gloves",    "nh-item-old-gloves-leather-gloves"},
+  {"cloak",     "nh-item-opera-cloak-cloak-of-invisibility"},
+  {"ring",      "nh-item-wooden-adornment"},
+  {"armor",     "nh-item-leather-armor"},
+  {"boots",     "nh-item-jackboots-high-boots"},
+  {"quiver",    "nh-item-arrow"},
+}
+for _, def in ipairs(ghost_items) do
+  sprites[#sprites + 1] = {
+    type = "sprite",
+    name = "nh-equip-ghost-" .. def[1],
+    filename = ICON_OBJ .. def[2] .. ".png",
+    width = 32,
+    height = 32,
+    scale = 0.5,
+    tint = ghost_tint,
+    tint_as_overlay = true,
+    blend_mode = "additive-soft",
+    flags = {"icon"},
+  }
+end
+
 data:extend(sprites)
