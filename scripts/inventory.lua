@@ -122,6 +122,7 @@ function Inventory.apply_sync()
           name = item.name,
           item_name = item.item_name,
           owornmask = item.owornmask,
+          oclass = item.oclass,
         }
       end
     end
@@ -140,6 +141,18 @@ function Inventory.find_invlet_by_item(item_name)
   for _, entry in ipairs(inv_state.slot_map) do
     if entry.item_name == item_name then
       return entry.invlet
+    end
+  end
+  return nil
+end
+
+-- Find a slot_map entry by Factorio item prototype name.
+function Inventory.find_by_item(item_name)
+  local inv_state = storage.nh_inventory
+  if not inv_state then return nil end
+  for _, entry in ipairs(inv_state.slot_map) do
+    if entry.item_name == item_name then
+      return entry
     end
   end
   return nil

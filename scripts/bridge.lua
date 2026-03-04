@@ -240,6 +240,17 @@ function Bridge.create_imports(memory_ref, instance_ref, opts)
       return
     end
 
+    -- Check for pending capsule use from Factorio inventory
+    if inv_state and inv_state.pending_use then
+      local use = inv_state.pending_use
+      inv_state.pending_use = nil
+      local main_state = storage.nh_main
+      if main_state then
+        main_state.input_queue[#main_state.input_queue + 1] = use.invlet
+      end
+      return
+    end
+
     -- Check for inventory-style prompt (brackets with ? or *)
     local has_help = query:match("%[.*%?.*%]") or query:match("%[.*%*.*%]")
 

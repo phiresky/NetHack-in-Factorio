@@ -9,9 +9,30 @@ local ICON_DIR = "__nethack-factorio__/graphics/icons/objects/"
 
 for i, name in ipairs(TC.object_names) do
   items[#items + 1] = {
-    type = "item",
+    type = "capsule",
     name = "nh-item-" .. name,
     localised_name = name:gsub("-", " "),
+    capsule_action = {
+      type = "use-on-self",
+      attack_parameters = {
+        type = "projectile",
+        ammo_category = "capsule",
+        cooldown = 30,
+        range = 0,
+        ammo_type = {
+          action = {
+            type = "direct",
+            action_delivery = {
+              type = "instant",
+              target_effects = {{
+                type = "damage",
+                damage = {amount = 0, type = "physical"},
+              }},
+            },
+          },
+        },
+      },
+    },
     icon = ICON_DIR .. "nh-item-" .. name .. ".png",
     icon_size = 32,
     stack_size = 1,
