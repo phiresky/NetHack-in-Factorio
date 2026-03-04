@@ -67,7 +67,7 @@ function Menus.show_menu(player, winid, how)
     direction = "vertical",
     caption = (win.prompt ~= "" and win.prompt)
               or (storage.nh_bridge and storage.nh_bridge.inventory_prompt)
-              or "Select",
+              or "Items",
     style = "nh_menu_frame",
   }
   frame.auto_center = true
