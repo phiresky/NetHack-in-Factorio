@@ -4,14 +4,45 @@
 
 local TC = require("scripts.tile_config")
 
+-- Encyclopedia lookup (may not exist yet during first build)
+local ok_enc, encyclopedia = pcall(require, "scripts.encyclopedia")
+if not ok_enc then encyclopedia = {} end
+
+
 local items = {}
 local ICON_DIR = "__nethack-factorio__/graphics/icons/objects/"
+
+-- Object class subgroup assignment (same ranges as entities.lua)
+local object_class_ranges = {
+  {1,   1,   "nh-weapons"},
+  {2,   72,  "nh-weapons"},
+  {73,  153, "nh-armor"},
+  {154, 181, "nh-rings"},
+  {182, 192, "nh-amulets"},
+  {193, 242, "nh-tools"},
+  {243, 275, "nh-food"},
+  {276, 301, "nh-potions"},
+  {302, 344, "nh-scrolls"},
+  {345, 387, "nh-spellbooks"},
+  {388, 415, "nh-wands"},
+  {416, 456, "nh-gems"},
+}
+
+local function get_object_subgroup(idx)
+  for _, range in ipairs(object_class_ranges) do
+    if idx >= range[1] and idx <= range[2] then
+      return range[3]
+    end
+  end
+  return "nh-gems"
+end
 
 for i, name in ipairs(TC.object_names) do
   items[#items + 1] = {
     type = "capsule",
     name = "nh-item-" .. name,
-    localised_name = name:gsub("-", " "),
+    localised_name = TC.object_display_names[i] or name:gsub("-", " "),
+    localised_description = encyclopedia[name],
     capsule_action = {
       type = "use-on-self",
       attack_parameters = {
@@ -35,10 +66,11 @@ for i, name in ipairs(TC.object_names) do
     },
     icon = ICON_DIR .. "nh-item-" .. name .. ".png",
     icon_size = 32,
+    subgroup = get_object_subgroup(i),
+    order = string.format("%04d", i),
     stack_size = 1,
     flags = {"not-stackable", "hide-from-bonus-gui"},
     hidden = true,
-    hidden_in_factoriopedia = true,
   }
 end
 

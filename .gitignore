@@ -15,6 +15,7 @@ scripts/nethack_data.lua
 scripts/nethack_compiled.lua
 scripts/tile_config.lua
 scripts/encyclopedia.lua
+locale/en/encyclopedia.cfg
 graphics/sheets/
 graphics/tiles/
 graphics/icons/monsters/
