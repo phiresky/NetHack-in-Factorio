@@ -21,7 +21,7 @@ async function loadDataFiles(): Promise<Record<string, Uint8Array>> {
   return files;
 }
 
-async function start(sharedBuffer: SharedArrayBuffer) {
+async function start(sharedBuffer: SharedArrayBuffer, savedVfs?: Record<string, string>) {
   try {
     postMessage({ type: 'loading', instructions: 0, estimated: 1770000 });
 
@@ -31,12 +31,23 @@ async function start(sharedBuffer: SharedArrayBuffer) {
       fetch(`${base}nethack.wasm`),
     ]);
 
+    // Overlay saved VFS files (from IndexedDB autosave) onto base data
+    if (savedVfs) {
+      for (const [name, b64] of Object.entries(savedVfs)) {
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        dataFiles[name] = bytes;
+      }
+    }
+
     const wasmBytes = await wasmResp.arrayBuffer();
 
     // Create WASI and Bridge
     wasi = new WasiRuntime(dataFiles);
     bridge = new Bridge();
     bridge.setSharedBuffer(sharedBuffer);
+    bridge.setWasi(wasi);
 
     // Combine imports
     const wasiImports = wasi.getImports();
@@ -80,13 +91,16 @@ self.onmessage = (e: MessageEvent<MainMessage>) => {
   const msg = e.data;
   switch (msg.type) {
     case 'start':
-      start(msg.sharedBuffer);
+      start(msg.sharedBuffer, msg.savedVfs);
       break;
     case 'menu_result':
       // Menu results are handled via SAB — the queue values are already written
       break;
     case 'plsel_result':
       // Plsel results are handled via SAB
+      break;
+    case 'request_vfs_snapshot':
+      if (bridge) bridge.postVfsSnapshot();
       break;
   }
 };

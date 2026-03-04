@@ -12,6 +12,18 @@ export const MenuBar = observer(function MenuBar() {
       gameStore.toggleAscii();
       return;
     }
+    if (action === 'export_save') {
+      gameStore.exportSave();
+      return;
+    }
+    if (action === 'import_save') {
+      gameStore.importSave();
+      return;
+    }
+    if (action === 'new_game') {
+      gameStore.newGame();
+      return;
+    }
     if (key !== undefined && gameStore.inputMode.type === 'getch') {
       if (ext) {
         // Extended command: send '#' then the command string

@@ -3,6 +3,7 @@
 
 import { SAB_SIGNAL, SAB_VALUE, SAB_QUEUE_START, SAB_QUEUE_LENGTH } from '../protocol/messages';
 import type { GlyphUpdate, InventoryItemData, WorkerMessage } from '../protocol/messages';
+import type { WasiRuntime } from './wasi';
 import { NHW_MAP, BL_FLUSH, BL_RESET } from '../protocol/constants';
 
 export class Bridge {
@@ -19,9 +20,14 @@ export class Bridge {
   private clickX = 0;
   private clickY = 0;
   private clickMod = 0;
+  private wasi: WasiRuntime | null = null;
 
   setMemory(mem: WebAssembly.Memory) {
     this.memory = mem;
+  }
+
+  setWasi(wasi: WasiRuntime) {
+    this.wasi = wasi;
   }
 
   setSharedBuffer(sab: SharedArrayBuffer) {
@@ -46,6 +52,10 @@ export class Bridge {
 
   // Block the worker thread until input is ready, return the value
   private blockForInput(): number {
+    // Snapshot VFS overlay before blocking — main thread persists to IndexedDB
+    if (this.wasi) {
+      this.post({ type: 'vfs_snapshot', files: this.wasi.getVfsOverlay() });
+    }
     // Wait until signal != 0
     Atomics.wait(this.sharedInt32, SAB_SIGNAL, 0);
     const value = this.sharedInt32[SAB_VALUE];
@@ -61,6 +71,13 @@ export class Bridge {
       this.inputQueue.push(Atomics.load(this.sharedInt32, SAB_QUEUE_START + i));
     }
     Atomics.store(this.sharedInt32, SAB_QUEUE_LENGTH, 0);
+  }
+
+  /** Post a VFS snapshot on demand (for export button) */
+  postVfsSnapshot() {
+    if (this.wasi) {
+      this.post({ type: 'vfs_snapshot', files: this.wasi.getVfsOverlay() });
+    }
   }
 
   getImports(): Record<string, Function> {

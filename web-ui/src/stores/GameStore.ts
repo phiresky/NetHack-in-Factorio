@@ -4,6 +4,49 @@ import type { WorkerMessage, MenuItemData, InventoryItemData, PlselOption } from
 import { SAB_SIGNAL, SAB_VALUE, SAB_QUEUE_START, SAB_QUEUE_LENGTH, SAB_SIZE } from '../protocol/messages';
 import { NHW_MAP, NHW_TEXT, NHW_MENU } from '../protocol/constants';
 
+// --- IndexedDB helpers (db: 'nethack', store: 'saves') ---
+const IDB_NAME = 'nethack';
+const IDB_STORE = 'saves';
+
+function idbOpen(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSave(key: string, value: unknown): Promise<void> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(value, key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
+async function idbLoad<T>(key: string): Promise<T | undefined> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => { db.close(); resolve(req.result as T | undefined); };
+    req.onerror = () => { db.close(); reject(req.error); };
+  });
+}
+
+async function idbDelete(key: string): Promise<void> {
+  const db = await idbOpen();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).delete(key);
+    tx.oncomplete = () => { db.close(); resolve(); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+  });
+}
+
 export interface CellData {
   tileIdx: number;
   ch: number;
@@ -81,6 +124,7 @@ export class GameStore {
   private worker: Worker | null = null;
   private sharedBuffer: SharedArrayBuffer | null = null;
   private sharedInt32: Int32Array | null = null;
+  private lastVfsSnapshot: Record<string, string> | null = null;
 
   constructor() {
     makeAutoObservable(this, {
@@ -92,9 +136,15 @@ export class GameStore {
     });
   }
 
-  start() {
+  async start() {
     this.sharedBuffer = new SharedArrayBuffer(SAB_SIZE);
     this.sharedInt32 = new Int32Array(this.sharedBuffer);
+
+    // Load saved VFS from IndexedDB (if any)
+    let savedVfs: Record<string, string> | undefined;
+    try {
+      savedVfs = await idbLoad<Record<string, string>>('autosave');
+    } catch { /* no saved game */ }
 
     this.worker = new Worker(
       new URL('../worker/nethack-worker.ts', import.meta.url),
@@ -112,7 +162,7 @@ export class GameStore {
       });
     };
 
-    this.worker.postMessage({ type: 'start', sharedBuffer: this.sharedBuffer });
+    this.worker.postMessage({ type: 'start', sharedBuffer: this.sharedBuffer, savedVfs });
   }
 
   private handleWorkerMessage(msg: WorkerMessage) {
@@ -295,6 +345,12 @@ export class GameStore {
         case 'finished':
           this.engineState = 'finished';
           break;
+
+        case 'vfs_snapshot':
+          // Persist to IndexedDB (fire-and-forget)
+          idbSave('autosave', msg.files).catch(() => {});
+          this.lastVfsSnapshot = msg.files;
+          break;
       }
     });
   }
@@ -374,6 +430,50 @@ export class GameStore {
   toggleAscii() {
     this.asciiMode = !this.asciiMode;
     this.mapVersion++;
+  }
+
+  async exportSave() {
+    // Use last snapshot from memory, or try loading from IDB
+    let vfs = this.lastVfsSnapshot;
+    if (!vfs) {
+      try { vfs = await idbLoad<Record<string, string>>('autosave') ?? null; } catch { /* */ }
+    }
+    if (!vfs || Object.keys(vfs).length === 0) {
+      alert('No save data available. Play a few turns first.');
+      return;
+    }
+    const blob = new Blob([JSON.stringify(vfs)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nethack-save-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  importSave() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const vfs = JSON.parse(text) as Record<string, string>;
+        await idbSave('autosave', vfs);
+        location.reload();
+      } catch (e) {
+        alert(`Failed to import save: ${e instanceof Error ? e.message : e}`);
+      }
+    };
+    input.click();
+  }
+
+  async newGame() {
+    if (!confirm('Start a new game? Your current save will be deleted.')) return;
+    try { await idbDelete('autosave'); } catch { /* */ }
+    location.reload();
   }
 }
 

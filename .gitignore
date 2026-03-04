@@ -59,3 +59,4 @@ build/__pycache__/
 
 /build/spec
 .stamps
+.playwright-mcp

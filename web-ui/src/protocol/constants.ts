@@ -141,6 +141,10 @@ export const MENU_BAR: MenuDef[] = [
     { label: 'Explore mode', key: 35 /* # */, ext: 'exploremode' },
     { separator: true, label: '' },
     { label: 'Toggle ASCII mode', action: 'toggle_ascii' },
+    { separator: true, label: '' },
+    { label: 'Export Save', action: 'export_save' },
+    { label: 'Import Save', action: 'import_save' },
+    { label: 'New Game', action: 'new_game' },
   ]},
   { name: 'gear', label: 'Gear', items: [
     { label: 'Wield weapon', key: 119 /* w */ },

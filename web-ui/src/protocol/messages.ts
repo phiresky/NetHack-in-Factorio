@@ -63,13 +63,15 @@ export type WorkerMessage =
   | { type: 'plsel_setup'; field: 'roles' | 'races' | 'genders' | 'aligns'; option: PlselOption }
   | { type: 'exit'; message: string }
   | { type: 'error'; message: string }
-  | { type: 'finished' };
+  | { type: 'finished' }
+  | { type: 'vfs_snapshot'; files: Record<string, string> };
 
 // Messages from Main to Worker (via postMessage for complex data)
 export type MainMessage =
-  | { type: 'start'; sharedBuffer: SharedArrayBuffer }
+  | { type: 'start'; sharedBuffer: SharedArrayBuffer; savedVfs?: Record<string, string> }
   | { type: 'menu_result'; count: number; selections: number[] }
-  | { type: 'plsel_result'; name: string; role: number; race: number; gender: number; align: number };
+  | { type: 'plsel_result'; name: string; role: number; race: number; gender: number; align: number }
+  | { type: 'request_vfs_snapshot' };
 
 // SharedArrayBuffer layout (Int32Array):
 // [0] = signal: 0=idle, 1=input_ready

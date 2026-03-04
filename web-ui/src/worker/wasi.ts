@@ -35,6 +35,7 @@ interface FdEntry {
 export class WasiRuntime {
   private memory!: WebAssembly.Memory;
   private vfsFiles: Map<string, Uint8Array>;
+  private baseFileKeys: Set<string>;
   private fds: Map<number, FdEntry> = new Map();
   private nextFd = 4;
   private args: string[];
@@ -46,6 +47,7 @@ export class WasiRuntime {
     for (const [name, data] of Object.entries(dataFiles)) {
       this.vfsFiles.set(name, data);
     }
+    this.baseFileKeys = new Set(Object.keys(dataFiles));
 
     // Pre-create lock file (PID=1, little-endian)
     this.vfsFiles.set('1lock.0', new Uint8Array([0x01, 0x00, 0x00, 0x00]));
@@ -63,6 +65,26 @@ export class WasiRuntime {
 
   setMemory(mem: WebAssembly.Memory) {
     this.memory = mem;
+  }
+
+  /** Return VFS files that were created or modified (not base data files), base64-encoded. */
+  getVfsOverlay(): Record<string, string> {
+    // Flush any open writable fds back to vfsFiles
+    for (const entry of this.fds.values()) {
+      if (entry.type === 'file' && entry.file && entry.path) {
+        this.vfsFiles.set(entry.path, entry.file.data);
+      }
+    }
+
+    const overlay: Record<string, string> = {};
+    for (const [name, data] of this.vfsFiles) {
+      if (this.baseFileKeys.has(name)) continue;
+      // Base64 encode
+      let binary = '';
+      for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]);
+      overlay[name] = btoa(binary);
+    }
+    return overlay;
   }
 
   private view() { return new DataView(this.memory.buffer); }
