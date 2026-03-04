@@ -59,6 +59,9 @@ char *argv[];
     askname();
     plnamesuffix();
 
+    /* Set save file name based on player name (needed by dosave0) */
+    set_savefile_name(TRUE);
+
     /* getlock() creates the lock file */
     getlock();
 

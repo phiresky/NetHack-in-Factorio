@@ -443,12 +443,26 @@ function Bridge.export_save(instance)
   -- Save full execution state (exec + stack pointer + compiled state)
   local saved = instance:save_state()
 
+  -- Deep-copy WASM memory: dosave0() is destructive (FREE_SAVE frees level
+  -- data, zeroes u.uz, etc). restore_state() only handles exec/SP, not memory.
+  local mem = instance.memory
+  local mem_backup = {}
+  local mem_data = mem.data
+  for i = 0, (mem.byte_length / 4) - 1 do
+    local v = mem_data[i]
+    if v ~= 0 then mem_backup[i] = v end
+  end
+
   -- Run dosave with generous budget (save writes lots of data through WASM)
   local ok, err = pcall(function()
     WasmInterp.call(instance, Bridge._dosave_idx, {})
   end)
 
   if not ok then
+    -- Restore memory and exec state
+    for i = 0, (mem.byte_length / 4) - 1 do
+      mem_data[i] = mem_backup[i] or 0
+    end
     instance:restore_state(saved)
     return nil, "call setup failed: " .. tostring(err)
   end
@@ -460,6 +474,11 @@ function Bridge.export_save(instance)
     if entry.writable and entry.name then
       vfs.files[entry.name] = entry.data
     end
+  end
+
+  -- Restore WASM memory (undo dosave0's destructive changes)
+  for i = 0, (mem.byte_length / 4) - 1 do
+    mem_data[i] = mem_backup[i] or 0
   end
 
   -- Restore execution state regardless of outcome
@@ -497,7 +516,7 @@ function Bridge.export_save(instance)
   end
 
   if #save_files == 0 then
-    return nil, "No save files found in VFS (save completed but no files changed)"
+    return nil, "save completed but no files changed"
   end
 
   -- Return the largest file (most likely the actual save)
