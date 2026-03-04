@@ -502,39 +502,4 @@ default_gui["nh_engine_state_label"] = {
 }
 
 
------------------------------------------------------
--- Hover Info (separate frame below top panel)
------------------------------------------------------
 
-default_gui["nh_hover_frame"] = {
-  type = "frame_style",
-  top_padding = 6,
-  bottom_padding = 6,
-  left_padding = 10,
-  right_padding = 10,
-  maximal_width = 400,
-  vertical_spacing = 2,
-  graphical_set = {
-    base = {
-      position = {0, 0},
-      corner_size = 8,
-      opacity = 0.88,
-    },
-  },
-}
-
-default_gui["nh_hover_short_label"] = {
-  type = "label_style",
-  font = "default-bold",
-  font_color = {r = 1, g = 1, b = 1},
-  single_line = false,
-  maximal_width = 380,
-}
-
-default_gui["nh_hover_long_label"] = {
-  type = "label_style",
-  font = "default",
-  font_color = {r = 0.85, g = 0.85, b = 0.75},
-  single_line = false,
-  maximal_width = 380,
-}

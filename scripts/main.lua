@@ -431,8 +431,6 @@ local function run_and_process(max_instructions)
   local state = storage.nh_main
   if not wasm_instance or not state.running then return end
 
-  -- Cancel any pending hover describe — game execution will clobber shared WASM memory
-  Bridge.cancel_describe(wasm_instance)
 
   local auto_feed_count = 0
   while true do
@@ -1220,7 +1218,7 @@ local function on_gui_selection_state_changed(event)
 
   if action == "toggle_ascii" then
     local mode = Display.toggle_ascii_mode()
-    Gui.show_flying_text(player, mode and "ASCII mode ON" or "ASCII mode OFF")
+    -- Gui.show_flying_text(player, mode and "ASCII mode ON" or "ASCII mode OFF")
     return
   end
 
@@ -1317,36 +1315,6 @@ local function on_click_move(event)
   end
 end
 
--- Hover tooltip: describe tile under cursor using NetHack's lookat()
-local function on_selected_entity_changed(event)
-  local state = storage.nh_main
-  if not state or not state.game_started then return end
-  if not state.awaiting_input then return end
-  if not wasm_instance then return end
-
-  local player = game.get_player(event.player_index)
-  if not player then return end
-
-  local entity = player.selected
-  if not entity or not entity.valid then
-    Gui.update_hover_info(player, nil)
-    return
-  end
-
-  -- Only describe NetHack entities
-  local name = entity.name
-  if not name:find("^nh%-") then
-    Gui.update_hover_info(player, nil)
-    return
-  end
-
-  -- Convert entity position to NetHack grid coordinates
-  local gx = math.floor(entity.position.x)
-  local gy = math.floor(entity.position.y)
-
-  local description = Bridge.describe_pos(wasm_instance, gx, gy, true, entity.name, 20000)
-  Gui.update_hover_info(player, description)
-end
 
 -- Inventory drop: player dragged an NH item out of Factorio inventory
 local function on_player_dropped_item(event)
@@ -1409,6 +1377,11 @@ local function on_capsule_used(event)
   if inv_state then
     inv_state.pending_use = {invlet = entry.invlet}
   end
+
+  -- Clear cursor stack so the item isn't left dangling on the cursor
+  local player = game.get_player(event.player_index)
+  if player then player.clear_cursor() end
+
   advance_turn(action_key)
 end
 
@@ -1417,7 +1390,7 @@ script.on_event(defines.events.on_gui_click, on_gui_click)
 script.on_event(defines.events.on_gui_confirmed, on_gui_confirmed)
 script.on_event(defines.events.on_gui_selection_state_changed, on_gui_selection_state_changed)
 script.on_event(defines.events.on_gui_checked_state_changed, on_gui_checked_state_changed)
-script.on_event(defines.events.on_selected_entity_changed, on_selected_entity_changed)
+
 script.on_event(defines.events.on_tick, on_tick)
 script.on_event("nh-click-move", on_click_move)
 script.on_event(defines.events.on_player_dropped_item, on_player_dropped_item)
@@ -1468,8 +1441,6 @@ local function execute_wasm_cheat(export_name, args, max_instructions)
     return false
   end
 
-  -- Cancel any pending hover describe
-  Bridge.cancel_describe(wasm_instance)
 
   -- Save current execution state and stack pointer
   local saved_exec = wasm_instance.exec

@@ -489,27 +489,6 @@ function Gui.create_player_gui(player)
     style = "nh_engine_state_label",
   }
 
-  -- Hover info frame (separate frame below top panel)
-  local hover_frame = screen.add{
-    type = "frame",
-    name = "nh_hover_frame",
-    direction = "vertical",
-    style = "nh_hover_frame",
-  }
-  hover_frame.location = {x = 0, y = math.floor(220 * player.display_scale)}
-  hover_frame.visible = false
-  hover_frame.add{
-    type = "label",
-    name = "nh_hover_short",
-    caption = "",
-    style = "nh_hover_short_label",
-  }
-  hover_frame.add{
-    type = "label",
-    name = "nh_hover_long",
-    caption = "",
-    style = "nh_hover_long_label",
-  }
 
   gui_data.player_frames[player.index] = true
 
@@ -523,7 +502,7 @@ function Gui.destroy_player_gui(player)
 
   -- Destroy all our top-level screen elements
   local names = {
-    "nh_top_panel", "nh_hover_frame",
+    "nh_top_panel",
     "nh_menu_frame", "nh_yn_frame", "nh_getlin_frame",
     "nh_loading_frame", "nh_plsel_frame",
     -- Old layout (migration cleanup)
@@ -1072,7 +1051,7 @@ end
 -----------------------------------------------------
 
 function Gui.update_engine_state(state_text, instructions, color)
-  local caption = state_text .. " | " .. format_number(instructions) .. " inst"
+  local caption = state_text .. " | " .. format_number(instructions) .. " WASM inst."
 
   for _, player in pairs(game.connected_players) do
     local screen = player.gui.screen
@@ -1098,34 +1077,5 @@ function Gui.set_cancel_visible(visible)
   -- no-op: cancel button removed
 end
 
------------------------------------------------------
--- Hover Info (in menu bar)
------------------------------------------------------
-
-function Gui.update_hover_info(player, info)
-  local hover = player.gui.screen.nh_hover_frame
-  if not hover then return end
-
-  if not info then
-    hover.visible = false
-    return
-  end
-
-  local short_label = hover.nh_hover_short
-  local long_label = hover.nh_hover_long
-
-  short_label.caption = info.short or ""
-  short_label.visible = (info.short ~= nil and info.short ~= "")
-
-  if info.long and info.long ~= "" then
-    long_label.caption = info.long
-    long_label.visible = true
-  else
-    long_label.caption = ""
-    long_label.visible = false
-  end
-
-  hover.visible = short_label.visible or long_label.visible
-end
 
 return Gui
