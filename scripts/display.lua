@@ -225,7 +225,8 @@ local function place_text(surface, level_name, x, y, ch, color)
     scale = 2.5,
     alignment = "center",
     vertical_alignment = "middle",
-    font = "default-mono",
+    font = "nh-mono",
+    draw_on_ground = true,
   }
   disp.text_objects[level_name][y][x] = obj
 end
@@ -336,8 +337,15 @@ function Display.print_glyph(x, y, tile_idx, ch, color, special, bk_tile_idx)
     return
   end
 
-  -- Resolve base tile: stone/rock uses void, everything else uses bkglyph
-  local base_tile = ch == string.byte(" ") and "nh-void" or resolve_base_tile(bk_tile_idx)
+  -- Resolve base tile: ASCII mode uses void (black) for all; tile mode uses bkglyph
+  local base_tile
+  if disp.ascii_mode then
+    base_tile = "nh-void"
+  elseif ch == string.byte(" ") then
+    base_tile = "nh-void"
+  else
+    base_tile = resolve_base_tile(bk_tile_idx)
+  end
   surface.set_tiles({{name = base_tile, position = {x = x, y = y}}})
 
   if disp.ascii_mode then
@@ -531,17 +539,21 @@ function Display.toggle_ascii_mode()
   if not surface then return disp.ascii_mode end
 
   -- Re-render all cells
+  local tile_batch = {}
   for y, row in pairs(level.grid) do
     for x, cell in pairs(row) do
       if disp.ascii_mode then
-        -- Switch to ASCII: destroy entity, create text
+        -- Switch to ASCII: destroy entity, create text, set tile to void (black)
         destroy_entity_at(level_name, x, y)
         if cell.ch ~= string.byte(" ") then
+          tile_batch[#tile_batch + 1] = {name = "nh-void", position = {x = x, y = y}}
           place_text(surface, level_name, x, y, cell.ch, cell.color)
         end
       else
-        -- Switch to tiles: destroy text, create entity
+        -- Switch to tiles: destroy text, create entity, restore base tile
         destroy_text_at(level_name, x, y)
+        local base_tile = cell.ch == string.byte(" ") and "nh-void" or resolve_base_tile(cell.bk_tile_idx)
+        tile_batch[#tile_batch + 1] = {name = base_tile, position = {x = x, y = y}}
         local ent_name = Display.tile_entity_name(cell.tile_idx)
         local tint = nil
         if has_flag(cell.special, MG_PET) then tint = PET_TINT
@@ -549,6 +561,9 @@ function Display.toggle_ascii_mode()
         place_entity(surface, level_name, x, y, ent_name, tint)
       end
     end
+  end
+  if #tile_batch > 0 then
+    surface.set_tiles(tile_batch)
   end
 
   -- Re-apply hero suppression
