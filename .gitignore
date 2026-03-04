@@ -16,6 +16,10 @@ scripts/nethack_compiled.lua
 scripts/tile_config.lua
 graphics/sheets/
 graphics/tiles/
+graphics/icons/monsters/
+graphics/icons/objects/
+graphics/icons/other/
+graphics/icons/nh-icon-*.png
 
 # Lua artifacts
 *.luac

@@ -275,6 +275,11 @@ $(COMPILED_LUA): $(WASM_LUA) scripts/wasm/compiler.lua scripts/wasm/init.lua
 # Stage 7 — Convert tile art to sprites
 # ================================================================
 
+$(STAMPS)/gui-icons: build/generate_icons.py | $(NETHACK)
+	@mkdir -p $(STAMPS)
+	python3 build/generate_icons.py $(NETHACK)
+	@touch $@
+
 $(TILE_CONFIG): $(TILE_SOURCES) build/convert_tiles.py | $(NETHACK)
 	python3 build/convert_tiles.py $(NETHACK)
 
@@ -285,9 +290,9 @@ $(SPRITE_SHEETS): $(TILE_CONFIG)
 # Stage 8 — Optimize PNGs
 # ================================================================
 
-$(STAMPS)/sprites-optimized: $(TILE_CONFIG)
+$(STAMPS)/sprites-optimized: $(TILE_CONFIG) $(STAMPS)/gui-icons
 	@mkdir -p $(STAMPS)
-	find graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other -name '*.png' \
+	find graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other graphics/icons/nh-icon-*.png -name '*.png' \
 		-print0 | xargs -0 -P$$(nproc) oxipng --opt max --zopfli
 	@touch $@
 
@@ -330,4 +335,5 @@ clean:
 	rm -f $(WASM)
 	rm -f $(WASM_LUA) $(DATA_LUA) $(COMPILED_LUA) $(TILE_CONFIG)
 	rm -rf graphics/sheets graphics/tiles graphics/icons/monsters graphics/icons/objects graphics/icons/other
+	rm -f graphics/icons/nh-icon-*.png
 	rm -rf $(STAMPS)
