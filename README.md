@@ -4,6 +4,8 @@ Play the classic roguelike [NetHack](https://nethack.org/) inside [Factorio](htt
 
 Real NetHack 3.6.7 C code compiled to WebAssembly, interpreted by a **pure Lua WASM interpreter** running inside Factorio's modding sandbox. The Factorio game world is the display — every tile rendered as a Factorio entity with real NetHack pixel art. The NetHack world advances one tick when the player moves (or does an action).
 
+_This is not an official NetHack port._
+
 ![gameplay teaser screenshot](doc/gameplay-teaser.png)
 
 ## How it works
@@ -18,7 +20,7 @@ Pure Lua WASM interpreter (in Factorio's Lua 5.2 sandbox)
 Factorio entities + GUI = the game display
 ```
 
-The entire NetHack game logic runs unmodified — dungeon generation, combat, items, pets, shops, the whole thing. The interpreter executes ~475K WASM instructions per second, with an AOT compiler that boosts hot loops to ~2.8M inst/sec.
+The entire NetHack game logic runs unmodified. Dungeon generation, combat, items, pets, shops, the whole thing. The interpreter executes ~475K WASM instructions per second, with an AOT compiler that boosts hot loops to ~2.8M inst/sec.
 
 ### The resumable state machine
 
@@ -44,14 +46,21 @@ Without wall clocks, the instruction budget per tick is a fixed constant - it ca
 ## Features
 
 - Full NetHack 3.6.7 gameplay
-- UI layout based on the original Qt GUI layout
-- Original NetHack tile art (monsters, objects, dungeon features), plus switchable ASCII Mode
-- Equipment paperdoll display
-- Synchronization with Factorio inventory
-- Status pane with HP/MP bars, stats, and tooltips
-- Save/load persisted through Factorio's save system (+ export save function)
+- Character selection dialog
+  ![char selection dialog](doc/char-select.png)
 
-![top bar screenshot](doc/top-bar.png)
+- UI layout based on the original Qt GUI layout
+  ![top bar screenshot](doc/top-bar.png)
+
+- Original NetHack tile art (monsters, objects, dungeon features), plus switchable ASCII Mode
+  [switching gif]
+- Factoriopedia integration
+  ![factoriopedia](doc/factoriopedia.png)
+- Interactive paperdoll (click to equip/unequip/wield/swap)
+  ![paperdoll](doc/paperdoll.png)
+- Synchronization with Factorio inventory
+  ![alt text](doc/inventory.png)
+- Save/load persisted through Factorio's save system (+ export save function). **No guarantees though**. Don't sue me if you lose your save game.
 
 ## The WASM Interpreter
 
@@ -61,7 +70,7 @@ The heart of the project is a complete WebAssembly interpreter written in pure L
 - **Exception handling** — `try_table`/`throw` for NetHack's setjmp/longjmp
 - **WASI preview1** — virtual filesystem, clock, args, preopened directories
 - **AOT compiler** — hot functions compiled to Lua source via `load()` for 2-4x speedup
-- **Peephole optimizer** — 30+ fused instruction patterns
+- **Peephole optimizer** — 30+ fused instruction patterns (covering 25+% of function calls, founud by profiling NetHack)
 - **Full spec compliance** — all 9,944 WebAssembly spec tests pass
 
 ## Building

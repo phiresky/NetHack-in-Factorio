@@ -803,6 +803,7 @@ end
 -- NH sprite mode: god mode (no body), NH hero entity visible.
 local function toggle_player_mode(player)
   local mode = Display.get_player_mode()
+  local zoom = player.zoom
   if mode == "factorio" then
     -- Switch to NH sprite mode: save character, enter god mode
     local char = player.character
@@ -825,6 +826,7 @@ local function toggle_player_mode(player)
     storage.nh_main.saved_character = nil
     Display.set_player_mode("factorio")
   end
+  player.zoom = zoom
 end
 
 ---------------------------------------------------------------------------
