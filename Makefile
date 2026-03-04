@@ -337,6 +337,38 @@ verify:
 	    || { printf '\033[1;31mSome files are missing. Run make to generate them.\033[0m\n'; exit 1; }
 
 # ================================================================
+# Web UI
+# ================================================================
+
+WEB_UI_DIR := web-ui
+WEB_DATA_JSON := $(WEB_UI_DIR)/public/nethack-data.json
+WEB_TILE_JSON := $(WEB_UI_DIR)/public/tile-config.json
+
+web-data: $(WEB_DATA_JSON) $(WEB_TILE_JSON) web-assets
+
+$(WEB_DATA_JSON): $(DATA_LUA) build/embed_data.py
+	@mkdir -p $(WEB_UI_DIR)/public
+	python3 build/embed_data.py $@ $(NETHACK)/dat build/datout/
+
+$(WEB_TILE_JSON): $(TILE_CONFIG) build/convert_tiles.py | $(NETHACK)
+	@mkdir -p $(WEB_UI_DIR)/public
+	python3 build/convert_tiles.py $(NETHACK) --web-json $@
+
+web-assets: $(WASM) $(SPRITE_SHEETS) | $(WEB_TILE_JSON)
+	@mkdir -p $(WEB_UI_DIR)/public/sheets $(WEB_UI_DIR)/public/tiles
+	cp build/nethack.wasm $(WEB_UI_DIR)/public/nethack.wasm
+	cp graphics/sheets/*.png $(WEB_UI_DIR)/public/sheets/
+	cp graphics/tiles/*.png $(WEB_UI_DIR)/public/tiles/
+
+web: web-data
+	cd $(WEB_UI_DIR) && pnpm install && pnpm build
+
+web-dev: web-data
+	cd $(WEB_UI_DIR) && pnpm install && pnpm dev
+
+.PHONY: web-data web-assets web web-dev
+
+# ================================================================
 # Clean
 # ================================================================
 
