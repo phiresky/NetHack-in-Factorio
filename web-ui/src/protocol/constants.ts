@@ -84,13 +84,14 @@ export const CONDITION_BITS = [
 ];
 
 // Stat labels for status panel
+const base = import.meta.env.BASE_URL;
 export const STAT_LABELS = [
-  { name: 'str', prefix: 'Str:', idx: BL_STR, icon: '/icons/nh-icon-str.png' },
-  { name: 'dx', prefix: 'Dex:', idx: BL_DX, icon: '/icons/nh-icon-dex.png' },
-  { name: 'co', prefix: 'Con:', idx: BL_CO, icon: '/icons/nh-icon-con.png' },
-  { name: 'in', prefix: 'Int:', idx: BL_IN, icon: '/icons/nh-icon-int.png' },
-  { name: 'wi', prefix: 'Wis:', idx: BL_WI, icon: '/icons/nh-icon-wis.png' },
-  { name: 'ch', prefix: 'Cha:', idx: BL_CH, icon: '/icons/nh-icon-cha.png' },
+  { name: 'str', prefix: 'Str:', idx: BL_STR, icon: `${base}icons/nh-icon-str.png` },
+  { name: 'dx', prefix: 'Dex:', idx: BL_DX, icon: `${base}icons/nh-icon-dex.png` },
+  { name: 'co', prefix: 'Con:', idx: BL_CO, icon: `${base}icons/nh-icon-con.png` },
+  { name: 'in', prefix: 'Int:', idx: BL_IN, icon: `${base}icons/nh-icon-int.png` },
+  { name: 'wi', prefix: 'Wis:', idx: BL_WI, icon: `${base}icons/nh-icon-wis.png` },
+  { name: 'ch', prefix: 'Cha:', idx: BL_CH, icon: `${base}icons/nh-icon-cha.png` },
 ];
 
 export const BL_EXP = 21;
@@ -106,14 +107,14 @@ export const VITAL_LABELS = [
 
 // Toolbar buttons
 export const TOOLBAR_BUTTONS = [
-  { name: 'again', label: 'Again', key: 0x01, icon: '/icons/nh-icon-tb-again.png' },
-  { name: 'get', label: 'Get', key: 44 /* , */, icon: '/icons/nh-icon-tb-get.png' },
-  { name: 'kick', label: 'Kick', key: 0x04, icon: '/icons/nh-icon-tb-kick.png' },
-  { name: 'throw', label: 'Throw', key: 116 /* t */, icon: '/icons/nh-icon-tb-throw.png' },
-  { name: 'fire', label: 'Fire', key: 102 /* f */, icon: '/icons/nh-icon-tb-fire.png' },
-  { name: 'drop', label: 'Drop', key: 100 /* d */, icon: '/icons/nh-icon-tb-drop.png' },
-  { name: 'rest', label: 'Rest', key: 46 /* . */, icon: '/icons/nh-icon-tb-rest.png' },
-  { name: 'search', label: 'Search', key: 115 /* s */, icon: '/icons/nh-icon-tb-search.png' },
+  { name: 'again', label: 'Again', key: 0x01, icon: `${base}icons/nh-icon-tb-again.png` },
+  { name: 'get', label: 'Get', key: 44 /* , */, icon: `${base}icons/nh-icon-tb-get.png` },
+  { name: 'kick', label: 'Kick', key: 0x04, icon: `${base}icons/nh-icon-tb-kick.png` },
+  { name: 'throw', label: 'Throw', key: 116 /* t */, icon: `${base}icons/nh-icon-tb-throw.png` },
+  { name: 'fire', label: 'Fire', key: 102 /* f */, icon: `${base}icons/nh-icon-tb-fire.png` },
+  { name: 'drop', label: 'Drop', key: 100 /* d */, icon: `${base}icons/nh-icon-tb-drop.png` },
+  { name: 'rest', label: 'Rest', key: 46 /* . */, icon: `${base}icons/nh-icon-tb-rest.png` },
+  { name: 'search', label: 'Search', key: 115 /* s */, icon: `${base}icons/nh-icon-tb-search.png` },
 ];
 
 // Menu bar definitions

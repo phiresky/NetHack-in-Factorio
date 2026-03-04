@@ -44,7 +44,7 @@ async function loadAssets() {
     const groundNames = ['nh-floor', 'nh-corridor', 'nh-void', 'nh-water', 'nh-lava', 'nh-ice', 'nh-grass'];
     await Promise.allSettled(
       groundNames.map(async (name) => {
-        try { groundTiles[name] = await loadImg(`/tiles/${name}.png`); } catch { /* skip */ }
+        try { groundTiles[name] = await loadImg(`${import.meta.env.BASE_URL}tiles/${name}.png`); } catch { /* skip */ }
       })
     );
   }

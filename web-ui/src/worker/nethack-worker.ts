@@ -4,11 +4,12 @@ import { WasiRuntime } from './wasi';
 import { Bridge } from './bridge';
 import type { MainMessage } from '../protocol/messages';
 
+const base = import.meta.env.BASE_URL;
 let wasi: WasiRuntime;
 let bridge: Bridge;
 
 async function loadDataFiles(): Promise<Record<string, Uint8Array>> {
-  const resp = await fetch('/nethack-data.json');
+  const resp = await fetch(`${base}nethack-data.json`);
   const json: Record<string, string> = await resp.json();
   const files: Record<string, Uint8Array> = {};
   for (const [name, b64] of Object.entries(json)) {
@@ -27,7 +28,7 @@ async function start(sharedBuffer: SharedArrayBuffer) {
     // Load data files and WASM binary in parallel
     const [dataFiles, wasmResp] = await Promise.all([
       loadDataFiles(),
-      fetch('/nethack.wasm'),
+      fetch(`${base}nethack.wasm`),
     ]);
 
     const wasmBytes = await wasmResp.arrayBuffer();

@@ -9,6 +9,7 @@ let tileConfig: { n_monsters: number; n_objects: number; n_other: number; other_
 const sheets: Record<string, HTMLImageElement> = {};
 let assetsReady = false;
 let assetsPromise: Promise<void> | null = null;
+const base = import.meta.env.BASE_URL;
 
 export function ensureSpriteAssets(): Promise<void> {
   if (assetsReady) return Promise.resolve();
@@ -16,7 +17,7 @@ export function ensureSpriteAssets(): Promise<void> {
 
   assetsPromise = (async () => {
     try {
-      const resp = await fetch('/tile-config.json');
+      const resp = await fetch(`${base}tile-config.json`);
       tileConfig = await resp.json();
     } catch {
       tileConfig = { n_monsters: 394, n_objects: 456, n_other: 232, other_names: [] };
@@ -32,9 +33,9 @@ export function ensureSpriteAssets(): Promise<void> {
 
     try {
       const [mon, obj, oth] = await Promise.all([
-        loadImg('/sheets/nh-monsters.png'),
-        loadImg('/sheets/nh-objects.png'),
-        loadImg('/sheets/nh-other.png'),
+        loadImg(`${base}sheets/nh-monsters.png`),
+        loadImg(`${base}sheets/nh-objects.png`),
+        loadImg(`${base}sheets/nh-other.png`),
       ]);
       sheets['nh-monsters'] = mon;
       sheets['nh-objects'] = obj;
