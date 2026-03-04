@@ -392,6 +392,7 @@ function Gui.create_player_gui(player)
       type = "label",
       name = "nh_st_" .. stat.name,
       caption = "",
+      tooltip = stat.tip,
       style = "nh_status_label",
     }
   end
@@ -412,6 +413,7 @@ function Gui.create_player_gui(player)
       type = "label",
       name = "nh_st_" .. vital.name,
       caption = "",
+      tooltip = vital.tip,
       style = style,
     }
   end

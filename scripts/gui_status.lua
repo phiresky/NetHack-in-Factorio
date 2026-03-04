@@ -36,22 +36,22 @@ local LOW_IS_GOOD = {[BL_AC] = true}
 -- Stat label definitions: {name, prefix, field_idx, icon}
 -- Exported for use by create_player_gui in gui.lua
 Status.STAT_LABELS = {
-  {name = "str", prefix = "Str:", idx = BL_STR, icon = "nh-icon-str"},
-  {name = "dx",  prefix = "Dex:", idx = BL_DX,  icon = "nh-icon-dex"},
-  {name = "co",  prefix = "Con:", idx = BL_CO,   icon = "nh-icon-con"},
-  {name = "in",  prefix = "Int:", idx = BL_IN,   icon = "nh-icon-int"},
-  {name = "wi",  prefix = "Wis:", idx = BL_WI,   icon = "nh-icon-wis"},
-  {name = "ch",  prefix = "Cha:", idx = BL_CH,   icon = "nh-icon-cha"},
+  {name = "str", prefix = "Str: ", idx = BL_STR, icon = "nh-icon-str", tip = "Strength"},
+  {name = "dx",  prefix = "Dex: ", idx = BL_DX,  icon = "nh-icon-dex", tip = "Dexterity"},
+  {name = "co",  prefix = "Con: ", idx = BL_CO,   icon = "nh-icon-con", tip = "Constitution"},
+  {name = "in",  prefix = "Int: ", idx = BL_IN,   icon = "nh-icon-int", tip = "Intelligence"},
+  {name = "wi",  prefix = "Wis: ", idx = BL_WI,   icon = "nh-icon-wis", tip = "Wisdom"},
+  {name = "ch",  prefix = "Cha: ", idx = BL_CH,   icon = "nh-icon-cha", tip = "Charisma"},
 }
 
 -- Vital label definitions
 Status.VITAL_LABELS = {
-  {name = "gold", prefix = "Au:", idx = BL_GOLD},
-  {name = "hp",   prefix = "HP:", idx = BL_HP, idx2 = BL_HPMAX},
-  {name = "pw",   prefix = "Pw:", idx = BL_ENE, idx2 = BL_ENEMAX},
-  {name = "ac",   prefix = "AC:", idx = BL_AC},
-  {name = "xlvl", prefix = "Lvl:", idx = BL_HD},
-  {name = "xp",   prefix = "Xp:", idx = BL_XP},
+  {name = "gold", prefix = "",      idx = BL_GOLD, tip = "Gold"},
+  {name = "hp",   prefix = "HP: ",  idx = BL_HP, idx2 = BL_HPMAX, tip = "Hit Points"},
+  {name = "pw",   prefix = "Pw: ",  idx = BL_ENE, idx2 = BL_ENEMAX, tip = "Power (mana)"},
+  {name = "ac",   prefix = "AC: ",  idx = BL_AC, tip = "Armor Class (lower is better)"},
+  {name = "xlvl", prefix = "Lvl: ", idx = BL_HD, tip = "Experience Level"},
+  {name = "xp",   prefix = "Xp: ",  idx = BL_XP, tip = "Experience Points"},
 }
 
 -- BL_CONDITION (idx 22) is a single bitmask, decoded into individual conditions
@@ -179,7 +179,7 @@ function Status.render_status(player)
       local v = get_val(stat.idx)
       local text = ""
       if v ~= "" then
-        text = "[img=" .. stat.icon .. "] " .. stat.prefix .. v
+        text = "[img=" .. stat.icon .. "]" .. stat.prefix .. v
       end
       set_label(stats, "nh_st_" .. stat.name, text, get_style(stat.idx))
     end
@@ -198,9 +198,9 @@ function Status.render_status(player)
     local hpmax_str = get_val(BL_HPMAX)
     local hp_text = ""
     if hp_str ~= "" then
-      hp_text = "HP:" .. hp_str
+      hp_text = "HP: " .. hp_str
       if hpmax_str ~= "" then
-        hp_text = hp_text .. "(" .. hpmax_str .. ")"
+        hp_text = hp_text .. "/" .. hpmax_str
       end
     end
     local hp_label = vitals.nh_st_hp
@@ -221,31 +221,31 @@ function Status.render_status(player)
     local pwmax = get_val(BL_ENEMAX)
     local pw_text = ""
     if pw ~= "" then
-      pw_text = "Pw:" .. pw
-      if pwmax ~= "" then pw_text = pw_text .. "(" .. pwmax .. ")" end
+      pw_text = "Pw: " .. pw
+      if pwmax ~= "" then pw_text = pw_text .. "/" .. pwmax end
     end
     set_label(vitals, "nh_st_pw", pw_text, get_style(BL_ENE))
 
     -- AC
     local ac = get_val(BL_AC)
-    set_label(vitals, "nh_st_ac", ac ~= "" and ("AC:" .. ac) or "", get_style(BL_AC))
+    set_label(vitals, "nh_st_ac", ac ~= "" and ("AC: " .. ac) or "", get_style(BL_AC))
 
     -- Level
     local hd = get_val(BL_HD)
-    set_label(vitals, "nh_st_xlvl", hd ~= "" and ("Lvl:" .. hd) or "", get_style(BL_HD))
+    set_label(vitals, "nh_st_xlvl", hd ~= "" and ("Lvl: " .. hd) or "", get_style(BL_HD))
 
     -- XP
     local xp = get_val(BL_XP)
-    set_label(vitals, "nh_st_xp", xp ~= "" and ("Xp:" .. xp) or "", get_style(BL_XP))
+    set_label(vitals, "nh_st_xp", xp ~= "" and ("Xp: " .. xp) or "", get_style(BL_XP))
   end
 
   -- Misc row: Time Score
   local misc = left_col.nh_st_misc
   if misc then
     local time_val = get_val(BL_TIME)
-    set_label(misc, "nh_st_time", time_val ~= "" and ("T:" .. time_val) or "")
+    set_label(misc, "nh_st_time", time_val ~= "" and ("T: " .. time_val) or "")
     local score_val = get_val(BL_SCORE)
-    set_label(misc, "nh_st_score", score_val ~= "" and ("S:" .. score_val) or "")
+    set_label(misc, "nh_st_score", score_val ~= "" and ("S: " .. score_val) or "")
   end
 
   -- Conditions row
