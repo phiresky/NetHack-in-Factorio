@@ -1006,4 +1006,20 @@ nh_reveal_all_full(void)
     flush_screen(1);
 }
 
+/* ================================================================
+ * Exported helper: save the game to VFS
+ * dosave0() saves all game state then calls nh_terminate/exit.
+ * The Lua side catches the proc_exit and restores exec state.
+ * ================================================================ */
+
+extern int NDECL(dosave0);
+
+__attribute__((export_name("nh_dosave")))
+void
+nh_dosave(void)
+{
+    dosave0();
+    /* dosave0 calls nh_terminate() which calls exit() — we never reach here */
+}
+
 /* winfactorio.c */

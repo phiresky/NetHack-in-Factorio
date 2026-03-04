@@ -406,4 +406,75 @@ end
 function Bridge.continue_describe() return false end
 function Bridge.cancel_describe() end
 
+-- Export the current game save from VFS.
+-- Calls nh_dosave (which runs dosave0 -> proc_exit), catches the exit,
+-- extracts save files from VFS, then restores game state.
+-- Returns {name=filename, data=bytes} or nil, error_string on failure.
+function Bridge.export_save(instance)
+  if not instance or not instance.exec then return nil, "no instance" end
+
+  -- Cache export index
+  if not Bridge._dosave_idx then
+    Bridge._dosave_idx = WasmInterp.get_export(instance, "nh_dosave")
+    if not Bridge._dosave_idx then return nil, "nh_dosave export not found" end
+  end
+
+  -- Cancel any pending hover describe
+  Bridge.cancel_describe(instance)
+
+  -- Snapshot VFS overlay state before save (to detect new/modified files).
+  -- vfs.files uses setmetatable({}, {__index = nethack_data}), so pairs()
+  -- only iterates overlay keys (explicitly written files).
+  local vfs = instance._vfs
+  local pre_files = {}
+  if vfs and vfs.files then
+    for k, v in pairs(vfs.files) do
+      pre_files[k] = v
+    end
+  end
+
+  -- Save execution state + stack pointer (critical: same pattern as execute_wasm_cheat)
+  local saved_exec = instance.exec
+  local saved_sp = instance.globals[0]
+
+  -- Run dosave (will end with proc_exit / exit())
+  local ok, err = pcall(function()
+    WasmInterp.call(instance, Bridge._dosave_idx, {})
+    WasmInterp.run(instance, 5000000)
+  end)
+
+  -- Flush any open writable fds to the files table before scanning
+  if vfs then
+    for _, entry in pairs(vfs.fds) do
+      if entry.writable and entry.name then
+        vfs.files[entry.name] = entry.data
+      end
+    end
+  end
+
+  -- Restore execution state regardless of outcome
+  instance.exec = saved_exec
+  instance.globals[0] = saved_sp
+
+  -- Find new/modified files in VFS (the save file)
+  local save_files = {}
+  if vfs and vfs.files then
+    for k, v in pairs(vfs.files) do
+      if type(v) == "string" and #v > 0 then
+        if pre_files[k] ~= v then
+          save_files[#save_files + 1] = {name = k, data = v}
+        end
+      end
+    end
+  end
+
+  if #save_files == 0 then
+    return nil, "No save files found in VFS"
+  end
+
+  -- Return the largest file (most likely the actual save)
+  table.sort(save_files, function(a, b) return #a.data > #b.data end)
+  return save_files[1]
+end
+
 return Bridge

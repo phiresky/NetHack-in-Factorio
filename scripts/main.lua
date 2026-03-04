@@ -1156,7 +1156,6 @@ end
 local function on_gui_selection_state_changed(event)
   local state = storage.nh_main
   if not state or not state.game_started then return end
-  if not state.awaiting_input then return end
 
   local player = game.get_player(event.player_index)
   if not player then return end
@@ -1166,11 +1165,26 @@ local function on_gui_selection_state_changed(event)
   -- Menu bar dropdown selection
   local btn_key, ext_cmd, action = Gui.handle_menubar_selection(element)
 
-  -- Handle special actions (not NetHack key input)
+  -- Handle special actions that don't require awaiting_input
   if action == "toggle_player_mode" then
     toggle_player_mode(player)
     return
   end
+
+  if action == "export_save" then
+    local save_result, save_err = Bridge.export_save(wasm_instance)
+    if save_result then
+      helpers.write_file("nethack-saves/" .. save_result.name, save_result.data)
+      Gui.add_message("Save exported to script-output/nethack-saves/" .. save_result.name, 0)
+      Gui.show_flying_text(player, "Save exported!")
+    else
+      Gui.add_message("Export failed: " .. (save_err or "unknown error"), 0)
+    end
+    return
+  end
+
+  -- Key-based actions require awaiting_input
+  if not state.awaiting_input then return end
 
   if btn_key then
     if state.input_type == "getch" or state.input_type == "yn" then
