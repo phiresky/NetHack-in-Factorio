@@ -203,7 +203,11 @@ TILE_SOURCES := \
 # Phony targets
 # ================================================================
 
-.PHONY: all wasm sprites clean verify
+.PHONY: all wasm sprites clean verify dist
+
+MOD_NAME    := $(shell python3 -c "import json; print(json.load(open('info.json'))['name'])")
+MOD_VERSION := $(shell python3 -c "import json; print(json.load(open('info.json'))['version'])")
+MOD_ZIP     := $(MOD_NAME)_$(MOD_VERSION).zip
 
 all: wasm sprites $(ENCYCLOPEDIA)
 
@@ -367,6 +371,22 @@ web-dev: web-data
 	cd $(WEB_UI_DIR) && pnpm install && pnpm dev
 
 .PHONY: web-data web-assets web web-dev
+
+# ================================================================
+# Dist — package mod zip for upload
+# ================================================================
+
+MOD_FILES := \
+	info.json control.lua data.lua settings.lua thumbnail.png \
+	scripts/ prototypes/ graphics/ locale/
+
+dist: all
+	rm -f $(MOD_ZIP)
+	ln -sfn . $(MOD_NAME)_$(MOD_VERSION)
+	zip -r $(MOD_ZIP) $(addprefix $(MOD_NAME)_$(MOD_VERSION)/,$(MOD_FILES)) \
+		-x '*.git*' '*__pycache__*' '*.o' '*.luac'
+	rm -f $(MOD_NAME)_$(MOD_VERSION)
+	@echo "Created $(MOD_ZIP) ($$(stat -c%s $(MOD_ZIP) 2>/dev/null || stat -f%z $(MOD_ZIP)) bytes)"
 
 # ================================================================
 # Clean

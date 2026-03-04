@@ -998,7 +998,7 @@ nh_reveal_all_full(void)
 
     /* Phase 5: Overlay objects where no monster is standing */
     for (otmp = fobj; otmp; otmp = otmp->nobj) {
-        if (!MON_AT(otmp->ox, otmp->oy) && !u_at(otmp->ox, otmp->oy)) {
+        if (!MON_AT(otmp->ox, otmp->oy) && !(otmp->ox == u.ux && otmp->oy == u.uy)) {
             show_glyph(otmp->ox, otmp->oy, obj_to_glyph(otmp, rn2));
         }
     }

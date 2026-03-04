@@ -158,7 +158,6 @@ NetHack's `print_glyph()` calls pass through the C window port as WASM host impo
 
 The GUI (status lines, messages, menus, inventory) is built with Factorio's native GUI framework, updated by the same bridge imports.
 
-## Acknowledgments
+## Vibe coding disclaimer
 
-- [NetHack](https://nethack.org/) by the NetHack DevTeam
-- [Factorio](https://factorio.com/) by Wube Software
+Significant portions of the code in this mod were written using AI. I'm a professional software engineer, but I would have _never_ spent the energy required to write a pure Lua suspendable WASM interpreter by hand - vibe coding makes it fun! A human directed every feature and decision, but the AI wrote most code across ~119 sessions.

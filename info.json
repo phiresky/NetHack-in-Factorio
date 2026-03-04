@@ -1,8 +1,8 @@
 {
     "name": "nethack",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "title": "NetHack in Factorio",
     "author": "phire",
-    "description": "Play the classic roguelike NetHack inside Factorio. Real NetHack C code compiled to WASM, interpreted by a pure Lua WASM interpreter. The Factorio game world IS the display.",
+    "description": "Play the classic roguelike NetHack inside Factorio. Real NetHack C code compiled to WASM, interpreted by a pure Lua WASM interpreter. The Factorio game world is the display.",
     "factorio_version": "2.0"
 }
