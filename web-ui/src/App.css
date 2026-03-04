@@ -1,0 +1,371 @@
+/* NetHack Web UI - Dark theme matching Factorio style */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg-dark: #1a1a1a;
+  --bg-panel: #2a2a2a;
+  --bg-hover: #3a3a3a;
+  --bg-selected: #4a6a4a;
+  --border: #444;
+  --text: #ddd;
+  --text-dim: #888;
+  --text-bright: #fff;
+  --accent: #6a6;
+  --danger: #f44;
+  --warning: #fa0;
+}
+
+body {
+  background: var(--bg-dark);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 16px;
+  overflow: hidden;
+  height: 100vh;
+}
+
+#root { height: 100vh; }
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Top bar: menu + toolbar */
+.top-bar {
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Menu bar */
+.menu-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+
+.menu-bar-item {
+  position: relative;
+  padding: 6px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.menu-bar-item:hover, .menu-bar-item.open {
+  background: var(--bg-hover);
+}
+
+.menu-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  min-width: 200px;
+  z-index: 100;
+  box-shadow: 2px 2px 8px rgba(0,0,0,0.5);
+}
+
+.menu-dropdown-item {
+  padding: 4px 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  cursor: pointer;
+}
+.menu-dropdown-item:hover { background: var(--bg-hover); }
+.menu-dropdown-item .shortcut { color: var(--text-dim); font-size: 13px; }
+.menu-separator { border-top: 1px solid var(--border); margin: 2px 0; }
+
+/* Toolbar */
+.toolbar {
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
+}
+.toolbar-btn {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  border-radius: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.toolbar-btn:hover { background: #4a4a4a; }
+.toolbar-icon { width: 20px; height: 20px; image-rendering: pixelated; }
+
+/* Main area */
+.main-area {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* Left panel wrapper */
+.left-panel {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Status panel (left side) */
+.status-panel {
+  font-size: 15px;
+}
+.status-title {
+  font-size: 18px;
+  font-weight: bold;
+  color: var(--text-bright);
+  margin-bottom: 2px;
+}
+.status-dlevel {
+  color: var(--text-dim);
+  margin-bottom: 8px;
+  font-size: 14px;
+}
+.status-section { margin-bottom: 8px; }
+.status-label {
+  color: var(--text-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.status-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 8px;
+}
+.stat-item { display: flex; gap: 4px; align-items: center; }
+.stat-icon { width: 20px; height: 20px; image-rendering: pixelated; flex-shrink: 0; }
+.stat-prefix { color: var(--text-dim); }
+.stat-value { color: var(--text-bright); }
+.status-conditions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.condition {
+  background: #333;
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 13px;
+}
+.condition.warning { color: var(--warning); }
+.condition.dangerous { color: var(--danger); background: #400; }
+
+/* Equipment panel (paperdoll) */
+.equip-panel {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.equip-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 36px);
+  gap: 2px;
+  justify-content: center;
+}
+.equip-slot {
+  width: 36px;
+  height: 36px;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  image-rendering: pixelated;
+}
+.equip-slot.equipped { border-color: var(--accent); }
+.equip-slot.empty { opacity: 0.4; }
+.equip-empty { width: 36px; height: 36px; }
+
+/* Center area: map + messages */
+.center-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Game map */
+.game-map-container {
+  flex: 1;
+  overflow: auto;
+  background: #000;
+  position: relative;
+}
+.game-map-canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* Message log */
+.message-log {
+  height: 120px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 4px 8px;
+  font-family: monospace;
+  font-size: 15px;
+}
+.message { padding: 2px 0; }
+.message.bold { font-weight: bold; color: var(--text-bright); }
+
+/* Dialog overlay */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+}
+.dialog {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 16px;
+  max-width: 600px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 4px 4px 16px rgba(0,0,0,0.6);
+}
+.dialog h2 { margin-bottom: 12px; color: var(--text-bright); }
+.dialog-text { margin-bottom: 12px; }
+.dialog-hint { color: var(--text-dim); margin-bottom: 8px; }
+.dialog-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.dialog-buttons button {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 16px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.dialog-buttons button:hover { background: #4a4a4a; }
+.dialog-buttons button.primary { background: var(--bg-selected); }
+
+/* Getlin input */
+.getlin-input {
+  width: 100%;
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 8px;
+  font-family: monospace;
+  font-size: 16px;
+  outline: none;
+}
+.getlin-input:focus { border-color: var(--accent); }
+
+/* Menu dialog */
+.menu-dialog { min-width: 300px; }
+.menu-items { max-height: 50vh; overflow-y: auto; }
+.menu-header {
+  padding: 4px 8px;
+  color: var(--text-bright);
+  font-weight: bold;
+  background: var(--bg-dark);
+}
+.menu-item {
+  padding: 3px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.menu-item.clickable { cursor: pointer; }
+.menu-item.clickable:hover { background: var(--bg-hover); }
+.menu-item.selected { background: var(--bg-selected); }
+.menu-checkbox { font-family: monospace; color: var(--accent); }
+.menu-accel { color: var(--text-dim); font-family: monospace; }
+
+/* Text window */
+.text-window { min-width: 400px; }
+.text-content {
+  font-family: monospace;
+  font-size: 15px;
+  white-space: pre-wrap;
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+/* Player selection */
+.plsel-dialog { min-width: 500px; }
+.plsel-name { margin-bottom: 12px; }
+.plsel-name input {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  width: 200px;
+}
+.plsel-columns {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.plsel-column { flex: 1; }
+.plsel-column h3 { margin-bottom: 4px; font-size: 15px; color: var(--text-dim); }
+.plsel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+.plsel-list button {
+  background: var(--bg-dark);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.plsel-list button:hover { background: var(--bg-hover); }
+.plsel-list button.selected { background: var(--bg-selected); border-color: var(--accent); }
+.plsel-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.plsel-options label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+/* Loading */
+.loading-dialog { text-align: center; min-width: 300px; }
+.loading-bar {
+  height: 8px;
+  background: var(--bg-dark);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.loading-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+/* Error */
+.error-dialog p { color: var(--danger); font-family: monospace; white-space: pre-wrap; }
