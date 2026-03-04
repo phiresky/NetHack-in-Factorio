@@ -402,6 +402,36 @@ def main():
         write_name_array("object_names", obj_names)
         write_name_array("other_names", oth_names)
 
+        # Emit original (unsanitized) display names for localised_name in prototypes
+        # Title-case names that are all-lowercase; preserve existing casing otherwise.
+        _MINOR = {"a", "an", "the", "of", "in", "on", "at", "to", "for", "and", "or", "but", "with"}
+        def _title_case(name):
+            if name != name.lower():
+                return name
+            parts = name.split(" / ")
+            result = []
+            for part in parts:
+                words = part.split()
+                cased = []
+                for j, w in enumerate(words):
+                    if j == 0 or w not in _MINOR:
+                        cased.append(w.capitalize())
+                    else:
+                        cased.append(w)
+                result.append(" ".join(cased))
+            return " / ".join(result)
+
+        def write_display_names(varname, tiles):
+            f.write(f"  {varname} = {{\n")
+            for tile in tiles:
+                escaped = _title_case(tile["name"]).replace("\\", "\\\\").replace('"', '\\"')
+                f.write(f'    "{escaped}",\n')
+            f.write("  },\n")
+
+        write_display_names("monster_display_names", mon_tiles)
+        write_display_names("object_display_names", obj_tiles)
+        write_display_names("other_display_names", oth_tiles)
+
         f.write("}\n")
     print(f"  config: {config_path}")
 
