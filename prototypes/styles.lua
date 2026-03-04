@@ -200,7 +200,7 @@ default_gui["nh_toolbar_button"] = {
 
 default_gui["nh_top_content_flow"] = {
   type = "horizontal_flow_style",
-  horizontal_spacing = 4,
+  horizontal_spacing = 12,
 }
 
 -----------------------------------------------------

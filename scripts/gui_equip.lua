@@ -122,8 +122,27 @@ function Equip.render_equipment(player)
   end
 end
 
+-- Command to remove an equipped item, by slot mask
+-- Armor pieces use T (take off), accessories use R (remove),
+-- weapons use w then - (unwield)
+local REMOVE_CMD = {
+  [W_ARM]   = "T", [W_ARMC]  = "T", [W_ARMH]  = "T", [W_ARMS]  = "T",
+  [W_ARMG]  = "T", [W_ARMF]  = "T", [W_ARMU]  = "T",
+  [W_AMUL]  = "R", [W_RINGL] = "R", [W_RINGR] = "R", [W_BLINDF] = "R",
+  [W_WEP]   = "w", [W_SWAPWEP] = "x", [W_QUIVER] = "Q",
+}
+
+-- Command to equip an empty slot, by slot mask
+local EQUIP_CMD = {
+  [W_ARM]   = "W", [W_ARMC]  = "W", [W_ARMH]  = "W", [W_ARMS]  = "W",
+  [W_ARMG]  = "W", [W_ARMF]  = "W", [W_ARMU]  = "W",
+  [W_AMUL]  = "P", [W_RINGL] = "P", [W_RINGR] = "P", [W_BLINDF] = "P",
+  [W_WEP]   = "w", [W_SWAPWEP] = "x", [W_QUIVER] = "Q",
+}
+
 -- Handle click on a paperdoll slot.
--- Returns the inventory letter (key code) of the equipped item, or nil.
+-- Returns a command string to queue (e.g. "Ta" to take off item 'a'),
+-- or nil if the click doesn't match an equipment slot.
 function Equip.handle_click(element_name)
   local idx = element_name:match("^nh_equip_(%d+)$")
   if not idx then return nil end
@@ -134,15 +153,27 @@ function Equip.handle_click(element_name)
 
   -- Find equipped item matching this slot's mask
   local inv_state = storage.nh_inventory
-  if not inv_state or not inv_state.slot_map then return nil end
+  if not inv_state or not inv_state.slot_map then
+    -- No inventory — treat as empty slot
+    local cmd = EQUIP_CMD[slot.mask]
+    return cmd
+  end
 
   for _, item in ipairs(inv_state.slot_map) do
     if item.owornmask and bit32.band(item.owornmask, slot.mask) ~= 0 then
-      return item.invlet
+      -- Slot is occupied — send remove command
+      -- Don't queue item letter: NetHack auto-selects when only one option,
+      -- leaving a dangling letter that gets misinterpreted as a command.
+      -- If multiple options, NetHack prompts and the player picks normally.
+      local cmd = REMOVE_CMD[slot.mask]
+      if not cmd then return nil end
+      return cmd
     end
   end
 
-  return nil
+  -- Slot is empty — send equip command
+  local cmd = EQUIP_CMD[slot.mask]
+  return cmd
 end
 
 return Equip

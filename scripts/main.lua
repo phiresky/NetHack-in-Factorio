@@ -648,6 +648,9 @@ local function do_advance(input_value, skip_position_update)
   WasmInterp.provide_input(wasm_instance, input_value)
   run_and_process(MAX_INSTRUCTIONS_PER_RUN)
   Inventory.apply_sync()
+  for _, p in pairs(game.connected_players) do
+    Gui.render_equipment(p)
+  end
   update_engine_gui()
   if not skip_position_update then
     update_player_position()
@@ -971,22 +974,7 @@ local function on_gui_click(event)
     return
   end
 
-  -- Cancel button -> ESC (same as pressing Escape key)
-  if element.name == "nh_cancel" then
-    if state.input_type == "menu" then
-      Gui.destroy_modal(player, "nh_menu_frame", "pending_menu")
-      advance_turn_menu({cancelled = true, selections = {}})
-    elseif state.input_type == "getlin" then
-      Gui.destroy_modal(player, "nh_getlin_frame", "pending_getlin")
-      advance_turn_string("\027")
-    elseif state.input_type == "yn" then
-      Gui.destroy_modal(player, "nh_yn_frame")
-      advance_turn(27)
-    else
-      advance_turn(27)
-    end
-    return
-  end
+  -- (Cancel button removed from toolbar)
 
   -- Player selection dialog
   if state.input_type == "plsel" then
@@ -1009,14 +997,19 @@ local function on_gui_click(event)
     return
   end
 
-  -- Equipment paperdoll click -> inventory letter
-  local equip_key = Gui.handle_equip_click(element.name)
-  if equip_key then
+  -- Equipment paperdoll click -> command string (e.g. "Ta", "W", "w-")
+  local equip_cmd = Gui.handle_equip_click(element.name)
+  if equip_cmd then
     if state.input_type == "getch" or state.input_type == "yn" then
       if state.input_type == "yn" then
         Gui.destroy_modal(player, "nh_yn_frame")
       end
-      advance_turn(equip_key)
+      -- Queue chars 2..N, advance with the first
+      local queue = state.input_queue
+      for i = 2, #equip_cmd do
+        queue[#queue + 1] = string.byte(equip_cmd, i)
+      end
+      advance_turn(string.byte(equip_cmd, 1))
     end
     return
   end

@@ -322,15 +322,6 @@ function Gui.create_player_gui(player)
     }
   end
 
-  -- Cancel/ESC button (shown during prompts and sub-modes)
-  local cancel_btn = toolbar.add{
-    type = "button",
-    name = "nh_cancel",
-    caption = "Cancel [ESC]",
-    style = "nh_toolbar_button",
-  }
-  cancel_btn.visible = false
-
   -- Messages scroll
   local msg_scroll = msg_pane.add{
     type = "scroll-pane",
@@ -352,9 +343,6 @@ function Gui.create_player_gui(player)
   if #gui_data.messages > 0 then
     msg_scroll.scroll_to_bottom()
   end
-
-  -- Vertical separator
-  content.add{type = "line", direction = "vertical"}
 
   -------------------------------------------------
   -- Middle column: stats
@@ -454,9 +442,6 @@ function Gui.create_player_gui(player)
     name = "nh_st_cond_dynamic",
     direction = "horizontal",
   }
-
-  -- Vertical separator
-  content.add{type = "line", direction = "vertical"}
 
   -------------------------------------------------
   -- Right column: equipment (paperdoll grid)
@@ -602,7 +587,7 @@ end
 
 -- Flying text at player position, staggered to avoid overlap
 -- Tracks recent flying texts and offsets Y so multiple messages don't pile up
-local FLYING_TEXT_STAGGER_TICKS = 60  -- ~1000ms window for staggering
+local FLYING_TEXT_STAGGER_TICKS = 3 * 60  -- match time_to_live so entries aren't cleaned up while still visible
 local FLYING_TEXT_Y_OFFSET = 0.4      -- vertical spacing between stacked texts
 
 function Gui.show_flying_text(player, text)
@@ -1105,17 +1090,7 @@ end
 
 -- Show/hide the cancel button on the toolbar
 function Gui.set_cancel_visible(visible)
-  for _, player in pairs(game.connected_players) do
-    local screen = player.gui.screen
-    local top = screen.nh_top_panel
-    if top then
-      local msg_pane = top.nh_top_content and top.nh_top_content.nh_msg_pane
-      local toolbar = msg_pane and msg_pane.nh_toolbar
-      if toolbar and toolbar.nh_cancel then
-        toolbar.nh_cancel.visible = visible
-      end
-    end
-  end
+  -- no-op: cancel button removed
 end
 
 -----------------------------------------------------
