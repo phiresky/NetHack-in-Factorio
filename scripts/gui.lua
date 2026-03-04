@@ -569,10 +569,12 @@ function Gui.append_message_label(player, text, attr)
   scroll.scroll_to_bottom()
 end
 
--- Flying text at player position, staggered to avoid overlap
--- Tracks recent flying texts and offsets Y so multiple messages don't pile up
-local FLYING_TEXT_STAGGER_TICKS = 3 * 60  -- match time_to_live so entries aren't cleaned up while still visible
-local FLYING_TEXT_Y_OFFSET = 0.4      -- vertical spacing between stacked texts
+-- Flying text at player position, staggered to avoid overlap.
+-- Tracks each text's spawn tick and Y offset so new texts start below
+-- where existing texts have floated to (texts float upward at `speed`).
+local FLYING_TEXT_TTL = 3 * 60        -- ticks (matches time_to_live)
+local FLYING_TEXT_SPEED = 0.02        -- tiles/tick upward
+local FLYING_TEXT_GAP = 0.5           -- minimum vertical gap between texts
 
 function Gui.show_flying_text(player, text)
   if not player.character then return end
@@ -582,28 +584,38 @@ function Gui.show_flying_text(player, text)
     gui_data.flying_text_queue = {}
   end
 
-  -- Clean up expired entries
   local now = game.tick
   local queue = gui_data.flying_text_queue
+
+  -- Clean up expired entries
   local i = 1
   while i <= #queue do
-    if now - queue[i] >= FLYING_TEXT_STAGGER_TICKS then
+    if now - queue[i].tick >= FLYING_TEXT_TTL then
       table.remove(queue, i)
     else
       i = i + 1
     end
   end
 
-  -- Count how many active flying texts exist (determines Y offset)
-  local offset_index = #queue
-  queue[#queue + 1] = now
+  -- Find Y offset that clears all existing texts' current positions.
+  -- Each text started at y_start and has floated up by speed * elapsed.
+  local y_offset = 0
+  for _, entry in ipairs(queue) do
+    local elapsed = now - entry.tick
+    local current_y = entry.y_start + FLYING_TEXT_GAP - FLYING_TEXT_SPEED * elapsed
+    if current_y > y_offset then
+      y_offset = current_y
+    end
+  end
+
+  queue[#queue + 1] = {tick = now, y_start = y_offset}
 
   local pos = player.character.position
   player.create_local_flying_text{
     text = text,
-    position = {x = pos.x, y = pos.y + offset_index * FLYING_TEXT_Y_OFFSET},
-    time_to_live = 3 * 60,
-    speed = 0.1,
+    position = {x = pos.x, y = pos.y + y_offset},
+    time_to_live = FLYING_TEXT_TTL,
+    speed = FLYING_TEXT_SPEED,
   }
 end
 
