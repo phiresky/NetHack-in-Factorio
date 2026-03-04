@@ -21,6 +21,8 @@ local compiled_sources = require("scripts.nethack_compiled")
 
 local M = {}
 
+local CHARACTER_SPEED_MODIFIER = -0.4  -- slow movement for tile-based feel
+
 -- NetHack object class -> default action key when capsule is used
 local OCLASS_ACTION = {
   [7]  = string.byte("e"),  -- FOOD_CLASS -> eat
@@ -300,18 +302,6 @@ end
 ---------------------------------------------------------------------------
 -- Interpreter Execution
 ---------------------------------------------------------------------------
-
--- Factorio direction enum → NH vi-key codes
-local GOD_DIR_TO_KEY = {
-  [defines.direction.north]     = string.byte("k"),
-  [defines.direction.northeast] = string.byte("u"),
-  [defines.direction.east]      = string.byte("l"),
-  [defines.direction.southeast] = string.byte("n"),
-  [defines.direction.south]     = string.byte("j"),
-  [defines.direction.southwest] = string.byte("b"),
-  [defines.direction.west]      = string.byte("h"),
-  [defines.direction.northwest] = string.byte("y"),
-}
 
 -- Clamp a position to within a tile's boundaries (for blocking movement).
 local function clamp_to_tile(player_pos, tile_x, tile_y)
@@ -620,7 +610,7 @@ local function start_nethack(player)
 
   -- Slow the player down so tile-based movement feels right
   if player.character then
-    player.character.character_running_speed_modifier = -0.4
+    player.character.character_running_speed_modifier = CHARACTER_SPEED_MODIFIER
     -- Clear Factorio's default starting items (iron plates, burner drill, etc.)
     -- Only NH inventory items should appear.
     player.clear_items_inside()
@@ -771,53 +761,42 @@ local function advance_turn_plsel(result)
   do_advance(0)  -- status 0 = play
 end
 
--- God mode movement: called from on_tick. Reads walking_state direction
--- and sends NH commands with a cooldown (~10 ticks = ~6 moves/sec).
-local function god_mode_movement()
-  local state = storage.nh_main
-  if not state or not state.game_started then return end
-  if not state.awaiting_input then return end
-  if state.input_type ~= "getch" then return end
-
-  local player = game.connected_players[1]
-  if not player or player.character then return end  -- only in god mode
-
-  local ws = player.walking_state
-  if not ws or not ws.walking then return end
-
-  local inp = storage.nh_input
-  if inp.god_move_cooldown and game.tick < inp.god_move_cooldown then return end
-
-  local key = GOD_DIR_TO_KEY[ws.direction]
-  if not key then return end
-
-  inp.god_move_cooldown = game.tick + 10
-
-  Input.set_processing(true)
-  advance_turn(key)
-  Input.set_processing(false)
-end
-
 -- Toggle between Factorio character mode and NH sprite mode.
 -- Factorio mode: engineer visible, NH hero entity hidden.
--- NH sprite mode: god mode (no body), NH hero entity visible.
+-- NH sprite mode: invisible character, NH hero entity visible.
 local function toggle_player_mode(player)
   local mode = Display.get_player_mode()
   local zoom = player.zoom
+  local pos = Display.get_player_pos()
+  local surface = Display.get_current_surface()
   if mode == "factorio" then
-    -- Switch to NH sprite mode: save character, enter god mode
+    -- Switch to NH sprite mode: swap engineer for invisible character
     local char = player.character
-    player.set_controller{type = defines.controllers.god}
-    if char and char.valid then
-      -- Teleport detached character far off-screen so it's not visible
+    if char and char.valid and pos and surface then
+      player.set_controller{type = defines.controllers.god}
+      -- Create invisible character at hero position
+      local invis = surface.create_entity{
+        name = "nh-invisible-character",
+        position = {x = pos.x + 0.5, y = pos.y + 0.5},
+        force = player.force,
+      }
+      if invis then
+        invis.destructible = false
+        player.set_controller{type = defines.controllers.character, character = invis}
+        invis.character_running_speed_modifier = CHARACTER_SPEED_MODIFIER
+      end
+      -- Stash the engineer off-screen
       char.teleport({x = -1000, y = -1000})
+      storage.nh_main.saved_character = char
     end
-    storage.nh_main.saved_character = char
     Display.set_player_mode("nethack")
   else
-    -- Switch back to Factorio character mode
-    local pos = Display.get_player_pos()
-    local surface = Display.get_current_surface()
+    -- Switch back to Factorio character mode: restore engineer
+    local invis_char = player.character
+    player.set_controller{type = defines.controllers.god}
+    if invis_char and invis_char.valid then
+      invis_char.destroy()
+    end
     local char = storage.nh_main.saved_character
     if char and char.valid and pos and surface then
       char.teleport({x = pos.x + 0.5, y = pos.y + 0.5}, surface)
@@ -872,16 +851,8 @@ local function on_player_changed_position(event)
   local player = game.get_player(event.player_index)
   if not player then return end
 
-  -- God mode: lock camera to hero position, use walking_state for direction.
-  -- Movement is handled in on_tick via god_mode_movement() instead.
-  if not player.character then
-    local nh_pos = Display.get_player_pos()
-    local surface = Display.get_current_surface()
-    if nh_pos and surface then
-      player.teleport({x = nh_pos.x + 0.5, y = nh_pos.y + 0.5}, surface)
-    end
-    return
-  end
+  -- No character = spectating or transitioning, skip movement handling
+  if not player.character then return end
 
   -- While game is processing a turn, clamp player to current @ tile
   if not state.awaiting_input then
@@ -1130,8 +1101,7 @@ local function on_tick(event)
     update_player_position()
   end
 
-  -- God mode: poll walking_state for movement input
-  god_mode_movement()
+
 
 
 end

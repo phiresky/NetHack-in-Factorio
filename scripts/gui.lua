@@ -577,8 +577,6 @@ local FLYING_TEXT_SPEED = 0.02        -- tiles/tick upward
 local FLYING_TEXT_GAP = 0.5           -- minimum vertical gap between texts
 
 function Gui.show_flying_text(player, text)
-  if not player.character then return end
-
   local gui_data = storage.nh_gui
   if not gui_data.flying_text_queue then
     gui_data.flying_text_queue = {}
@@ -608,7 +606,7 @@ function Gui.show_flying_text(player, text)
 
   queue[#queue + 1] = {tick = now, y_start = y_offset}
 
-  local pos = player.character.position
+  local pos = player.character and player.character.position or player.position
   player.create_local_flying_text{
     text = text,
     position = {x = pos.x, y = pos.y + y_offset},
