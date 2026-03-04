@@ -127,6 +127,25 @@ function Status.flush_status()
       gui_data.highlight_timers[idx] = nil
     end
   end
+
+  -- Sync Factorio character health with NetHack HP
+  local hp_field = gui_data.status_fields[BL_HP]
+  local hpmax_field = gui_data.status_fields[BL_HPMAX]
+  local hp = hp_field and tonumber(hp_field.value)
+  local hpmax = hpmax_field and tonumber(hpmax_field.value)
+  if hp and hpmax and hpmax > 0 then
+    local ratio = math.max(0, math.min(1, hp / hpmax))
+    for _, player in pairs(game.connected_players) do
+      local char = player.character
+      if not char then
+        local main_state = storage.nh_main
+        char = main_state and main_state.saved_character
+      end
+      if char and char.valid then
+        char.health = ratio * char.prototype.max_health
+      end
+    end
+  end
 end
 
 function Status.render_status(player)
