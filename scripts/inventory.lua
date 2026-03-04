@@ -121,6 +121,7 @@ function Inventory.apply_sync()
           tile = item.tile,
           name = item.name,
           item_name = item.item_name,
+          owornmask = item.owornmask,
         }
       end
     end

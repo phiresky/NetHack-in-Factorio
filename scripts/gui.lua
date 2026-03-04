@@ -19,6 +19,7 @@ local TOTAL_TILES = TC.n_monsters + TC.n_objects + TC.n_other
 
 -- Submodules
 local GuiStatus = require("scripts.gui_status")
+local GuiEquip = require("scripts.gui_equip")
 local GuiMenus = require("scripts.gui_menus")
 local GuiPlsel = require("scripts.gui_plsel")
 
@@ -33,6 +34,7 @@ local VITAL_LABELS = GuiStatus.VITAL_LABELS
 Gui.update_status = GuiStatus.update_status
 Gui.flush_status = GuiStatus.flush_status
 Gui.render_status = GuiStatus.render_status
+Gui.render_equipment = GuiEquip.render_equipment
 
 Gui.start_menu = GuiMenus.start_menu
 Gui.add_menu_item = GuiMenus.add_menu_item
@@ -252,7 +254,7 @@ function Gui.create_player_gui(player)
 
   local minimap_width = 256
   -- Layout constants
-  local STATUS_WIDTH = 460
+  local STATUS_WIDTH = 700
   -- local total_width = math.min(1200, math.max(800, math.floor(ui_width * 0.80)))
   -- total_width = math.min(total_width, math.floor(ui_width))  -- clamp to screen
   local total_width = ui_width - minimap_width
@@ -361,17 +363,26 @@ function Gui.create_player_gui(player)
 
   -------------------------------------------------
   -- Status pane (right side of content)
+  -- Two-column: stats (left) | equipment (right)
   -------------------------------------------------
   local status_flow = content.add{
     type = "flow",
     name = "nh_status_flow",
-    direction = "vertical",
-    style = "nh_status_flow",
+    direction = "horizontal",
+    style = "nh_st_lower_flow",
   }
   status_flow.style.width = STATUS_WIDTH
 
+  -- Left column: all player stats
+  local left_col = status_flow.add{
+    type = "flow",
+    name = "nh_st_left",
+    direction = "vertical",
+    style = "nh_st_left_flow",
+  }
+
   -- Player name (large bold)
-  status_flow.add{
+  left_col.add{
     type = "label",
     name = "nh_st_name",
     caption = "",
@@ -379,7 +390,7 @@ function Gui.create_player_gui(player)
   }
 
   -- Dungeon level
-  status_flow.add{
+  left_col.add{
     type = "label",
     name = "nh_st_dlevel",
     caption = "",
@@ -387,10 +398,10 @@ function Gui.create_player_gui(player)
   }
 
   -- Separator
-  status_flow.add{type = "line", direction = "horizontal"}
+  left_col.add{type = "line", direction = "horizontal"}
 
   -- Stats row: STR DEX CON INT WIS CHA
-  local stats_flow = status_flow.add{
+  local stats_flow = left_col.add{
     type = "flow",
     name = "nh_st_stats",
     direction = "horizontal",
@@ -405,10 +416,10 @@ function Gui.create_player_gui(player)
   end
 
   -- Separator
-  status_flow.add{type = "line", direction = "horizontal"}
+  left_col.add{type = "line", direction = "horizontal"}
 
   -- Vitals row: Au HP Pw AC Lvl Xp
-  local vitals_flow = status_flow.add{
+  local vitals_flow = left_col.add{
     type = "flow",
     name = "nh_st_vitals",
     direction = "horizontal",
@@ -425,10 +436,10 @@ function Gui.create_player_gui(player)
   end
 
   -- Separator
-  status_flow.add{type = "line", direction = "horizontal"}
+  left_col.add{type = "line", direction = "horizontal"}
 
   -- Misc row: Time Score
-  local misc_flow = status_flow.add{
+  local misc_flow = left_col.add{
     type = "flow",
     name = "nh_st_misc",
     direction = "horizontal",
@@ -437,7 +448,7 @@ function Gui.create_player_gui(player)
   misc_flow.add{type = "label", name = "nh_st_score", caption = "", style = "nh_status_label"}
 
   -- Conditions row: Align + Hunger + Encumbrance + dynamic conditions
-  local cond_flow = status_flow.add{
+  local cond_flow = left_col.add{
     type = "flow",
     name = "nh_st_cond",
     direction = "horizontal",
@@ -450,6 +461,25 @@ function Gui.create_player_gui(player)
     type = "flow",
     name = "nh_st_cond_dynamic",
     direction = "horizontal",
+  }
+
+  -- Right column: equipment (paperdoll)
+  local right_col = status_flow.add{
+    type = "flow",
+    name = "nh_st_right",
+    direction = "vertical",
+    style = "nh_st_right_flow",
+  }
+  right_col.add{
+    type = "label",
+    name = "nh_equip_header",
+    caption = "Equipment",
+    style = "nh_equip_header_label",
+  }
+  right_col.add{
+    type = "flow",
+    name = "nh_equip_flow",
+    direction = "vertical",
   }
 
   -- Engine state (right-aligned in menu bar)

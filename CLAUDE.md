@@ -292,6 +292,10 @@ build/json.lua              — Vendored JSON parser (rxi/json.lua)
   wild memory accesses. Fix: only use compiled version when `entry_point > 0`
   (resuming compiled) or `pc <= 1` (fresh call). If `entry_point == 0 and pc > 1`,
   continue interpreting.
+- **No `require()` at runtime in Factorio**: `require` can only be called during
+  control.lua parsing (load time), NOT at runtime (event handlers, on_tick, etc.).
+  Never use lazy `require` patterns like `if not M then M = require(...) end` inside
+  functions that run after load. All `require` calls must be at module top level.
 
 ## Known Issues / TODO
 - All 9944 spec tests pass (0 failures, 193 skipped WAT-text-only tests)

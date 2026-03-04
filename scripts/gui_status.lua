@@ -4,6 +4,7 @@
 local bit32 = bit32
 
 local Status = {}
+local GuiEquip = require("scripts.gui_equip")
 
 -- BL_ field indices (from NetHack botl.h)
 local BL_TITLE   = 0
@@ -163,12 +164,16 @@ function Status.render_status(player)
     end
   end
 
+  -- All stat elements are inside nh_st_left
+  local left_col = sf.nh_st_left
+  if not left_col then return end
+
   -- Name and dungeon level
-  set_label(sf, "nh_st_name", get_val(BL_TITLE), "nh_status_name_label")
-  set_label(sf, "nh_st_dlevel", get_val(BL_DLEVEL), "nh_status_dlevel_label")
+  set_label(left_col, "nh_st_name", get_val(BL_TITLE), "nh_status_name_label")
+  set_label(left_col, "nh_st_dlevel", get_val(BL_DLEVEL), "nh_status_dlevel_label")
 
   -- Stats row: STR DEX CON INT WIS CHA
-  local stats = sf.nh_st_stats
+  local stats = left_col.nh_st_stats
   if stats then
     for _, stat in ipairs(STAT_LABELS) do
       local v = get_val(stat.idx)
@@ -181,7 +186,7 @@ function Status.render_status(player)
   end
 
   -- Vitals row
-  local vitals = sf.nh_st_vitals
+  local vitals = left_col.nh_st_vitals
   if vitals then
     -- Gold
     local gold = get_val(BL_GOLD)
@@ -234,7 +239,7 @@ function Status.render_status(player)
   end
 
   -- Misc row: Time Score
-  local misc = sf.nh_st_misc
+  local misc = left_col.nh_st_misc
   if misc then
     local time_val = get_val(BL_TIME)
     set_label(misc, "nh_st_time", time_val ~= "" and ("T:" .. time_val) or "")
@@ -243,7 +248,7 @@ function Status.render_status(player)
   end
 
   -- Conditions row
-  local cond = sf.nh_st_cond
+  local cond = left_col.nh_st_cond
   if cond then
     -- Alignment with icon
     local align_val = get_val(BL_ALIGN)
@@ -311,6 +316,9 @@ function Status.render_status(player)
       end
     end
   end
+
+  -- Equipment display (below conditions)
+  GuiEquip.render_equipment(player)
 end
 
 return Status

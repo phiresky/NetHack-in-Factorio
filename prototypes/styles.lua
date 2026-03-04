@@ -110,6 +110,48 @@ default_gui["nh_gold_label"] = {
 }
 
 -----------------------------------------------------
+-- Status lower section (two-column: vitals | equipment)
+-----------------------------------------------------
+
+default_gui["nh_st_lower_flow"] = {
+  type = "horizontal_flow_style",
+  horizontal_spacing = 8,
+}
+
+default_gui["nh_st_left_flow"] = {
+  type = "vertical_flow_style",
+  vertical_spacing = 1,
+}
+
+default_gui["nh_st_right_flow"] = {
+  type = "vertical_flow_style",
+  vertical_spacing = 1,
+}
+
+-----------------------------------------------------
+-- Equipment (paperdoll list in status pane)
+-----------------------------------------------------
+
+default_gui["nh_equip_header_label"] = {
+  type = "label_style",
+  font = "default-bold",
+  font_color = {r = 1, g = 0.85, b = 0.4},
+  top_padding = 2,
+  bottom_padding = 2,
+}
+
+default_gui["nh_equip_slot_label"] = {
+  type = "label_style",
+  font = "default",
+  font_color = {r = 0.9, g = 0.9, b = 0.9},
+  left_padding = 4,
+  right_padding = 4,
+  rich_text_setting = "enabled",
+  single_line = true,
+  maximal_width = 260,
+}
+
+-----------------------------------------------------
 -- Menu Bar (Qt-style dropdown menus)
 -----------------------------------------------------
 
