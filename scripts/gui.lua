@@ -102,61 +102,59 @@ local TOOLBAR_BUTTONS = {
 -- ext = extended command name (for # commands that need getlin follow-up)
 local MENU_BAR = {
   {name = "game", label = "Game", items = {
-    {label = "Version",       key = string.byte("v"), shortcut = "Alt+v"},
+    {label = "Version",       key = string.byte("v")},
     {label = "History",       key = string.byte("V")},
     {label = "Options",       key = string.byte("O")},
     {label = "Explore mode",  key = string.byte("#"), ext = "exploremode"},
     {separator = true},
     {label = "Toggle player mode", action = "toggle_player_mode"},
     {label = "Export Save", action = "export_save"},
-    {label = "Toggle ASCII mode", action = "toggle_ascii"},
-    -- {label = "Save",          key = string.byte("S")},
-    -- {label = "Quit",          key = string.byte("#"), ext = "quit"},
+    {label = "Toggle ASCII mode", action = "toggle_ascii", control = "nh-cycle-display"},
   }},
   {name = "gear", label = "Gear", items = {
-    {label = "Wield weapon",      key = string.byte("w"), shortcut = "Alt+w"},
-    {label = "Exchange weapons",  key = string.byte("x"), shortcut = "Alt+x"},
+    {label = "Wield weapon",      key = string.byte("w"), control = "nh-wield"},
+    {label = "Exchange weapons",  key = string.byte("x")},
     {label = "Two weapon combat", key = string.byte("#"), ext = "twoweapon"},
     {label = "Load quiver",       key = string.byte("Q")},
     {separator = true},
-    {label = "Wear armour",       key = string.byte("W"), shortcut = "Alt+Shift+w"},
-    {label = "Take off armour",   key = string.byte("T"), shortcut = "Alt+Shift+t"},
+    {label = "Wear armour",       key = string.byte("W"), control = "nh-wear"},
+    {label = "Take off armour",   key = string.byte("T"), control = "nh-takeoff"},
     {separator = true},
-    {label = "Put on",            key = string.byte("P"), shortcut = "Alt+Shift+p"},
-    {label = "Remove",            key = string.byte("R"), shortcut = "Alt+Shift+r"},
+    {label = "Put on",            key = string.byte("P"), control = "nh-puton"},
+    {label = "Remove",            key = string.byte("R"), control = "nh-remove"},
   }},
   {name = "action", label = "Action", items = {
     {label = "Again",            key = 0x01},  -- ^A
-    {label = "Apply",            key = string.byte("a"), shortcut = "Alt+a"},
+    {label = "Apply",            key = string.byte("a"), control = "nh-apply"},
     {label = "Chat",             key = string.byte("#"), ext = "chat"},
-    {label = "Close door",       key = string.byte("c"), shortcut = "Alt+c"},
-    {label = "Down",             key = string.byte(">"), shortcut = "Shift+."},
-    {label = "Drop",             key = string.byte("d"), shortcut = "Alt+d"},
+    {label = "Close door",       key = string.byte("c"), control = "nh-close"},
+    {label = "Down",             key = string.byte(">"), control = "nh-go-down"},
+    {label = "Drop",             key = string.byte("d"), control = "nh-drop"},
     {label = "Drop many",        key = string.byte("D")},
-    {label = "Eat",              key = string.byte("e"), shortcut = "Alt+e"},
-    {label = "Engrave",          key = string.byte("E"), shortcut = "Alt+Shift+e"},
-    {label = "Fire from quiver", key = string.byte("f"), shortcut = "Alt+f"},
-    {label = "Force",            key = string.byte("#"), ext = "force", shortcut = "Ctrl+f"},
-    {label = "Get",              key = string.byte(","), shortcut = "Alt+,"},
+    {label = "Eat",              key = string.byte("e"), control = "nh-eat"},
+    {label = "Engrave",          key = string.byte("E"), control = "nh-engrave"},
+    {label = "Fire from quiver", key = string.byte("f"), control = "nh-fire"},
+    {label = "Force",            key = string.byte("#"), ext = "force", control = "nh-force"},
+    {label = "Get",              key = string.byte(","), control = "nh-pickup"},
     {label = "Jump",             key = string.byte("#"), ext = "jump"},
-    {label = "Kick",             key = 0x04, shortcut = "Ctrl+d"},  -- ^D
+    {label = "Kick",             key = 0x04, control = "nh-kick"},  -- ^D
     {label = "Loot",             key = string.byte("#"), ext = "loot"},
-    {label = "Open door",        key = string.byte("o"), shortcut = "Alt+o"},
-    {label = "Pay",              key = string.byte("p"), shortcut = "Alt+p"},
-    {label = "Rest",             key = string.byte("."), shortcut = "Alt+."},
+    {label = "Open door",        key = string.byte("o"), control = "nh-open"},
+    {label = "Pay",              key = string.byte("p"), control = "nh-pay"},
+    {label = "Rest",             key = string.byte("."), control = "nh-wait"},
     {label = "Ride",             key = string.byte("#"), ext = "ride"},
-    {label = "Search",           key = string.byte("s"), shortcut = "Alt+s"},
+    {label = "Search",           key = string.byte("s"), control = "nh-search"},
     {label = "Sit",              key = string.byte("#"), ext = "sit"},
-    {label = "Throw",            key = string.byte("t"), shortcut = "Alt+t"},
+    {label = "Throw",            key = string.byte("t"), control = "nh-throw"},
     {label = "Untrap",           key = string.byte("#"), ext = "untrap"},
-    {label = "Up",               key = string.byte("<"), shortcut = "Shift+,"},
+    {label = "Up",               key = string.byte("<"), control = "nh-go-up"},
     {label = "Wipe face",        key = string.byte("#"), ext = "wipe"},
   }},
   {name = "magic", label = "Magic", items = {
-    {label = "Quaff potion",     key = string.byte("q"), shortcut = "Alt+q"},
-    {label = "Read scroll/book", key = string.byte("r"), shortcut = "Alt+r"},
-    {label = "Zap wand",         key = string.byte("z"), shortcut = "Alt+z"},
-    {label = "Zap spell",        key = string.byte("Z"), shortcut = "Alt+Shift+z"},
+    {label = "Quaff potion",     key = string.byte("q"), control = "nh-quaff"},
+    {label = "Read scroll/book", key = string.byte("r"), control = "nh-read"},
+    {label = "Zap wand",         key = string.byte("z"), control = "nh-zap"},
+    {label = "Zap spell",        key = string.byte("Z"), control = "nh-cast"},
     {label = "Dip",              key = string.byte("#"), ext = "dip"},
     {label = "Rub",              key = string.byte("#"), ext = "rub"},
     {label = "Invoke",           key = string.byte("#"), ext = "invoke"},
@@ -169,7 +167,7 @@ local MENU_BAR = {
     {label = "Turn undead",      key = string.byte("#"), ext = "turn"},
   }},
   {name = "info", label = "Info", items = {
-    {label = "Inventory",          key = string.byte("i"), shortcut = "Alt+i"},
+    {label = "Inventory",          key = string.byte("i"), control = "nh-inventory"},
     {label = "Conduct",            key = string.byte("#"), ext = "conduct"},
     {label = "Discoveries",        key = string.byte("\\")},
     {label = "List/reorder spells",key = string.byte("+")},
@@ -177,14 +175,14 @@ local MENU_BAR = {
     {separator = true},
     {label = "Name object",        key = string.byte("#"), ext = "name"},
     {separator = true},
-    {label = "Skills",             key = string.byte("#"), ext = "enhance", shortcut = "Ctrl+e"},
+    {label = "Skills",             key = string.byte("#"), ext = "enhance", control = "nh-enhance"},
   }},
   {name = "help", label = "Help", items = {
     {label = "Help",              key = string.byte("?")},
     {separator = true},
-    {label = "What is here",      key = string.byte(":"), shortcut = "Shift+;"},
-    {label = "What is there",     key = string.byte(";"), shortcut = "Alt+;"},
-    {label = "What is...",        key = string.byte("/"), shortcut = "Alt+/"},
+    {label = "What is here",      key = string.byte(":"), control = "nh-look-here"},
+    {label = "What is there",     key = string.byte(";"), control = "nh-far-look"},
+    {label = "What is...",        key = string.byte("/"), control = "nh-whatis"},
   }},
 }
 
@@ -201,8 +199,8 @@ for _, menu in ipairs(MENU_BAR) do
       -- no lookup entry for separators
     else
       local display = item.label
-      if item.shortcut then
-        display = display .. "  [color=gray](" .. item.shortcut .. ")[/color]"
+      if item.control then
+        display = display .. "  [color=gray]([__CONTROL__" .. item.control .. "__])[/color]"
       end
       items[#items + 1] = display
       lookup[#items] = {key = item.key, ext = item.ext, action = item.action}
@@ -1019,10 +1017,10 @@ function Gui.show_tips_popup(player)
 
   local tips = {
     {heading = "Movement", text = "Some things interact by walking into them: monsters to fight, doors to open, items to pick up. Others need an Action - 'Down' to descend, 'Read' to understand text."},
-    {heading = "Search", text = "Some actions need to be repeated to work. If a corridor seems to suspiciously end, try Search (Alt+S)"},
+    {heading = "Search", text = "Some actions need to be repeated to work. If a corridor seems to suspiciously end, try Search ([__CONTROL__nh-search__])"},
 
-    {heading = "Controls", text = "WASD to move. You can pass obstacles diagonally. Click distant tiles to auto-travel. Press Esc to cancel an action."},
-    {heading = "Items", text = "Auto-pickup is enabled by default. Open Inventory (Alt+i) to see what you carry."},
+    {heading = "Controls", text = "WASD to move. You can pass obstacles diagonally. Click distant tiles to auto-travel. Press [__CONTROL__nh-escape__] to cancel an action."},
+    {heading = "Items", text = "Auto-pickup is enabled by default. Open Inventory ([__CONTROL__nh-inventory__]) to see what you carry."},
     {heading = "Survival", text = "Eat food before you starve (Eat button). Read scrolls, quaff potions, zap wands -- experiment! You will die a lot, that's normal."},
   }
 
